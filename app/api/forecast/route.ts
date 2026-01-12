@@ -36,7 +36,7 @@ export async function POST(req: Request) {
 
     // ✔ Use a STABLE model!
     const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-flash-preview",
     });
 
     const prompt = `
