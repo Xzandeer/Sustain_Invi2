@@ -23,7 +23,7 @@ export default function ItemModal({ isOpen, item, onClose, onSave }: ItemModalPr
     name: '',
     category: '',
     price: 0,
-    condition: 'Good',
+    condition: 'Brand New',
     status: 'In Stock',
   })
 
@@ -35,7 +35,7 @@ export default function ItemModal({ isOpen, item, onClose, onSave }: ItemModalPr
         name: '',
         category: '',
         price: 0,
-        condition: 'Good',
+        condition: 'Brand New',
         status: 'In Stock',
       })
     }
@@ -115,10 +115,8 @@ export default function ItemModal({ isOpen, item, onClose, onSave }: ItemModalPr
               onChange={handleChange}
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 dark:bg-slate-700 dark:text-white"
             >
-              <option>Like New</option>
-              <option>Good</option>
-              <option>Fair</option>
-              <option>Poor</option>
+              <option>Brand New</option>
+              <option>Refurbished</option>
             </select>
           </div>
 

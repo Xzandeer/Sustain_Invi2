@@ -1,28 +1,27 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { createUserWithEmailAndPassword, onAuthStateChanged } from 'firebase/auth'
+import { createUserWithEmailAndPassword } from 'firebase/auth'
 import { auth, db } from '@/lib/firebase'
-import { doc, setDoc } from 'firebase/firestore'
+import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore'
 import Link from 'next/link'
 
 export default function SignupPage() {
   const router = useRouter()
+  const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        router.push('/dashboard')
-      }
-    })
-    return () => unsubscribe()
-  }, [router])
+  const getErrorMessage = (code: string) => {
+    if (code === 'auth/email-already-in-use') return 'Email already exists'
+    if (code === 'auth/weak-password') return 'Weak password'
+    if (code === 'auth/network-request-failed') return 'Network error'
+    return 'Signup failed. Please try again.'
+  }
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -42,15 +41,24 @@ export default function SignupPage() {
 
     try {
       const userCredential = await createUserWithEmailAndPassword(auth, email, password)
-      await setDoc(doc(db, 'users', userCredential.user.uid), {
-        email: userCredential.user.email,
-        role: 'staff',
-        createdAt: new Date().toISOString(),
-      })
-      localStorage.setItem('userRole', 'staff')
-      router.push('/dashboard')
-    } catch (err: any) {
-      setError(err.message || 'Signup failed')
+      const user = userCredential.user
+      const userRef = doc(db, 'users', user.uid)
+      const existingUser = await getDoc(userRef)
+
+      if (!existingUser.exists()) {
+        await setDoc(userRef, {
+          uid: user.uid,
+          name: name.trim() || email.split('@')[0],
+          email: user.email ?? email,
+          role: 'admin',
+          createdAt: serverTimestamp(),
+        })
+      }
+
+      router.replace('/dashboard')
+    } catch (err: unknown) {
+      const code = typeof err === 'object' && err && 'code' in err ? String(err.code) : ''
+      setError(getErrorMessage(code))
     } finally {
       setLoading(false)
     }
@@ -63,6 +71,18 @@ export default function SignupPage() {
         <p className="text-center text-gray-600 dark:text-gray-400 mb-8">Create Your Account</p>
 
         <form onSubmit={handleSignup} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">Name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 dark:bg-slate-700 dark:text-white"
+              placeholder="Your name"
+              required
+            />
+          </div>
+
           <div>
             <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">Email</label>
             <input

@@ -3,9 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { onAuthStateChanged } from 'firebase/auth'
-import { auth, db } from '@/lib/firebase'
-import { doc, getDoc } from 'firebase/firestore'
-import Sidebar from './Sidebar'
+import { auth } from '@/lib/firebase'
 
 interface ProtectedRouteProps {
   children: React.ReactNode
@@ -14,26 +12,18 @@ interface ProtectedRouteProps {
 export default function ProtectedRoute({ children }: ProtectedRouteProps) {
   const router = useRouter()
   const [loading, setLoading] = useState(true)
-  const [userRole, setUserRole] = useState<string | null>(null)
+  const [authenticated, setAuthenticated] = useState(false)
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
-        try {
-          const userDoc = await getDoc(doc(db, 'users', user.uid))
-          if (userDoc.exists()) {
-            setUserRole(userDoc.data().role || 'staff')
-          } else {
-            setUserRole('staff')
-          }
-        } catch (error) {
-          console.error('Error fetching user role:', error)
-          setUserRole('staff')
-        }
+        setAuthenticated(true)
+        setLoading(false)
       } else {
-        router.push('/login')
+        setAuthenticated(false)
+        setLoading(false)
+        router.replace('/login')
       }
-      setLoading(false)
     })
 
     return () => unsubscribe()
@@ -47,12 +37,9 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
     )
   }
 
-  return (
-    <div className="flex">
-      <Sidebar userRole={userRole} />
-      <div className="flex-1 md:ml-64 mt-16 md:mt-0">
-        {children}
-      </div>
-    </div>
-  )
+  if (!authenticated) {
+    return null
+  }
+
+  return <>{children}</>
 }

@@ -1,12 +1,12 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
-import { signInWithEmailAndPassword, onAuthStateChanged } from 'firebase/auth'
-import { auth } from '@/lib/firebase'
-import { doc, getDoc } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
+import { onAuthStateChanged, signInWithEmailAndPassword } from 'firebase/auth'
+import { doc, getDoc } from 'firebase/firestore'
+import { auth, db } from '@/lib/firebase'
+import { Spinner } from '@/components/ui/spinner'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -16,79 +16,113 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
-        router.push('/dashboard')
+        router.replace('/dashboard')
       }
     })
+
     return () => unsubscribe()
   }, [router])
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError('')
-    setLoading(true)
+  const getErrorMessage = (code: string) => {
+    if (code === 'auth/invalid-credential' || code === 'auth/wrong-password') {
+      return 'Invalid email or password'
+    }
 
+    if (code === 'auth/user-not-found') {
+      return 'User not found'
+    }
+
+    if (code === 'auth/network-request-failed') {
+      return 'Network error'
+    }
+
+    return 'Unable to sign in. Please try again.'
+  }
+
+  const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setError('')
+
+    const normalizedEmail = email.trim()
+    if (!normalizedEmail || !password) {
+      setError('Email and password are required.')
+      return
+    }
+
+    setLoading(true)
     try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password)
-      const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid))
-      if (userDoc.exists()) {
-        localStorage.setItem('userRole', userDoc.data().role || 'staff')
+      const userCredential = await signInWithEmailAndPassword(auth, normalizedEmail, password)
+      const userSnapshot = await getDoc(doc(db, 'users', userCredential.user.uid))
+      const role = userSnapshot.exists() ? userSnapshot.data().role : 'staff'
+
+      if (role === 'admin' || role === 'staff') {
+        router.replace('/dashboard')
+        return
       }
-      router.push('/dashboard')
-    } catch (err: any) {
-      setError(err.message || 'Login failed')
+
+      router.replace('/dashboard')
+    } catch (err: unknown) {
+      const code = typeof err === 'object' && err && 'code' in err ? String(err.code) : ''
+      setError(getErrorMessage(code))
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-green-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 px-4">
-      <div className="w-full max-w-md bg-white dark:bg-slate-800 rounded-lg shadow-lg p-8">
-        <h1 className="text-3xl font-bold text-center mb-2 text-green-700 dark:text-green-400">SUSTAIN</h1>
-        <p className="text-center text-gray-600 dark:text-gray-400 mb-8">Inventory & Sales Tracking</p>
+    <div className="min-h-screen bg-slate-100 px-4 flex items-center justify-center">
+      <div className="w-full max-w-md rounded-xl bg-white p-8 shadow">
+        <h1 className="mb-6 text-center text-3xl font-bold text-slate-900">Sign In</h1>
 
-        <form onSubmit={handleLogin} className="space-y-4">
+        <form onSubmit={onSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">Email</label>
+            <label className="mb-2 block text-sm font-medium text-slate-700">Email</label>
             <input
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 dark:bg-slate-700 dark:text-white"
-              placeholder="your@email.com"
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="Enter your email"
+              className="w-full rounded-lg border border-slate-300 px-4 py-2 text-slate-900 outline-none transition focus:border-slate-500"
               required
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">Password</label>
+            <label className="mb-2 block text-sm font-medium text-slate-700">Password</label>
             <input
               type="password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 dark:bg-slate-700 dark:text-white"
-              placeholder="••••••••"
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Enter your password"
+              className="w-full rounded-lg border border-slate-300 px-4 py-2 text-slate-900 outline-none transition focus:border-slate-500"
               required
             />
           </div>
 
-          {error && <p className="text-red-600 dark:text-red-400 text-sm">{error}</p>}
+          {error && <p className="text-sm text-red-600">{error}</p>}
 
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-green-600 hover:bg-green-700 text-white py-2 rounded-lg font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
+            className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-sky-900 py-2 font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {loading ? 'Signing in...' : 'Sign In'}
+            {loading ? (
+              <>
+                <Spinner className="size-4" />
+                Signing In...
+              </>
+            ) : (
+              'Sign In'
+            )}
           </button>
         </form>
 
-        <p className="text-center mt-6 text-gray-600 dark:text-gray-400">
+        <p className="mt-6 text-center text-slate-600">
           Don't have an account?{' '}
-          <Link href="/signup" className="text-green-600 dark:text-green-400 hover:underline font-semibold">
-            Sign Up
+          <Link href="/signup" className="font-semibold text-sky-900 hover:underline">
+            Sign up
           </Link>
         </p>
       </div>

@@ -52,7 +52,7 @@ export default function Navbar() {
               <Link href="/dashboard" className="hover:bg-green-500 px-3 py-2 rounded-md text-sm font-medium transition">
                 Dashboard
               </Link>
-              <Link href="/items" className="hover:bg-green-500 px-3 py-2 rounded-md text-sm font-medium transition">
+              <Link href="/inventory" className="hover:bg-green-500 px-3 py-2 rounded-md text-sm font-medium transition">
                 Items
               </Link>
               <Link href="/sales" className="hover:bg-green-500 px-3 py-2 rounded-md text-sm font-medium transition">
