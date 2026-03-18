@@ -1,18 +1,20 @@
 import { AlertTriangle, Info } from 'lucide-react'
+import { useMemo } from 'react'
+import type { LowStockItem } from '@/lib/server/salesInventoryMetrics'
 
 interface AlertsWarningsProps {
-  lowStockItems: string[]
+  lowStockItems: LowStockItem[]
   outOfStockCount: number
   loading?: boolean
 }
 
 interface AlertBoxProps {
   title: string
-  description: string
+  message: string
   type: 'warning' | 'info'
 }
 
-function AlertBox({ title, description, type }: AlertBoxProps) {
+function AlertBox({ title, message, type }: AlertBoxProps) {
   const classes =
     type === 'warning'
       ? 'border-red-200 bg-red-50'
@@ -27,7 +29,7 @@ function AlertBox({ title, description, type }: AlertBoxProps) {
         <Icon className={`mt-0.5 h-5 w-5 ${iconClasses}`} />
         <div className="space-y-1">
           <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
-          <p className="text-sm text-gray-600">{description}</p>
+          <p className="text-sm text-gray-600">{message}</p>
         </div>
       </div>
     </article>
@@ -39,7 +41,40 @@ export default function AlertsWarnings({
   outOfStockCount,
   loading = false,
 }: AlertsWarningsProps) {
-  const hasLowStockAlert = lowStockItems.length > 0
+  const groupedLowStockItems = useMemo(() => {
+    const categories = new Map<
+      string,
+      {
+        id: string
+        categoryName: string
+        count: number
+        items: LowStockItem[]
+      }
+    >()
+
+    lowStockItems.forEach((item, index) => {
+      const key = item.categoryName || 'Uncategorized'
+      const current = categories.get(key) ?? {
+        id: item.id || `${key}-${index}`,
+        categoryName: key,
+        count: 0,
+        items: [],
+      }
+
+      current.count += 1
+      current.items.push(item)
+      categories.set(key, current)
+    })
+
+    return Array.from(categories.values())
+      .sort((a, b) => {
+        if (b.count !== a.count) return b.count - a.count
+        return a.categoryName.localeCompare(b.categoryName)
+      })
+      .slice(0, 5)
+  }, [lowStockItems])
+
+  const hasLowStockAlert = groupedLowStockItems.length > 0
   const hasOutOfStockAlert = outOfStockCount > 0
   const hasAnyAlerts = hasLowStockAlert || hasOutOfStockAlert
 
@@ -55,12 +90,12 @@ export default function AlertsWarnings({
       ) : (
         <>
           {hasLowStockAlert &&
-            lowStockItems.map((itemName) => (
+            groupedLowStockItems.map((item, index) => (
               <AlertBox
-                key={itemName}
+                key={`${item.id}-${index}`}
                 type="warning"
-                title="Low Stock Category Alert"
-                description={`Low stock alert for ${itemName}. Review inventory and restock as needed.`}
+                title="Low Stock Alert"
+                message={`${item.categoryName} has ${item.count} low stock item${item.count === 1 ? '' : 's'}.`}
               />
             ))}
 
@@ -68,15 +103,15 @@ export default function AlertsWarnings({
             <AlertBox
               type="info"
               title="Out of Stock Alert"
-              description={`${outOfStockCount} ${outOfStockCount === 1 ? 'item is' : 'items are'} currently out of stock.`}
+              message={`${outOfStockCount} ${outOfStockCount === 1 ? 'item is' : 'items are'} currently out of stock.`}
             />
           )}
 
           {!hasAnyAlerts && (
             <AlertBox
               type="info"
-              title="System Stable"
-              description="Inventory levels are currently healthy and no active alerts need attention."
+              title="All Clear"
+              message="All inventory levels are healthy."
             />
           )}
         </>

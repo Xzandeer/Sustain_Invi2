@@ -27,6 +27,21 @@ export default function SalesFilters({
   const [localEndDate, setLocalEndDate] = useState(endDate)
   const [error, setError] = useState('')
 
+  const isInvalidRange = (nextStartDate: string, nextEndDate: string) => {
+    if (!nextStartDate || !nextEndDate) return false
+    return new Date(nextEndDate) < new Date(nextStartDate)
+  }
+
+  const validateDateRange = (nextStartDate: string, nextEndDate: string) => {
+    if (isInvalidRange(nextStartDate, nextEndDate)) {
+      setError('End date cannot be earlier than start date.')
+      return false
+    }
+
+    setError('')
+    return true
+  }
+
   useEffect(() => {
     setLocalStartDate(startDate)
   }, [startDate])
@@ -35,27 +50,38 @@ export default function SalesFilters({
     setLocalEndDate(endDate)
   }, [endDate])
 
+  useEffect(() => {
+    if (!isInvalidRange(localStartDate, localEndDate)) return
+
+    setLocalEndDate(localStartDate)
+    onEndDateChange(localStartDate)
+    setError('End date cannot be earlier than start date.')
+  }, [localStartDate, localEndDate, onEndDateChange])
+
   const handleStartDateChange = (value: string) => {
     setLocalStartDate(value)
-    onStartDateChange(value)
 
-    if (localEndDate && value && new Date(value) > new Date(localEndDate)) {
-      setLocalEndDate('')
-      onEndDateChange('')
-      setError('End date cannot be earlier than the start date.')
+    if (isInvalidRange(value, localEndDate)) {
+      setLocalEndDate(value)
+      onStartDateChange(value)
+      onEndDateChange(value)
+      setError('')
       return
     }
 
-    setError('')
+    validateDateRange(value, localEndDate)
+    onStartDateChange(value)
   }
 
   const handleEndDateChange = (value: string) => {
-    if (localStartDate && value && new Date(value) < new Date(localStartDate)) {
-      setError('End date cannot be earlier than the start date.')
+    if (!validateDateRange(localStartDate, value)) {
+      if (localStartDate && value) {
+        setLocalEndDate(localStartDate)
+        onEndDateChange(localStartDate)
+      }
       return
     }
 
-    setError('')
     setLocalEndDate(value)
     onEndDateChange(value)
   }
@@ -80,6 +106,7 @@ export default function SalesFilters({
         <input
           type="date"
           value={localStartDate}
+          max={localEndDate || undefined}
           onChange={(event) => handleStartDateChange(event.target.value)}
           className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-500"
         />

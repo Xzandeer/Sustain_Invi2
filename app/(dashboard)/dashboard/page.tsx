@@ -8,7 +8,7 @@ import { db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import DashboardStats from '@/components/DashboardStats'
 import AlertsWarnings from '@/components/AlertsWarnings'
-import SummaryBanner from '@/components/SummaryBanner'
+import type { LowStockItem } from '@/lib/server/salesInventoryMetrics'
 
 interface SaleDoc {
   id: string
@@ -30,6 +30,8 @@ interface InventoryDoc {
   name?: string
   quantity?: number
   minStock?: number
+  category?: string
+  categoryName?: string
   isDeleted?: boolean
 }
 
@@ -139,30 +141,25 @@ function DashboardContent() {
     [inventory]
   )
 
-  const lowStockItems = useMemo(() => {
+  const lowStockItems = useMemo<LowStockItem[]>(() => {
     return inventory
       .filter((item) => {
         const quantity = toNumber(item.quantity, 0)
         const minStock = toNumber(item.minStock, 0)
         return quantity <= minStock
       })
-      .map((item) => item.name?.trim() || item.id)
+      .map((item) => ({
+        id: item.id,
+        name: item.name?.trim() || item.id,
+        categoryName: item.categoryName?.trim() || item.category?.trim() || 'Uncategorized',
+        stock: toNumber(item.quantity, 0),
+      }))
   }, [inventory])
 
   const outOfStockItems = useMemo(
     () => inventory.filter((item) => toNumber(item.quantity, 0) === 0),
     [inventory]
   )
-
-  const bannerMessage = useMemo(() => {
-    if (lowStockItems.length > 0) {
-      return `Low stock alert for ${lowStockItems[0]}`
-    }
-    if (outOfStockItems.length > 0) {
-      return `${outOfStockItems.length} items are currently out of stock.`
-    }
-    return 'Inventory and sales are currently stable.'
-  }, [lowStockItems, outOfStockItems])
 
   return (
     <main className="flex-1 bg-slate-100 px-8 py-8">
@@ -180,9 +177,6 @@ function DashboardContent() {
           lowStockItems={lowStockItems.length}
           outOfStockItems={outOfStockItems.length}
         />
-
-        <SummaryBanner message={bannerMessage} />
-
         <AlertsWarnings
           loading={loading}
           lowStockItems={lowStockItems}

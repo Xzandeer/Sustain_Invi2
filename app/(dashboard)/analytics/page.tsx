@@ -15,11 +15,15 @@ import { collection, onSnapshot } from 'firebase/firestore'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { db } from '@/lib/firebase'
 import AnalyticsCard from '@/components/analytics/AnalyticsCard'
-import AnalyticsTable from '@/components/analytics/AnalyticsTable'
 import AnalyticsBadge from '@/components/analytics/AnalyticsBadge'
+import AnalyticsTable from '@/components/analytics/AnalyticsTable'
 import type { InventoryRecord } from '@/lib/server/salesInventoryMetrics'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend)
+
+type SaleItemCondition = 'New' | 'Refurbished'
+type AnalyticsModalType = 'top' | null
+type TimeRangePreset = 'this-week' | 'this-month' | 'last-month' | 'last-6-months' | 'this-year' | 'custom'
 
 interface SaleRecord {
   id: string
@@ -28,25 +32,23 @@ interface SaleRecord {
     quantity: number
     price: number
     categoryId: string
-    status: 'New' | 'Refurbished'
+    status: SaleItemCondition
   }>
   totalAmount: number
   createdAt: Date | null
 }
 
-type SaleItemCondition = 'New' | 'Refurbished'
-type AnalyticsModalType = 'top' | 'low' | 'stock' | null
-
-interface InventoryStats {
-  totalProducts: number
-  lowStockItems: number
-  outOfStockItems: number
+interface CategoryPerformanceRow {
+  categoryId: string
+  categoryName: string
+  itemsSold: number
+  revenue: number
 }
 
-const CATEGORY_THRESHOLDS: Record<string, number> = {
-  Kitchenware: 75,
-  Tools: 50,
-  Bags: 40,
+interface ComparisonMetric {
+  label: string
+  value: number
+  change: number | null
 }
 
 const toNumber = (value: unknown, fallback = 0) => {
@@ -88,10 +90,289 @@ const currency = (value: number) =>
     maximumFractionDigits: 2,
   })
 
-const isSameDay = (a: Date, b: Date) =>
-  a.getFullYear() === b.getFullYear() &&
-  a.getMonth() === b.getMonth() &&
-  a.getDate() === b.getDate()
+const percentFormatter = new Intl.NumberFormat('en-PH', {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+})
+
+const compactNumber = new Intl.NumberFormat('en-PH')
+
+const startOfDay = (date: Date) => {
+  const next = new Date(date)
+  next.setHours(0, 0, 0, 0)
+  return next
+}
+
+const endOfDay = (date: Date) => {
+  const next = new Date(date)
+  next.setHours(23, 59, 59, 999)
+  return next
+}
+
+const startOfWeek = (date: Date) => {
+  const next = startOfDay(date)
+  const day = next.getDay()
+  const diff = day === 0 ? -6 : 1 - day
+  next.setDate(next.getDate() + diff)
+  return next
+}
+
+const startOfMonth = (date: Date) => new Date(date.getFullYear(), date.getMonth(), 1)
+const endOfMonth = (date: Date) => new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999)
+const startOfYear = (date: Date) => new Date(date.getFullYear(), 0, 1)
+
+const addMonths = (date: Date, months: number) => {
+  const next = new Date(date)
+  next.setMonth(next.getMonth() + months)
+  return next
+}
+
+const addYears = (date: Date, years: number) => {
+  const next = new Date(date)
+  next.setFullYear(next.getFullYear() + years)
+  return next
+}
+
+const formatDateInput = (date: Date) => {
+  const year = date.getFullYear()
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const parseDateInput = (value: string) => {
+  if (!value) return null
+  const parsed = new Date(`${value}T00:00:00`)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+const formatMonthLabel = (date: Date) =>
+  date.toLocaleDateString('en-PH', {
+    month: 'short',
+    year: 'numeric',
+  })
+
+const formatDayLabel = (date: Date) =>
+  date.toLocaleDateString('en-PH', {
+    month: 'short',
+    day: 'numeric',
+  })
+
+const getMonthKey = (date: Date) => `${date.getFullYear()}-${`${date.getMonth() + 1}`.padStart(2, '0')}`
+const getDayKey = (date: Date) => formatDateInput(date)
+
+const getRangeLabel = (preset: TimeRangePreset) => {
+  switch (preset) {
+    case 'this-week':
+      return 'This Week'
+    case 'this-month':
+      return 'This Month'
+    case 'last-month':
+      return 'Last Month'
+    case 'last-6-months':
+      return 'Last 6 Months'
+    case 'this-year':
+      return 'This Year'
+    case 'custom':
+      return 'Custom Range'
+    default:
+      return 'This Month'
+  }
+}
+
+const calculatePercentChange = (current: number, previous: number) => {
+  if (previous === 0) {
+    if (current === 0) return 0
+    return null
+  }
+  return ((current - previous) / previous) * 100
+}
+
+const getChangeVariant = (change: number | null) => {
+  if (change === null) return 'neutral'
+  if (change > 0) return 'ok'
+  if (change < 0) return 'low'
+  return 'neutral'
+}
+
+const getComparisonText = (change: number | null) => {
+  if (change === null) return 'No prior baseline'
+  if (change === 0) return 'No change'
+  const direction = change > 0 ? 'increase' : 'decrease'
+  return `${percentFormatter.format(Math.abs(change))}% ${direction}`
+}
+
+const formatPeso = (value: number) =>
+  `₱${value.toLocaleString('en-PH', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`
+
+const getPresetRange = (preset: TimeRangePreset, referenceDate: Date) => {
+  const baseDate = startOfDay(referenceDate)
+
+  switch (preset) {
+    case 'this-week':
+      return { start: startOfWeek(baseDate), end: endOfDay(baseDate) }
+    case 'this-month':
+      return { start: startOfMonth(baseDate), end: endOfDay(baseDate) }
+    case 'last-month': {
+      const previousMonth = addMonths(baseDate, -1)
+      return { start: startOfMonth(previousMonth), end: endOfMonth(previousMonth) }
+    }
+    case 'last-6-months':
+      return { start: startOfMonth(addMonths(baseDate, -5)), end: endOfDay(baseDate) }
+    case 'this-year':
+      return { start: startOfYear(baseDate), end: endOfDay(baseDate) }
+    case 'custom':
+      return { start: startOfMonth(baseDate), end: endOfDay(baseDate) }
+    default:
+      return { start: startOfMonth(baseDate), end: endOfDay(baseDate) }
+  }
+}
+
+const getPreviousPeriodRange = (start: Date, end: Date) => {
+  const duration = end.getTime() - start.getTime()
+  const previousEnd = new Date(start.getTime() - 1)
+  const previousStart = new Date(previousEnd.getTime() - duration)
+  return {
+    start: startOfDay(previousStart),
+    end: endOfDay(previousEnd),
+  }
+}
+
+const getSamePeriodLastYearRange = (start: Date, end: Date) => ({
+  start: startOfDay(addYears(start, -1)),
+  end: endOfDay(addYears(end, -1)),
+})
+
+const inRange = (date: Date | null, start: Date, end: Date) => {
+  if (!date) return false
+  return date >= start && date <= end
+}
+
+const buildTrendSeries = (sales: SaleRecord[], start: Date, end: Date) => {
+  const diffDays = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)))
+  const useDailyGrouping = diffDays <= 31
+  const grouped = new Map<string, { date: Date; label: string; total: number }>()
+
+  if (useDailyGrouping) {
+    const cursor = startOfDay(start)
+    const rangeEnd = endOfDay(end)
+
+    while (cursor <= rangeEnd) {
+      const currentDate = new Date(cursor)
+      const key = getDayKey(currentDate)
+      grouped.set(key, {
+        date: currentDate,
+        label: formatDayLabel(currentDate),
+        total: 0,
+      })
+      cursor.setDate(cursor.getDate() + 1)
+    }
+  } else {
+    const cursor = new Date(start.getFullYear(), start.getMonth(), 1)
+    const rangeEnd = new Date(end.getFullYear(), end.getMonth(), 1)
+
+    while (cursor <= rangeEnd) {
+      const currentDate = new Date(cursor)
+      const key = getMonthKey(currentDate)
+      grouped.set(key, {
+        date: currentDate,
+        label: formatMonthLabel(currentDate),
+        total: 0,
+      })
+      cursor.setMonth(cursor.getMonth() + 1)
+    }
+  }
+
+  sales.forEach((sale) => {
+    if (!sale.createdAt || !inRange(sale.createdAt, start, end)) return
+
+    const key = useDailyGrouping ? getDayKey(sale.createdAt) : getMonthKey(sale.createdAt)
+    const current = grouped.get(key)
+    if (!current) return
+    current.total += sale.totalAmount
+  })
+
+  const rows = Array.from(grouped.values()).sort((a, b) => a.date.getTime() - b.date.getTime())
+
+  return {
+    labels: rows.map((row) => row.label),
+    values: rows.map((row) => row.total),
+    granularity: useDailyGrouping ? 'day' : 'month',
+    hasSinglePoint: rows.filter((row) => row.total > 0).length <= 1,
+  }
+}
+
+const summarizeSales = (sales: SaleRecord[], categoryNameMap: Record<string, string>) => {
+  const categoryMap = new Map<string, CategoryPerformanceRow>()
+  let totalSales = 0
+  let itemsSold = 0
+
+  sales.forEach((sale) => {
+    totalSales += sale.totalAmount
+
+    sale.items.forEach((item) => {
+      const quantity = Number(item.quantity ?? 0)
+      const revenue = Number(item.quantity ?? 0) * Number(item.price ?? 0)
+      const categoryId = item.categoryId || 'uncategorized'
+      const categoryName = categoryNameMap[categoryId] ?? 'Uncategorized'
+
+      itemsSold += quantity
+
+      const current = categoryMap.get(categoryId) ?? {
+        categoryId,
+        categoryName,
+        itemsSold: 0,
+        revenue: 0,
+      }
+
+      current.itemsSold += quantity
+      current.revenue += revenue
+      categoryMap.set(categoryId, current)
+    })
+  })
+
+  const categories = Array.from(categoryMap.values()).sort((a, b) => {
+    if (b.revenue !== a.revenue) return b.revenue - a.revenue
+    return b.itemsSold - a.itemsSold
+  })
+
+  return {
+    totalSales,
+    itemsSold,
+    topCategory: categories[0] ?? null,
+    categories,
+  }
+}
+
+const generateSummary = ({
+  timeRangeLabel,
+  totalSales,
+  itemsSold,
+  topCategory,
+  salesChangePercent,
+  topCategoryRevenue,
+}: {
+  timeRangeLabel: string
+  totalSales: number
+  itemsSold: number
+  topCategory: string | null
+  salesChangePercent: number | null
+  topCategoryRevenue: number
+}) => {
+  const firstSentence =
+    salesChangePercent === null
+      ? `Sales for ${timeRangeLabel.toLowerCase()} reached ${formatPeso(totalSales)}. No prior comparison data available.`
+      : `Sales for ${timeRangeLabel.toLowerCase()} reached ${formatPeso(totalSales)}, showing a ${percentFormatter.format(Math.abs(salesChangePercent))}% ${salesChangePercent > 0 ? 'increase' : salesChangePercent < 0 ? 'decrease' : 'change'} compared to the last period.`
+
+  const secondSentence = topCategory
+    ? `${topCategory} was the top-performing category with ${formatPeso(topCategoryRevenue)} in revenue. A total of ${compactNumber.format(itemsSold)} items were sold.`
+    : `A total of ${compactNumber.format(itemsSold)} items were sold.`
+
+  return `${firstSentence} ${secondSentence}`.trim()
+}
 
 export default function AnalyticsPage() {
   return (
@@ -105,19 +386,10 @@ function AnalyticsContent() {
   const [sales, setSales] = useState<SaleRecord[]>([])
   const [inventory, setInventory] = useState<InventoryRecord[]>([])
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([])
-  const today = useMemo(() => {
-    const d = new Date()
-    d.setHours(0, 0, 0, 0)
-    return d
-  }, [])
-  const lastWeek = useMemo(() => {
-    const d = new Date()
-    d.setDate(d.getDate() - 7)
-    d.setHours(0, 0, 0, 0)
-    return d
-  }, [])
-  const [startDate, setStartDate] = useState<string>(lastWeek.toISOString().split('T')[0] ?? '')
-  const [endDate, setEndDate] = useState<string>(today.toISOString().split('T')[0] ?? '')
+  const [timeRangePreset, setTimeRangePreset] = useState<TimeRangePreset>('this-month')
+  const [customStartDate, setCustomStartDate] = useState('')
+  const [customEndDate, setCustomEndDate] = useState('')
+  const [dateRangeError, setDateRangeError] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<string>('All Categories')
   const [selectedCondition, setSelectedCondition] = useState<SaleItemCondition | 'All Conditions'>('All Conditions')
   const [openModal, setOpenModal] = useState<AnalyticsModalType>(null)
@@ -145,7 +417,10 @@ function AnalyticsContent() {
             ? data.items
                 .map((item) => {
                   const saleItem = item as Record<string, unknown>
-                  const name = typeof saleItem.name === 'string' && saleItem.name.trim() ? saleItem.name : 'Unnamed Item'
+                  const name =
+                    typeof saleItem.name === 'string' && saleItem.name.trim()
+                      ? saleItem.name
+                      : 'Unnamed Item'
                   return {
                     name,
                     quantity: Math.max(0, toNumber(saleItem.quantity, 0)),
@@ -157,7 +432,7 @@ function AnalyticsContent() {
                     status: (saleItem.status === 'Refurbished' ? 'Refurbished' : 'New') as SaleItemCondition,
                   }
                 })
-                .filter((item) => item.quantity > 0 || item.name === 'Unnamed Item' || item.price >= 0)
+                .filter((item) => item.quantity > 0 || item.price > 0)
             : [],
           totalAmount: Math.max(0, toNumber(data.totalAmount, toNumber(data.total, toNumber(data.amount, 0)))),
           createdAt: toDate(data.createdAt),
@@ -203,394 +478,334 @@ function AnalyticsContent() {
     [categories]
   )
 
-  const totalSalesAmount = useMemo(
-    () => sales.reduce((sum, sale) => sum + Number(sale.totalAmount ?? 0), 0),
-    [sales]
-  )
-
-  const itemsSold = useMemo(
-    () =>
-      sales.reduce(
-        (sum, sale) =>
-          sum +
-          sale.items.reduce((itemSum, item) => itemSum + Number(item.quantity ?? 0), 0),
-        0
-      ),
-    [sales]
-  )
-
-  const salesByCategory = useMemo(() => {
-    const salesCategoryMap = new Map<
-      string,
-      { categoryId: string; categoryName: string; itemsSold: number; revenue: number; todaySales: number }
-    >()
-    const now = new Date()
+  const availableCategoryIds = useMemo(() => {
+    const ids = new Set<string>()
     sales.forEach((sale) => {
-      const saleDate = toDate(sale.createdAt)
       sale.items.forEach((item) => {
-        if (selectedCondition !== 'All Conditions' && item.status !== selectedCondition) return
-        const key = item.categoryId || 'General'
-        const current = salesCategoryMap.get(key) ?? {
-          categoryId: key,
-          categoryName: categoryNameMap[key] ?? key ?? 'General',
-          itemsSold: 0,
-          revenue: 0,
-          todaySales: 0,
-        }
-        const itemRevenue = Number(item.quantity ?? 0) * Number(item.price ?? 0)
-        current.itemsSold += Number(item.quantity ?? 0)
-        current.revenue += itemRevenue
-        if (saleDate && isSameDay(saleDate, now)) {
-          current.todaySales += itemRevenue
-        }
-        salesCategoryMap.set(key, current)
+        if (item.categoryId) ids.add(item.categoryId)
       })
     })
-    return Array.from(salesCategoryMap.values())
-  }, [sales, selectedCondition, categoryNameMap])
+    return Array.from(ids).sort((a, b) => (categoryNameMap[a] ?? a).localeCompare(categoryNameMap[b] ?? b))
+  }, [sales, categoryNameMap])
 
-  const topSellingCategories = useMemo(
-    () =>
-      [...salesByCategory]
-        .sort((a, b) => b.itemsSold - a.itemsSold)
-        .map((row) => ({
-          categoryId: row.categoryId,
-          categoryName: row.categoryName,
-          totalSales: Number(row.itemsSold ?? 0),
-          totalRevenue: Number(row.revenue ?? 0),
-          todaysSales: Number(row.todaySales ?? 0),
-        })),
-    [salesByCategory]
+  const activeRange = useMemo(() => {
+    const now = new Date()
+
+    if (timeRangePreset !== 'custom') {
+      return getPresetRange(timeRangePreset, now)
+    }
+
+    const fallback = getPresetRange('this-month', now)
+    const parsedStart = parseDateInput(customStartDate)
+    const parsedEnd = parseDateInput(customEndDate)
+
+    if (!parsedStart || !parsedEnd || parsedStart > parsedEnd) {
+      return fallback
+    }
+
+    return {
+      start: startOfDay(parsedStart),
+      end: endOfDay(parsedEnd),
+    }
+  }, [customEndDate, customStartDate, timeRangePreset])
+
+  useEffect(() => {
+    if (timeRangePreset !== 'custom') return
+    if (customStartDate && customEndDate) return
+
+    const fallback = getPresetRange('this-month', new Date())
+    setCustomStartDate((current) => current || formatDateInput(fallback.start))
+    setCustomEndDate((current) => current || formatDateInput(fallback.end))
+  }, [customEndDate, customStartDate, timeRangePreset])
+
+  useEffect(() => {
+    if (!customStartDate || !customEndDate) {
+      setDateRangeError('')
+      return
+    }
+
+    if (new Date(customEndDate) < new Date(customStartDate)) {
+      setCustomEndDate(customStartDate)
+      setDateRangeError('End date cannot be earlier than start date.')
+      return
+    }
+
+    setDateRangeError('')
+  }, [customEndDate, customStartDate])
+
+  const handleCustomStartDateChange = (value: string) => {
+    setTimeRangePreset('custom')
+    setCustomStartDate(value)
+
+    if (customEndDate && value && new Date(value) > new Date(customEndDate)) {
+      setCustomEndDate(value)
+      setDateRangeError('')
+      return
+    }
+
+    if (value && customEndDate && new Date(customEndDate) < new Date(value)) {
+      setDateRangeError('End date cannot be earlier than start date.')
+      return
+    }
+
+    setDateRangeError('')
+  }
+
+  const handleCustomEndDateChange = (value: string) => {
+    setTimeRangePreset('custom')
+
+    if (customStartDate && value && new Date(value) < new Date(customStartDate)) {
+      setCustomEndDate(customStartDate)
+      setDateRangeError('End date cannot be earlier than start date.')
+      return
+    }
+
+    setCustomEndDate(value)
+    setDateRangeError('')
+  }
+
+  const filterSaleItems = (sale: SaleRecord) =>
+    sale.items.filter((item) => {
+      const categoryMatch = selectedCategory === 'All Categories' || item.categoryId === selectedCategory
+      const conditionMatch = selectedCondition === 'All Conditions' || item.status === selectedCondition
+      return categoryMatch && conditionMatch
+    })
+
+  const mapFilteredSales = (rows: SaleRecord[], start: Date, end: Date) =>
+    rows
+      .filter((sale) => inRange(sale.createdAt, start, end))
+      .map((sale) => {
+        const items = filterSaleItems(sale)
+        return {
+          ...sale,
+          items,
+          totalAmount: items.reduce((sum, item) => sum + Number(item.quantity ?? 0) * Number(item.price ?? 0), 0),
+        }
+      })
+      .filter((sale) => sale.items.length > 0 && sale.totalAmount > 0)
+
+  const filteredSales = useMemo(
+    () => mapFilteredSales(sales, activeRange.start, activeRange.end),
+    [activeRange.end, activeRange.start, sales, selectedCategory, selectedCondition]
   )
 
-  const lowPerformingCategories = useMemo(
-    () =>
-      [...salesByCategory]
-        .sort((a, b) => a.itemsSold - b.itemsSold)
-        .map((row) => ({
-          categoryId: row.categoryId,
-          categoryName: row.categoryName,
-          totalSales: Number(row.itemsSold ?? 0),
-          totalRevenue: Number(row.revenue ?? 0),
-          todaysSales: Number(row.todaySales ?? 0),
-        })),
-    [salesByCategory]
+  const previousPeriodRange = useMemo(
+    () => getPreviousPeriodRange(activeRange.start, activeRange.end),
+    [activeRange.end, activeRange.start]
   )
 
-  const lowStockCategories = useMemo(() => {
+  const samePeriodLastYearRange = useMemo(
+    () => getSamePeriodLastYearRange(activeRange.start, activeRange.end),
+    [activeRange.end, activeRange.start]
+  )
+
+  const filteredPreviousPeriodSales = useMemo(
+    () => mapFilteredSales(sales, previousPeriodRange.start, previousPeriodRange.end),
+    [previousPeriodRange.end, previousPeriodRange.start, sales, selectedCategory, selectedCondition]
+  )
+
+  const filteredSamePeriodLastYearSales = useMemo(
+    () => mapFilteredSales(sales, samePeriodLastYearRange.start, samePeriodLastYearRange.end),
+    [samePeriodLastYearRange.end, samePeriodLastYearRange.start, sales, selectedCategory, selectedCondition]
+  )
+
+  const currentSummary = useMemo(
+    () => summarizeSales(filteredSales, categoryNameMap),
+    [categoryNameMap, filteredSales]
+  )
+
+  const previousSummary = useMemo(
+    () => summarizeSales(filteredPreviousPeriodSales, categoryNameMap),
+    [categoryNameMap, filteredPreviousPeriodSales]
+  )
+
+  const lastYearSummary = useMemo(
+    () => summarizeSales(filteredSamePeriodLastYearSales, categoryNameMap),
+    [categoryNameMap, filteredSamePeriodLastYearSales]
+  )
+
+  const trendSeries = useMemo(
+    () => buildTrendSeries(filteredSales, activeRange.start, activeRange.end),
+    [activeRange.end, activeRange.start, filteredSales]
+  )
+
+  const comparisonMetrics = useMemo(() => {
+    const topCategoryRevenue = currentSummary.topCategory?.revenue ?? 0
+    const previousTopCategoryRevenue = previousSummary.topCategory?.revenue ?? 0
+    const lastYearTopCategoryRevenue = lastYearSummary.topCategory?.revenue ?? 0
+
+    return {
+      totalSales: [
+        {
+          label: 'Vs last period',
+          value: previousSummary.totalSales,
+          change: calculatePercentChange(currentSummary.totalSales, previousSummary.totalSales),
+        },
+        {
+          label: 'Vs same period last year',
+          value: lastYearSummary.totalSales,
+          change: calculatePercentChange(currentSummary.totalSales, lastYearSummary.totalSales),
+        },
+      ] satisfies ComparisonMetric[],
+      itemsSold: [
+        {
+          label: 'Vs last period',
+          value: previousSummary.itemsSold,
+          change: calculatePercentChange(currentSummary.itemsSold, previousSummary.itemsSold),
+        },
+        {
+          label: 'Vs same period last year',
+          value: lastYearSummary.itemsSold,
+          change: calculatePercentChange(currentSummary.itemsSold, lastYearSummary.itemsSold),
+        },
+      ] satisfies ComparisonMetric[],
+      topCategory: [
+        {
+          label: 'Vs last period',
+          value: previousTopCategoryRevenue,
+          change: calculatePercentChange(topCategoryRevenue, previousTopCategoryRevenue),
+        },
+        {
+          label: 'Vs same period last year',
+          value: lastYearTopCategoryRevenue,
+          change: calculatePercentChange(topCategoryRevenue, lastYearTopCategoryRevenue),
+        },
+      ] satisfies ComparisonMetric[],
+    }
+  }, [currentSummary, lastYearSummary, previousSummary])
+
+  const analyticsSummary = useMemo(
+    () =>
+      generateSummary({
+        timeRangeLabel: getRangeLabel(timeRangePreset),
+        totalSales: currentSummary.totalSales,
+        itemsSold: currentSummary.itemsSold,
+        topCategory: currentSummary.topCategory?.categoryName ?? null,
+        salesChangePercent: comparisonMetrics.totalSales[0]?.change ?? null,
+        topCategoryRevenue: currentSummary.topCategory?.revenue ?? 0,
+      }),
+    [comparisonMetrics.totalSales, currentSummary, timeRangePreset]
+  )
+
+  const inventorySummary = useMemo(() => {
     const stockByCategory = new Map<string, number>()
+
     inventory.forEach((item) => {
       const categoryName = item.categoryName ?? item.category ?? 'General'
-      stockByCategory.set(
-        categoryName,
-        Number(stockByCategory.get(categoryName) ?? 0) + Number(item.quantity ?? 0)
-      )
+      stockByCategory.set(categoryName, Number(stockByCategory.get(categoryName) ?? 0) + Number(item.quantity ?? 0))
     })
 
-    return Array.from(stockByCategory.entries()).map(([category, stock]) => {
-      const threshold = CATEGORY_THRESHOLDS[category] ?? 50
-      return {
-        category,
-        stock: Number(stock ?? 0),
-        threshold: Number(threshold ?? 0),
-        status: stock < threshold ? ('Low' as const) : ('OK' as const),
-      }
-    })
+    return Array.from(stockByCategory.entries())
+      .map(([categoryName, stock]) => ({ categoryName, stock }))
+      .sort((a, b) => a.categoryName.localeCompare(b.categoryName))
   }, [inventory])
 
-  const insights = useMemo(() => {
-    const lines: string[] = []
-
-    const topRevenue = [...salesByCategory].sort((a, b) => b.revenue - a.revenue)[0]
-    if (topRevenue) {
-      lines.push(`${topRevenue.categoryName} is the top performing category. Consider increasing inventory.`)
-    }
-
-    const lowestUnits = [...salesByCategory].sort((a, b) => a.itemsSold - b.itemsSold)[0]
-    if (lowestUnits && lowestUnits.itemsSold > 0) {
-      lines.push(`${lowestUnits.categoryName} has low sales. Consider promotions or discounts.`)
-    }
-
-    const lowStock = lowStockCategories.find((category) => category.status === 'Low')
-    if (lowStock) {
-      lines.push(`${lowStock.category} inventory is running low. Increase item quantities soon.`)
-    }
-
-    if (lines.length === 0) {
-      lines.push('Sales and inventory are stable. Continue monitoring category performance weekly.')
-    }
-
-    return lines
-  }, [salesByCategory, lowStockCategories])
-
-  const [showExtendedInsights, setShowExtendedInsights] = useState(false)
-
-  const visibleInsights = useMemo(
-    () => insights.slice(0, 2),
-    [insights]
-  )
-
-  // Auto-adjust date range if no data in default range
-  useEffect(() => {
-    if (!sales.length) return
-    const startDateObj = new Date(startDate)
-    const endDateObj = new Date(endDate)
-    const filteredSales = sales.filter((sale) => {
-      const saleDate = toDate(sale.createdAt)
-      return saleDate && saleDate >= startDateObj && saleDate <= endDateObj
-    })
-    if (filteredSales.length === 0) {
-      const validDates = sales
-        .map((sale) => toDate(sale.createdAt))
-        .filter((d): d is Date => !!d)
-      if (validDates.length) {
-        const minDate = new Date(Math.min(...validDates.map((d) => Number(d.getTime()))))
-        const maxDate = new Date(Math.max(...validDates.map((d) => Number(d.getTime()))))
-        setStartDate(minDate.toISOString().split('T')[0] ?? '')
-        setEndDate(maxDate.toISOString().split('T')[0] ?? '')
-      }
-    }
-  }, [sales, startDate, endDate])
-
-  const salesTrendByCategory = useMemo(() => {
-    const startDateObj = new Date(startDate)
-    const endDateObj = new Date(endDate)
-    const map = new Map<string, number>()
-    sales.forEach((sale) => {
-      const date = toDate(sale.createdAt)
-      if (!date) return
-      const dateInRange = date >= startDateObj && date <= endDateObj
-      if (!dateInRange) return
-      const matchingItems = sale.items.filter((item) => {
-        const categoryMatch = selectedCategory === 'All Categories' || item.categoryId === selectedCategory
-        const conditionMatch = selectedCondition === 'All Conditions' || item.status === selectedCondition
-        return categoryMatch && conditionMatch
-      })
-      if (matchingItems.length === 0) return
-      const dateStr = date.toISOString().slice(0, 10)
-      const totalForDate = matchingItems.reduce(
-        (sum, item) => sum + Number(item.quantity ?? 0) * Number(item.price ?? 0),
-        0
-      )
-      map.set(dateStr, Number(map.get(dateStr) ?? 0) + totalForDate)
-    })
-    const allDates = Array.from(map.keys()).sort()
-    const categoriesSet = new Set<string>()
-    sales.forEach((sale) => {
-      sale.items.forEach((item) => {
-        if (item.categoryId) {
-          categoriesSet.add(item.categoryId)
-        }
-      })
-    })
-    const allCategories = Array.from(categoriesSet).sort((a, b) =>
-      (categoryNameMap[a] ?? a).localeCompare(categoryNameMap[b] ?? b)
-    )
-    const datasets = [{
-      label:
-        selectedCategory === 'All Categories'
-          ? 'Total Sales'
-          : `${categoryNameMap[selectedCategory] ?? selectedCategory} Sales`,
-      data: allDates.map((date) => Number(map.get(date) ?? 0)),
-      fill: false,
-      borderColor: '#0f4c81',
-      backgroundColor: '#0f4c81',
-      borderWidth: 2,
-      pointRadius: 3,
-      tension: 0.3,
-    }]
-    return {
-      labels: allDates,
-      datasets,
-      allCategories,
-    }
-  }, [sales, startDate, endDate, selectedCategory, selectedCondition, categoryNameMap])
-
-  const topSellingCategoryRows = useMemo(
+  const topCategoryRows = useMemo(
     () =>
-      topSellingCategories.slice(0, 4).map((row) => ({
+      currentSummary.categories.slice(0, 6).map((row, index) => ({
         key: row.categoryId,
         cells: [
+          <span key={`${row.categoryId}-rank`} className="font-medium text-slate-900">{index + 1}</span>,
           <span key={`${row.categoryId}-name`} className="font-medium text-slate-900">{row.categoryName}</span>,
-          <span key={`${row.categoryId}-sales`} className="block text-right">{row.totalSales}</span>,
-          <span key={`${row.categoryId}-revenue`} className="block text-right">{currency(row.totalRevenue)}</span>,
-          <span key={`${row.categoryId}-today`} className="block text-right">{currency(row.todaysSales)}</span>,
+          <span key={`${row.categoryId}-items`} className="block text-right">{compactNumber.format(row.itemsSold)}</span>,
+          <span key={`${row.categoryId}-revenue`} className="block text-right">{currency(row.revenue)}</span>,
         ],
       })),
-    [topSellingCategories]
+    [currentSummary.categories]
   )
 
-  const allTopSellingCategoryRows = useMemo(
+  const allTopCategoryRows = useMemo(
     () =>
-      topSellingCategories.map((row) => ({
+      currentSummary.categories.map((row, index) => ({
         key: row.categoryId,
         cells: [
+          <span key={`${row.categoryId}-rank`} className="font-medium text-slate-900">{index + 1}</span>,
           <span key={`${row.categoryId}-name`} className="font-medium text-slate-900">{row.categoryName}</span>,
-          <span key={`${row.categoryId}-sales`} className="block text-right">{row.totalSales}</span>,
-          <span key={`${row.categoryId}-revenue`} className="block text-right">{currency(row.totalRevenue)}</span>,
-          <span key={`${row.categoryId}-today`} className="block text-right">{currency(row.todaysSales)}</span>,
+          <span key={`${row.categoryId}-items`} className="block text-right">{compactNumber.format(row.itemsSold)}</span>,
+          <span key={`${row.categoryId}-revenue`} className="block text-right">{currency(row.revenue)}</span>,
         ],
       })),
-    [topSellingCategories]
+    [currentSummary.categories]
   )
 
-  const lowPerformingCategoryRows = useMemo(
+  const stockRows = useMemo(
     () =>
-      lowPerformingCategories.slice(0, 4).map((row) => ({
-        key: row.categoryId,
+      inventorySummary.slice(0, 6).map((row) => ({
+        key: row.categoryName,
         cells: [
-          <span key={`${row.categoryId}-name`} className="font-medium text-slate-900">{row.categoryName}</span>,
-          <span key={`${row.categoryId}-sales`} className="block text-right">{row.totalSales}</span>,
-          <span key={`${row.categoryId}-revenue`} className="block text-right">{currency(row.totalRevenue)}</span>,
-          <span key={`${row.categoryId}-today`} className="block text-right">{currency(row.todaysSales)}</span>,
+          <span key={`${row.categoryName}-name`} className="font-medium text-slate-900">{row.categoryName}</span>,
+          <span key={`${row.categoryName}-stock`} className="block text-right">{compactNumber.format(row.stock)}</span>,
         ],
       })),
-    [lowPerformingCategories]
-  )
-
-  const allLowPerformingCategoryRows = useMemo(
-    () =>
-      lowPerformingCategories.map((row) => ({
-        key: row.categoryId,
-        cells: [
-          <span key={`${row.categoryId}-name`} className="font-medium text-slate-900">{row.categoryName}</span>,
-          <span key={`${row.categoryId}-sales`} className="block text-right">{row.totalSales}</span>,
-          <span key={`${row.categoryId}-revenue`} className="block text-right">{currency(row.totalRevenue)}</span>,
-          <span key={`${row.categoryId}-today`} className="block text-right">{currency(row.todaysSales)}</span>,
-        ],
-      })),
-    [lowPerformingCategories]
-  )
-
-  const lowStockRows = useMemo(
-    () =>
-      lowStockCategories.slice(0, 4).map((row) => ({
-        key: row.category,
-        cells: [
-          <span key={`${row.category}-name`} className="font-medium text-slate-900">{row.category}</span>,
-          <span key={`${row.category}-stock`} className="block text-right">{row.stock}</span>,
-          <span key={`${row.category}-threshold`} className="block text-right">{row.threshold}</span>,
-          <AnalyticsBadge key={`${row.category}-status`} variant={row.status === 'Low' ? 'low' : 'ok'}>
-            {row.status}
-          </AnalyticsBadge>,
-        ],
-      })),
-    [lowStockCategories]
-  )
-
-  const allLowStockRows = useMemo(
-    () =>
-      lowStockCategories.map((row) => ({
-        key: row.category,
-        cells: [
-          <span key={`${row.category}-name`} className="font-medium text-slate-900">{row.category}</span>,
-          <span key={`${row.category}-stock`} className="block text-right">{row.stock}</span>,
-          <span key={`${row.category}-threshold`} className="block text-right">{row.threshold}</span>,
-          <AnalyticsBadge key={`${row.category}-status`} variant={row.status === 'Low' ? 'low' : 'ok'}>
-            {row.status}
-          </AnalyticsBadge>,
-        ],
-      })),
-    [lowStockCategories]
+    [inventorySummary]
   )
 
   const modalConfig = useMemo(() => {
-    if (openModal === 'top') {
-      return {
-        title: 'Top-Selling Categories',
-        columns: [
-          { header: 'Category' },
-          { header: 'Total Sales (Units)', className: 'text-right' },
-          { header: 'Total Revenue', className: 'text-right' },
-          { header: "Today's Sales", className: 'text-right' },
-        ],
-        rows: allTopSellingCategoryRows,
-      }
-    }
+    if (openModal !== 'top') return null
 
-    if (openModal === 'low') {
-      return {
-        title: 'Low-Performing Categories',
-        columns: [
-          { header: 'Category' },
-          { header: 'Total Sales', className: 'text-right' },
-          { header: 'Total Revenue', className: 'text-right' },
-          { header: "Today's Sales", className: 'text-right' },
-        ],
-        rows: allLowPerformingCategoryRows,
-      }
+    return {
+      title: `Top Categories - ${getRangeLabel(timeRangePreset)}`,
+      columns: [
+        { header: '#' },
+        { header: 'Category' },
+        { header: 'Items Sold', className: 'text-right' },
+        { header: 'Sales', className: 'text-right' },
+      ],
+      rows: allTopCategoryRows,
     }
-
-    if (openModal === 'stock') {
-      return {
-        title: 'Low Stock Categories',
-        columns: [
-          { header: 'Category' },
-          { header: 'Total Current Stock', className: 'text-right' },
-          { header: 'Threshold', className: 'text-right' },
-          { header: 'Status' },
-        ],
-        rows: allLowStockRows,
-      }
-    }
-
-    return null
-  }, [allLowPerformingCategoryRows, allLowStockRows, allTopSellingCategoryRows, openModal])
+  }, [allTopCategoryRows, openModal, timeRangePreset])
 
   return (
     <main className="min-h-[calc(100vh-64px)] bg-slate-100 p-6">
       <div className="mx-auto max-w-[1700px] space-y-6">
         <header>
           <h1 className="text-2xl font-bold text-slate-900">Analytics</h1>
-          <p className="mt-1 text-sm text-gray-500">Category-based sales and inventory analysis.</p>
+          <p className="mt-1 text-sm text-gray-500">Monthly trends, category performance, and period-over-period comparisons.</p>
         </header>
 
         <AnalyticsCard title="Filters" className="rounded-2xl">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Start Date</label>
-              <input
-                type="date"
-                value={startDate ?? ''}
-                onChange={(e) => {
-                  setStartDate(e.target.value ?? '')
-                }}
+              <label className="mb-2 block text-sm font-medium text-slate-700">Time Range</label>
+              <select
+                value={timeRangePreset}
+                onChange={(event) => setTimeRangePreset(event.target.value as TimeRangePreset)}
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              />
+              >
+                <option value="this-week">This Week</option>
+                <option value="this-month">This Month</option>
+                <option value="last-month">Last Month</option>
+                <option value="last-6-months">Last 6 Months</option>
+                <option value="this-year">This Year</option>
+                <option value="custom">Custom Range</option>
+              </select>
             </div>
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">End Date</label>
-              <input
-                type="date"
-                value={endDate ?? ''}
-                onChange={(e) => {
-                  setEndDate(e.target.value ?? '')
-                }}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              />
-            </div>
+
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-700">Category</label>
               <select
                 value={selectedCategory}
-                onChange={(e) => setSelectedCategory(e.target.value)}
+                onChange={(event) => setSelectedCategory(event.target.value)}
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
               >
                 <option value="All Categories">All Categories</option>
-                {salesTrendByCategory.allCategories.map((cat) => (
-                  <option key={cat} value={cat}>{categoryNameMap[cat] ?? cat}</option>
+                {availableCategoryIds.map((categoryId) => (
+                  <option key={categoryId} value={categoryId}>
+                    {categoryNameMap[categoryId] ?? categoryId}
+                  </option>
                 ))}
               </select>
             </div>
+
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-700">Condition</label>
               <select
                 value={selectedCondition}
-                onChange={(e) =>
+                onChange={(event) =>
                   setSelectedCondition(
-                    e.target.value === 'Refurbished'
+                    event.target.value === 'Refurbished'
                       ? 'Refurbished'
-                      : e.target.value === 'New'
+                      : event.target.value === 'New'
                         ? 'New'
                         : 'All Conditions'
                   )
@@ -602,28 +817,135 @@ function AnalyticsContent() {
                 <option value="Refurbished">Refurbished</option>
               </select>
             </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">Start Date</label>
+              <input
+                type="date"
+                value={timeRangePreset === 'custom' ? customStartDate : formatDateInput(activeRange.start)}
+                max={timeRangePreset === 'custom' && customEndDate ? customEndDate : undefined}
+                onChange={(event) => handleCustomStartDateChange(event.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">End Date</label>
+              <input
+                type="date"
+                value={timeRangePreset === 'custom' ? customEndDate : formatDateInput(activeRange.end)}
+                min={timeRangePreset === 'custom' && customStartDate ? customStartDate : undefined}
+                onChange={(event) => handleCustomEndDateChange(event.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </div>
           </div>
+
+          {timeRangePreset === 'custom' && dateRangeError ? (
+            <p className="mt-4 text-sm text-red-500">{dateRangeError}</p>
+          ) : null}
         </AnalyticsCard>
+
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+          <AnalyticsCard
+            title="Total Sales"
+            subtitle={getRangeLabel(timeRangePreset)}
+            actions={<p className="text-lg font-semibold text-slate-900">{currency(currentSummary.totalSales)}</p>}
+          >
+            <div className="space-y-3">
+              {comparisonMetrics.totalSales.map((metric) => (
+                <div key={metric.label} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">{metric.label}</p>
+                    <p className="text-xs text-slate-500">{currency(metric.value)}</p>
+                  </div>
+                  <AnalyticsBadge variant={getChangeVariant(metric.change)}>
+                    {getComparisonText(metric.change)}
+                  </AnalyticsBadge>
+                </div>
+              ))}
+            </div>
+          </AnalyticsCard>
+
+          <AnalyticsCard
+            title="Items Sold"
+            subtitle={getRangeLabel(timeRangePreset)}
+            actions={<p className="text-lg font-semibold text-slate-900">{compactNumber.format(currentSummary.itemsSold)}</p>}
+          >
+            <div className="space-y-3">
+              {comparisonMetrics.itemsSold.map((metric) => (
+                <div key={metric.label} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">{metric.label}</p>
+                    <p className="text-xs text-slate-500">{compactNumber.format(metric.value)} items</p>
+                  </div>
+                  <AnalyticsBadge variant={getChangeVariant(metric.change)}>
+                    {getComparisonText(metric.change)}
+                  </AnalyticsBadge>
+                </div>
+              ))}
+            </div>
+          </AnalyticsCard>
+
+          <AnalyticsCard
+            title="Top Category"
+            subtitle={getRangeLabel(timeRangePreset)}
+            actions={
+              <div className="text-right">
+                <p className="text-lg font-semibold text-slate-900">
+                  {currentSummary.topCategory?.categoryName ?? 'No sales'}
+                </p>
+                <p className="text-xs text-slate-500">
+                  {currentSummary.topCategory ? currency(currentSummary.topCategory.revenue) : 'No revenue'}
+                </p>
+              </div>
+            }
+          >
+            <div className="space-y-3">
+              {comparisonMetrics.topCategory.map((metric) => (
+                <div key={metric.label} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">{metric.label}</p>
+                    <p className="text-xs text-slate-500">{currency(metric.value)}</p>
+                  </div>
+                  <AnalyticsBadge variant={getChangeVariant(metric.change)}>
+                    {getComparisonText(metric.change)}
+                  </AnalyticsBadge>
+                </div>
+              ))}
+            </div>
+          </AnalyticsCard>
+        </div>
 
         <AnalyticsCard
           title="Sales Trend"
-          subtitle={
-            selectedCategory === 'All Categories'
-              ? 'All categories combined'
-              : `${categoryNameMap[selectedCategory] ?? selectedCategory} only`
-          }
+          subtitle={`${trendSeries.granularity === 'day' ? 'Daily' : 'Monthly'} trend from ${formatMonthLabel(activeRange.start)} to ${formatMonthLabel(activeRange.end)}`}
           actions={
             <div className="text-right">
-              <p className="text-sm font-medium text-slate-900">{currency(totalSalesAmount)}</p>
-              <p className="text-sm text-gray-500">{itemsSold} items sold</p>
+              <p className="text-sm font-medium text-slate-900">{getRangeLabel(timeRangePreset)}</p>
+              <p className="text-sm text-gray-500">
+                {selectedCategory === 'All Categories' ? 'All categories' : categoryNameMap[selectedCategory] ?? selectedCategory}
+              </p>
             </div>
           }
         >
-          <div className="h-64">
+          <div className="h-72">
             <Line
               data={{
-                labels: salesTrendByCategory.labels,
-                datasets: salesTrendByCategory.datasets,
+                labels: trendSeries.labels,
+                datasets: [
+                  {
+                    label: 'Sales',
+                    data: trendSeries.values,
+                    fill: true,
+                    borderColor: '#0f4c81',
+                    backgroundColor: 'rgba(15, 76, 129, 0.12)',
+                    borderWidth: 2,
+                    pointRadius: trendSeries.hasSinglePoint ? 6 : 3,
+                    pointHoverRadius: trendSeries.hasSinglePoint ? 7 : 5,
+                    tension: 0.3,
+                  },
+                ],
               }}
               options={{
                 responsive: true,
@@ -643,9 +965,18 @@ function AnalyticsContent() {
           </div>
         </AnalyticsCard>
 
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <AnalyticsCard
+          title="Summary"
+          className="border-blue-100/80 bg-white/70"
+          contentClassName="pt-2"
+        >
+          <p className="text-sm leading-6 text-slate-700">{analyticsSummary}</p>
+        </AnalyticsCard>
+
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[2fr_1fr]">
           <AnalyticsCard
-            title="Top-Selling Categories"
+            title="Top Categories"
+            subtitle={`Ranked for ${getRangeLabel(timeRangePreset)}`}
             actions={
               <button
                 type="button"
@@ -658,71 +989,27 @@ function AnalyticsContent() {
           >
             <AnalyticsTable
               columns={[
+                { header: '#' },
                 { header: 'Category' },
-                { header: 'Total Sales (Units)', className: 'text-right' },
-                { header: 'Total Revenue', className: 'text-right' },
-                { header: "Today's Sales", className: 'text-right' },
+                { header: 'Items Sold', className: 'text-right' },
+                { header: 'Sales', className: 'text-right' },
               ]}
-              rows={topSellingCategoryRows}
+              rows={topCategoryRows}
+              emptyMessage="No category sales found for the selected period."
             />
           </AnalyticsCard>
 
-          <AnalyticsCard
-            title="Low-Performing Categories"
-            actions={
-              <button
-                type="button"
-                onClick={() => setOpenModal('low')}
-                className="text-sm font-medium text-blue-600 transition hover:text-blue-500"
-              >
-                View All
-              </button>
-            }
-          >
+          <AnalyticsCard title="Inventory by Category" subtitle="Current stock snapshot">
             <AnalyticsTable
               columns={[
                 { header: 'Category' },
-                { header: 'Total Sales', className: 'text-right' },
-                { header: 'Total Revenue', className: 'text-right' },
-                { header: "Today's Sales", className: 'text-right' },
+                { header: 'Stock', className: 'text-right' },
               ]}
-              rows={lowPerformingCategoryRows}
+              rows={stockRows}
+              emptyMessage="No inventory categories found."
             />
           </AnalyticsCard>
         </div>
-
-        <AnalyticsCard
-          title="Low Stock Categories"
-          actions={
-            <button
-              type="button"
-              onClick={() => setOpenModal('stock')}
-              className="text-sm font-medium text-blue-600 transition hover:text-blue-500"
-            >
-              View All
-            </button>
-          }
-        >
-          <AnalyticsTable
-            columns={[
-              { header: 'Category' },
-              { header: 'Total Current Stock', className: 'text-right' },
-              { header: 'Threshold', className: 'text-right' },
-              { header: 'Status', className: 'text-left' },
-            ]}
-            rows={lowStockRows}
-          />
-        </AnalyticsCard>
-
-        <AnalyticsCard title="Insights & Recommendations">
-          <div className="space-y-3">
-            {visibleInsights.map((line, index) => (
-              <p key={`${line}-${index}`} className="rounded-xl bg-gray-100 p-3 text-sm text-gray-600">
-                {line}
-              </p>
-            ))}
-          </div>
-        </AnalyticsCard>
       </div>
 
       {modalConfig ? (

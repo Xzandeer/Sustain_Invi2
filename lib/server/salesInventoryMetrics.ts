@@ -38,8 +38,15 @@ export interface DashboardMetrics {
   totalSales: number
   itemsSold: number
   productsInStock: number
-  lowStockItems: string[]
+  lowStockItems: LowStockItem[]
   outOfStockItems: number
+}
+
+export interface LowStockItem {
+  id: string
+  name: string
+  categoryName: string
+  stock: number
 }
 
 export type InventoryCondition = 'New' | 'Refurbished'
@@ -158,16 +165,14 @@ export const computeProductsInStock = (inventory: InventoryRecord[]) => {
 }
 
 export const computeLowStockItems = (inventory: InventoryRecord[]) => {
-  const items = new Set<string>()
-  inventory.forEach((item) => {
-    const quantity = toNumber(item.quantity)
-    const minStock = toNumber(item.minStock)
-    if (quantity <= minStock) {
-      const itemName = item.name?.trim() || item.id?.trim() || 'Unnamed Item'
-      items.add(itemName)
-    }
-  })
-  return Array.from(items)
+  return inventory
+    .filter((item) => toNumber(item.quantity) <= toNumber(item.minStock))
+    .map((item) => ({
+      id: item.id?.trim() || 'unknown-item',
+      name: item.name?.trim() || item.id?.trim() || 'Unnamed Item',
+      categoryName: item.categoryName?.trim() || item.category?.trim() || 'Uncategorized',
+      stock: toNumber(item.quantity),
+    }))
 }
 
 export const computeOutOfStockItems = (inventory: InventoryRecord[]) => {

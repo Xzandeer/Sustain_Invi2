@@ -78,6 +78,12 @@ export async function PUT(req: Request, context: RouteContext) {
 
     const condition =
       body.status !== undefined ? normalizeInventoryCondition(body.status) : normalizeInventoryCondition(current.status)
+    const reservedStock = toNumber(
+      current.reservedStock,
+      typeof current.reservedStock === 'number' || typeof current.reservedStock === 'string'
+        ? toNumber(current.reservedStock)
+        : 0
+    )
 
     if (!name || !categoryId || !categoryName) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
@@ -89,9 +95,14 @@ export async function PUT(req: Request, context: RouteContext) {
       !Number.isFinite(minStock) ||
       price <= 0 ||
       quantity < 0 ||
-      minStock < 0
+      minStock < 0 ||
+      reservedStock < 0
     ) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
+    }
+
+    if (quantity < reservedStock) {
+      return NextResponse.json({ error: 'Stock cannot be lower than reserved stock' }, { status: 400 })
     }
 
     const stockStatus = getStockStatus({ stock: quantity, minStock })
@@ -105,6 +116,7 @@ export async function PUT(req: Request, context: RouteContext) {
       price,
       quantity,
       stock: quantity,
+      reservedStock,
       minStock,
       status: condition,
       isDeleted: false,
@@ -123,6 +135,7 @@ export async function PUT(req: Request, context: RouteContext) {
           price,
           quantity,
           stock: quantity,
+          reservedStock,
           minStock,
           status: condition,
           stockStatus,

@@ -22,6 +22,21 @@ export default function AnalyticsFilters({ values, onChange }: AnalyticsFiltersP
   const [endDate, setEndDate] = useState(values.endDate)
   const [error, setError] = useState('')
 
+  const isInvalidRange = (nextStartDate: string, nextEndDate: string) => {
+    if (!nextStartDate || !nextEndDate) return false
+    return new Date(nextEndDate) < new Date(nextStartDate)
+  }
+
+  const validateDateRange = (nextStartDate: string, nextEndDate: string) => {
+    if (isInvalidRange(nextStartDate, nextEndDate)) {
+      setError('End date cannot be earlier than start date.')
+      return false
+    }
+
+    setError('')
+    return true
+  }
+
   useEffect(() => {
     setStartDate(values.startDate)
   }, [values.startDate])
@@ -30,27 +45,37 @@ export default function AnalyticsFilters({ values, onChange }: AnalyticsFiltersP
     setEndDate(values.endDate)
   }, [values.endDate])
 
+  useEffect(() => {
+    if (!isInvalidRange(startDate, endDate)) return
+
+    setEndDate(startDate)
+    onChange({ ...values, endDate: startDate })
+    setError('End date cannot be earlier than start date.')
+  }, [endDate, onChange, startDate, values])
+
   const handleStartDateChange = (value: string) => {
     setStartDate(value)
 
-    if (endDate && value && new Date(value) > new Date(endDate)) {
-      setEndDate('')
-      setError('End date cannot be earlier than the start date.')
-      onChange({ ...values, startDate: value, endDate: '' })
+    if (isInvalidRange(value, endDate)) {
+      setEndDate(value)
+      setError('')
+      onChange({ ...values, startDate: value, endDate: value })
       return
     }
 
-    setError('')
+    validateDateRange(value, endDate)
     onChange({ ...values, startDate: value })
   }
 
   const handleEndDateChange = (value: string) => {
-    if (startDate && value && new Date(value) < new Date(startDate)) {
-      setError('End date cannot be earlier than the start date.')
+    if (!validateDateRange(startDate, value)) {
+      if (startDate && value) {
+        setEndDate(startDate)
+        onChange({ ...values, endDate: startDate })
+      }
       return
     }
 
-    setError('')
     setEndDate(value)
     onChange({ ...values, endDate: value })
   }
@@ -65,6 +90,7 @@ export default function AnalyticsFilters({ values, onChange }: AnalyticsFiltersP
           <input
             type="date"
             value={startDate}
+            max={endDate || undefined}
             onChange={(event) => handleStartDateChange(event.target.value)}
             className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-500"
           />

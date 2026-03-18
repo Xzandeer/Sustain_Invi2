@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { onAuthStateChanged, signInWithEmailAndPassword } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
@@ -72,9 +71,9 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 px-4 flex items-center justify-center">
+    <div className="flex min-h-screen items-center justify-center bg-slate-100 px-4 py-10">
       <div className="w-full max-w-md rounded-xl bg-white p-8 shadow">
-        <h1 className="mb-6 text-center text-3xl font-bold text-slate-900">Sign In</h1>
+        <h1 className="mb-8 text-center text-3xl font-bold text-slate-900">Sign In</h1>
 
         <form onSubmit={onSubmit} className="space-y-4">
           <div>
@@ -111,20 +110,13 @@ export default function LoginPage() {
             {loading ? (
               <>
                 <Spinner className="size-4" />
-                Signing In...
+                Signing in...
               </>
             ) : (
-              'Sign In'
+              'Login'
             )}
           </button>
         </form>
-
-        <p className="mt-6 text-center text-slate-600">
-          Don't have an account?{' '}
-          <Link href="/signup" className="font-semibold text-sky-900 hover:underline">
-            Sign up
-          </Link>
-        </p>
       </div>
     </div>
   )
