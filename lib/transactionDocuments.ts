@@ -68,8 +68,16 @@ export const formatTransactionDateTime = (value: string | Date) =>
 
 const encodeQueryValue = (value: string) => encodeURIComponent(value).replace(/%20/g, '+')
 
-const formatItemLines = (items: TransactionLineItem[]) =>
-  items.map((item) => `- ${item.name} (${item.condition}) x${item.quantity}`).join('\n')
+const formatSaleItemLines = (items: TransactionLineItem[]) =>
+  items
+    .map(
+      (item, index) =>
+        `${index + 1}. ${item.name}\n   Condition: ${item.condition}\n   Quantity: ${item.quantity}\n   Subtotal: ${formatCurrency(item.subtotal)}`
+    )
+    .join('\n\n')
+
+const formatReservationItemLines = (items: TransactionLineItem[]) =>
+  items.map((item, index) => `${index + 1}. ${item.name} (${item.condition}) x${item.quantity}`).join('\n')
 
 export const buildManualEmailSubject = (document: CompletedTransactionDocument) =>
   document.type === 'sale'
@@ -78,43 +86,50 @@ export const buildManualEmailSubject = (document: CompletedTransactionDocument) 
 
 export const buildManualEmailBody = (document: CompletedTransactionDocument) => {
   const greeting = `Hello ${document.customer.fullName},`
-  const intro =
-    document.type === 'sale'
-      ? 'Here is your sales receipt. This email was prepared for manual sending through your email client.'
-      : 'Here is your reservation ticket. This email was prepared for manual sending through your email client.'
 
   if (document.type === 'sale') {
     return [
       greeting,
       '',
-      intro,
+      'Thank you for your purchase.',
       '',
+      'RECEIPT DETAILS',
+      `Store Name: ${document.storeName}`,
       `Receipt Number: ${document.receiptNumber}`,
       `Customer Name: ${document.customer.fullName}`,
-      'Items:',
-      formatItemLines(document.items),
-      `Total Amount: ${formatCurrency(document.totalAmount)}`,
       `Transaction Date/Time: ${formatTransactionDateTime(document.transactionDate)}`,
       '',
+      'ITEMS PURCHASED',
+      formatSaleItemLines(document.items),
+      '',
+      'TOTAL AMOUNT',
+      `${formatCurrency(document.totalAmount)}`,
+      '',
       document.note,
+      '',
+      `Regards,`,
+      document.storeName,
     ].join('\n')
   }
 
   return [
     greeting,
     '',
-    intro,
+    'Thank you for choosing our store.',
     '',
     `Reservation Number: ${document.reservationCode}`,
     `Customer Name: ${document.customer.fullName}`,
     'Reserved Items:',
-    formatItemLines(document.items),
+    formatReservationItemLines(document.items),
     `Reservation Date/Time: ${formatTransactionDateTime(document.reservationDate)}`,
     '',
     'Claim Instructions:',
     document.claimInstructions,
     '',
     document.notice,
+    '',
+    `Regards,`,
+    document.storeName,
   ].join('\n')
 }
 

@@ -1,5 +1,6 @@
 import 'server-only'
 import { Resend } from 'resend'
+import { STORE_NAME } from '@/lib/transactionDocuments'
 
 export interface EmailLineItem {
   name: string
@@ -164,11 +165,13 @@ const getUserFriendlyEmailError = (message: string) => {
 export const sendInvoiceEmail = async (payload: InvoiceEmailPayload) => {
   const rowsHtml = payload.items
     .map(
-      (item) => `
+      (item, index) => `
         <tr>
-          <td style="padding:8px 0;border-bottom:1px solid #e2e8f0;">${escapeHtml(item.name)}</td>
-          <td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:center;">${item.quantity}</td>
-          <td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;">${currency(item.price)}</td>
+          <td style="padding:10px 0;border-bottom:1px solid #e2e8f0;color:#0f172a;">${index + 1}</td>
+          <td style="padding:10px 0;border-bottom:1px solid #e2e8f0;">${escapeHtml(item.name)}</td>
+          <td style="padding:10px 0;border-bottom:1px solid #e2e8f0;">${escapeHtml(item.condition ?? 'N/A')}</td>
+          <td style="padding:10px 0;border-bottom:1px solid #e2e8f0;text-align:center;">${item.quantity}</td>
+          <td style="padding:10px 0;border-bottom:1px solid #e2e8f0;text-align:right;">${currency(item.price)}</td>
           <td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;">${currency(
             item.quantity * item.price
           )}</td>
@@ -177,52 +180,83 @@ export const sendInvoiceEmail = async (payload: InvoiceEmailPayload) => {
     .join('')
 
   const html = `
-    <div style="font-family:Arial,sans-serif;max-width:720px;margin:0 auto;color:#0f172a;">
-      <h2 style="margin-bottom:4px;">Sales Invoice</h2>
-      <p style="margin:0 0 24px;color:#475569;">Invoice ${escapeHtml(payload.invoiceNumber)}</p>
-      <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
-        <tbody>
-          <tr><td style="padding:4px 0;"><strong>Customer</strong></td><td style="padding:4px 0;">${escapeHtml(payload.customerName)}</td></tr>
-          <tr><td style="padding:4px 0;"><strong>Email</strong></td><td style="padding:4px 0;">${escapeHtml(payload.customerEmail)}</td></tr>
-          <tr><td style="padding:4px 0;"><strong>Contact Number</strong></td><td style="padding:4px 0;">${escapeHtml(payload.customerContactNumber)}</td></tr>
-          <tr><td style="padding:4px 0;"><strong>Transaction Date</strong></td><td style="padding:4px 0;">${escapeHtml(payload.transactionDate)}</td></tr>
-          <tr><td style="padding:4px 0;"><strong>Processed By</strong></td><td style="padding:4px 0;">${escapeHtml(payload.processedBy)}</td></tr>
-        </tbody>
-      </table>
-      <table style="width:100%;border-collapse:collapse;">
-        <thead>
-          <tr>
-            <th style="padding:8px 0;border-bottom:1px solid #cbd5e1;text-align:left;">Item</th>
-            <th style="padding:8px 0;border-bottom:1px solid #cbd5e1;text-align:center;">Qty</th>
-            <th style="padding:8px 0;border-bottom:1px solid #cbd5e1;text-align:right;">Price</th>
-            <th style="padding:8px 0;border-bottom:1px solid #cbd5e1;text-align:right;">Subtotal</th>
-          </tr>
-        </thead>
-        <tbody>${rowsHtml}</tbody>
-      </table>
-      <p style="margin-top:24px;font-size:18px;"><strong>Total Amount:</strong> ${currency(payload.totalAmount)}</p>
+    <div style="font-family:Arial,sans-serif;max-width:720px;margin:0 auto;color:#0f172a;background:#ffffff;">
+      <div style="padding:24px 24px 12px;border:1px solid #e2e8f0;border-radius:16px;">
+        <p style="margin:0 0 4px;font-size:22px;font-weight:700;color:#0f172a;">${escapeHtml(STORE_NAME)}</p>
+        <p style="margin:0;color:#475569;font-size:13px;">Official Sales Receipt</p>
+        <p style="margin:24px 0 0;">Hello ${escapeHtml(payload.customerName)},</p>
+        <p style="margin:8px 0 0;color:#334155;">Thank you for your purchase. Here is your receipt for this transaction.</p>
+
+        <div style="margin-top:24px;">
+          <p style="margin:0 0 10px;font-size:13px;font-weight:700;letter-spacing:0.04em;color:#475569;">RECEIPT DETAILS</p>
+          <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
+            <tbody>
+              <tr><td style="padding:4px 0;width:180px;"><strong>Store Name</strong></td><td style="padding:4px 0;">${escapeHtml(STORE_NAME)}</td></tr>
+              <tr><td style="padding:4px 0;"><strong>Receipt Number</strong></td><td style="padding:4px 0;">${escapeHtml(payload.invoiceNumber)}</td></tr>
+              <tr><td style="padding:4px 0;"><strong>Customer Name</strong></td><td style="padding:4px 0;">${escapeHtml(payload.customerName)}</td></tr>
+              <tr><td style="padding:4px 0;"><strong>Transaction Date/Time</strong></td><td style="padding:4px 0;">${escapeHtml(payload.transactionDate)}</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="margin-top:20px;">
+          <p style="margin:0 0 10px;font-size:13px;font-weight:700;letter-spacing:0.04em;color:#475569;">ITEMS PURCHASED</p>
+          <table style="width:100%;border-collapse:collapse;">
+            <thead>
+              <tr>
+                <th style="padding:10px 0;border-bottom:1px solid #cbd5e1;text-align:left;">#</th>
+                <th style="padding:10px 0;border-bottom:1px solid #cbd5e1;text-align:left;">Item</th>
+                <th style="padding:10px 0;border-bottom:1px solid #cbd5e1;text-align:left;">Condition</th>
+                <th style="padding:10px 0;border-bottom:1px solid #cbd5e1;text-align:center;">Qty</th>
+                <th style="padding:10px 0;border-bottom:1px solid #cbd5e1;text-align:right;">Price</th>
+                <th style="padding:10px 0;border-bottom:1px solid #cbd5e1;text-align:right;">Subtotal</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>
+
+        <div style="margin-top:24px;padding:16px 18px;border-radius:14px;background:#eff6ff;border:1px solid #bfdbfe;">
+          <p style="margin:0 0 6px;font-size:13px;font-weight:700;letter-spacing:0.04em;color:#1d4ed8;">TOTAL AMOUNT</p>
+          <p style="margin:0;font-size:24px;font-weight:700;color:#0f172a;">${currency(payload.totalAmount)}</p>
+        </div>
+
+        <p style="margin:24px 0 0;color:#334155;">Regards,</p>
+        <p style="margin:4px 0 0;font-weight:700;color:#0f172a;">${escapeHtml(STORE_NAME)}</p>
+      </div>
     </div>
   `
 
   const textItems = payload.items
-    .map((item) => `${item.name} | Qty: ${item.quantity} | Price: ${currency(item.price)}`)
-    .join('\n')
+    .map(
+      (item, index) =>
+        `${index + 1}. ${item.name}\n   Condition: ${item.condition ?? 'N/A'}\n   Quantity: ${item.quantity}\n   Subtotal: ${currency(item.quantity * item.price)}`
+    )
+    .join('\n\n')
 
   return sendEmail({
     to: payload.customerEmail,
     subject: `Invoice ${payload.invoiceNumber}`,
     html,
     text: [
-      `Invoice Number: ${payload.invoiceNumber}`,
-      `Customer Name: ${payload.customerName}`,
-      `Customer Email: ${payload.customerEmail}`,
-      `Contact Number: ${payload.customerContactNumber}`,
-      `Transaction Date: ${payload.transactionDate}`,
-      `Processed By: ${payload.processedBy}`,
+      `Hello ${payload.customerName},`,
       '',
+      'Thank you for your purchase.',
+      '',
+      'RECEIPT DETAILS',
+      `Store Name: ${STORE_NAME}`,
+      `Receipt Number: ${payload.invoiceNumber}`,
+      `Customer Name: ${payload.customerName}`,
+      `Transaction Date/Time: ${payload.transactionDate}`,
+      '',
+      'ITEMS PURCHASED',
       textItems,
       '',
-      `Total Amount: ${currency(payload.totalAmount)}`,
+      'TOTAL AMOUNT',
+      `${currency(payload.totalAmount)}`,
+      '',
+      'Regards,',
+      STORE_NAME,
     ].join('\n'),
   })
 }
