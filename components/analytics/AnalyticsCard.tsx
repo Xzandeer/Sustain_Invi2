@@ -20,17 +20,17 @@ export default function AnalyticsCard({
   contentClassName = '',
 }: AnalyticsCardProps) {
   return (
-    <section className={`rounded-2xl border border-slate-200 bg-white shadow-sm ${className}`.trim()}>
+    <section className={`rounded-2xl border border-slate-200/90 bg-white shadow-[0_10px_28px_rgba(59,76,117,0.08)] ${className}`.trim()}>
       {(title || subtitle || actions) && (
-        <div className="flex flex-wrap items-center justify-between gap-3 p-4 pb-0">
-          <div className="space-y-1">
+        <div className="flex flex-wrap items-center justify-between gap-2.5 p-3.5 pb-0">
+          <div className="space-y-0.5">
             {title ? <h2 className="text-lg font-semibold text-slate-900">{title}</h2> : null}
-            {subtitle ? <p className="text-sm text-gray-500">{subtitle}</p> : null}
+            {subtitle ? <p className="text-xs text-slate-500">{subtitle}</p> : null}
           </div>
           {actions}
         </div>
       )}
-      <div className={`p-4 ${contentClassName}`.trim()}>{children}</div>
+      <div className={`p-3.5 ${contentClassName}`.trim()}>{children}</div>
     </section>
   )
 }

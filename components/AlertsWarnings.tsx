@@ -17,19 +17,19 @@ interface AlertBoxProps {
 function AlertBox({ title, message, type }: AlertBoxProps) {
   const classes =
     type === 'warning'
-      ? 'border-red-200 bg-red-50'
-      : 'border-blue-200 bg-blue-50'
+      ? 'border-amber-200/70 bg-white'
+      : 'border-slate-200 bg-slate-50/70'
 
-  const iconClasses = type === 'warning' ? 'text-red-600' : 'text-blue-600'
+  const iconClasses = type === 'warning' ? 'text-amber-700' : 'text-sky-700'
   const Icon = type === 'warning' ? AlertTriangle : Info
 
   return (
-    <article className={`rounded-xl border p-4 ${classes}`}>
-      <div className="flex items-start gap-3">
+    <article className={`rounded-xl border p-3.5 shadow-[0_8px_20px_rgba(15,23,42,0.04)] ${classes}`}>
+      <div className="flex items-start gap-2.5">
         <Icon className={`mt-0.5 h-5 w-5 ${iconClasses}`} />
-        <div className="space-y-1">
+        <div className="space-y-0.5">
           <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
-          <p className="text-sm text-gray-600">{message}</p>
+          <p className="text-xs text-slate-600">{message}</p>
         </div>
       </div>
     </article>
@@ -79,11 +79,11 @@ export default function AlertsWarnings({
   const hasAnyAlerts = hasLowStockAlert || hasOutOfStockAlert
 
   return (
-    <section className="space-y-4">
-      <h2 className="text-2xl font-bold text-slate-900">Alerts & Warnings</h2>
+    <section className="space-y-3">
+      <h2 className="text-xl font-bold text-slate-900">Alerts & Warnings</h2>
 
       {loading ? (
-        <div className="space-y-3">
+        <div className="space-y-2.5">
           <div className="h-20 animate-pulse rounded-xl bg-slate-200" />
           <div className="h-20 animate-pulse rounded-xl bg-slate-200" />
         </div>

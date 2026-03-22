@@ -51,6 +51,19 @@ interface ComparisonMetric {
   change: number | null
 }
 
+interface TrendPoint {
+  date: Date
+  label: string
+  total: number
+}
+
+interface CategoryForecastRow {
+  categoryId: string
+  categoryName: string
+  projectedRevenue: number
+  projectedItemsSold: number
+}
+
 const toNumber = (value: unknown, fallback = 0) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string') {
@@ -130,6 +143,12 @@ const addMonths = (date: Date, months: number) => {
 const addYears = (date: Date, years: number) => {
   const next = new Date(date)
   next.setFullYear(next.getFullYear() + years)
+  return next
+}
+
+const addDays = (date: Date, days: number) => {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
   return next
 }
 
@@ -254,7 +273,7 @@ const inRange = (date: Date | null, start: Date, end: Date) => {
 const buildTrendSeries = (sales: SaleRecord[], start: Date, end: Date) => {
   const diffDays = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)))
   const useDailyGrouping = diffDays <= 31
-  const grouped = new Map<string, { date: Date; label: string; total: number }>()
+  const grouped = new Map<string, TrendPoint>()
 
   if (useDailyGrouping) {
     const cursor = startOfDay(start)
@@ -300,8 +319,173 @@ const buildTrendSeries = (sales: SaleRecord[], start: Date, end: Date) => {
   return {
     labels: rows.map((row) => row.label),
     values: rows.map((row) => row.total),
-    granularity: useDailyGrouping ? 'day' : 'month',
+    rows,
+    granularity: (useDailyGrouping ? 'day' : 'month') as 'day' | 'month',
     hasSinglePoint: rows.filter((row) => row.total > 0).length <= 1,
+  }
+}
+
+const buildForecastSeries = (
+  rows: TrendPoint[],
+  granularity: 'day' | 'month'
+) => {
+  if (rows.length === 0) {
+    return {
+      labels: [] as string[],
+      actualValues: [] as Array<number | null>,
+      forecastValues: [] as Array<number | null>,
+      projectedTotal: 0,
+      trailingWindow: 0,
+      steps: 0,
+      note: 'Forecast becomes available after sales history is recorded for the selected range.',
+    }
+  }
+
+  const steps = granularity === 'day' ? 7 : 1
+  const trailingWindow = Math.min(granularity === 'day' ? 7 : 3, rows.length)
+  const trailingRows = rows.slice(-trailingWindow)
+  const weightedMovingAverage =
+    trailingRows.reduce((sum, row, index) => sum + row.total * (index + 1), 0) /
+    Math.max(1, trailingRows.reduce((sum, _, index) => sum + index + 1, 0))
+  const splitIndex = Math.max(1, Math.floor(trailingRows.length / 2))
+  const earlierRows = trailingRows.slice(0, splitIndex)
+  const recentRows = trailingRows.slice(splitIndex)
+  const earlierAverage =
+    earlierRows.reduce((sum, row) => sum + row.total, 0) / Math.max(1, earlierRows.length)
+  const recentAverage =
+    recentRows.reduce((sum, row) => sum + row.total, 0) / Math.max(1, recentRows.length)
+  const trendAdjustment = recentAverage - earlierAverage
+  const projectedPointValue = Math.max(0, weightedMovingAverage + trendAdjustment * 0.35)
+  const lastActualValue = rows[rows.length - 1]?.total ?? 0
+
+  const forecastRows = Array.from({ length: steps }, (_, index) => {
+    const lastDate = rows[rows.length - 1]?.date ?? new Date()
+    const date =
+      granularity === 'day'
+        ? startOfDay(addDays(lastDate, index + 1))
+        : new Date(lastDate.getFullYear(), lastDate.getMonth() + index + 1, 1)
+
+    return {
+      date,
+      label: granularity === 'day' ? formatDayLabel(date) : formatMonthLabel(date),
+      total: projectedPointValue,
+    }
+  })
+
+  return {
+    labels: [...rows.map((row) => row.label), ...forecastRows.map((row) => row.label)],
+    actualValues: [...rows.map((row) => row.total), ...Array(forecastRows.length).fill(null)],
+    forecastValues: [
+      ...Array(Math.max(0, rows.length - 1)).fill(null),
+      lastActualValue,
+      ...forecastRows.map((row) => row.total),
+    ],
+    projectedTotal: forecastRows.reduce((sum, row) => sum + row.total, 0),
+    trailingWindow,
+    steps,
+    note:
+      granularity === 'day'
+        ? `Forecast: weighted ${trailingWindow}-day average`
+        : `Forecast: weighted ${trailingWindow}-period average`,
+  }
+}
+
+const buildCategoryForecast = (
+  sales: SaleRecord[],
+  start: Date,
+  end: Date,
+  categoryNameMap: Record<string, string>,
+  granularity: 'day' | 'month'
+) => {
+  const diffDays = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)))
+  const useDailyGrouping = granularity === 'day' && diffDays <= 31
+  const groupedDates: Date[] = []
+
+  if (useDailyGrouping) {
+    const cursor = startOfDay(start)
+    const rangeEnd = endOfDay(end)
+    while (cursor <= rangeEnd) {
+      groupedDates.push(new Date(cursor))
+      cursor.setDate(cursor.getDate() + 1)
+    }
+  } else {
+    const cursor = new Date(start.getFullYear(), start.getMonth(), 1)
+    const rangeEnd = new Date(end.getFullYear(), end.getMonth(), 1)
+    while (cursor <= rangeEnd) {
+      groupedDates.push(new Date(cursor))
+      cursor.setMonth(cursor.getMonth() + 1)
+    }
+  }
+
+  const categoryBuckets = new Map<string, { categoryName: string; revenue: number[]; items: number[] }>()
+  const keyByDate = (date: Date) => (useDailyGrouping ? getDayKey(date) : getMonthKey(date))
+  const bucketIndexByKey = new Map(groupedDates.map((date, index) => [keyByDate(date), index]))
+
+  sales.forEach((sale) => {
+    if (!sale.createdAt || !inRange(sale.createdAt, start, end)) return
+    const bucketIndex = bucketIndexByKey.get(keyByDate(sale.createdAt))
+    if (bucketIndex == null) return
+
+    sale.items.forEach((item) => {
+      const categoryId = item.categoryId || 'uncategorized'
+      const current =
+        categoryBuckets.get(categoryId) ?? {
+          categoryName: categoryNameMap[categoryId] ?? 'Uncategorized',
+          revenue: Array(groupedDates.length).fill(0),
+          items: Array(groupedDates.length).fill(0),
+        }
+
+      current.revenue[bucketIndex] += item.quantity * item.price
+      current.items[bucketIndex] += item.quantity
+      categoryBuckets.set(categoryId, current)
+    })
+  })
+
+  const trailingWindow = Math.min(useDailyGrouping ? 7 : 3, Math.max(1, groupedDates.length))
+  const steps = useDailyGrouping ? 7 : 1
+
+  const rows = Array.from(categoryBuckets.entries())
+    .map(([categoryId, value]) => {
+      const recentRevenue = value.revenue.slice(-trailingWindow)
+      const recentItems = value.items.slice(-trailingWindow)
+      const weightedRevenueAverage =
+        recentRevenue.reduce((sum, current, index) => sum + current * (index + 1), 0) /
+        Math.max(1, recentRevenue.reduce((sum, _, index) => sum + index + 1, 0))
+      const weightedItemsAverage =
+        recentItems.reduce((sum, current, index) => sum + current * (index + 1), 0) /
+        Math.max(1, recentItems.reduce((sum, _, index) => sum + index + 1, 0))
+      const splitIndex = Math.max(1, Math.floor(recentRevenue.length / 2))
+      const earlierRevenue = recentRevenue.slice(0, splitIndex)
+      const laterRevenue = recentRevenue.slice(splitIndex)
+      const earlierItems = recentItems.slice(0, splitIndex)
+      const laterItems = recentItems.slice(splitIndex)
+      const revenueTrend =
+        laterRevenue.reduce((sum, current) => sum + current, 0) / Math.max(1, laterRevenue.length) -
+        earlierRevenue.reduce((sum, current) => sum + current, 0) / Math.max(1, earlierRevenue.length)
+      const itemsTrend =
+        laterItems.reduce((sum, current) => sum + current, 0) / Math.max(1, laterItems.length) -
+        earlierItems.reduce((sum, current) => sum + current, 0) / Math.max(1, earlierItems.length)
+      const projectedRevenuePerStep = Math.max(0, weightedRevenueAverage + revenueTrend * 0.35)
+      const projectedItemsPerStep = Math.max(0, weightedItemsAverage + itemsTrend * 0.35)
+
+      return {
+        categoryId,
+        categoryName: value.categoryName,
+        projectedRevenue: projectedRevenuePerStep * steps,
+        projectedItemsSold: projectedItemsPerStep * steps,
+      } satisfies CategoryForecastRow
+    })
+    .filter((row) => row.projectedRevenue > 0 || row.projectedItemsSold > 0)
+    .sort((a, b) => {
+      if (b.projectedRevenue !== a.projectedRevenue) return b.projectedRevenue - a.projectedRevenue
+      return b.projectedItemsSold - a.projectedItemsSold
+    })
+
+  return {
+    rows,
+    topCategory: rows[0] ?? null,
+    trailingWindow,
+    steps,
   }
 }
 
@@ -629,6 +813,32 @@ function AnalyticsContent() {
     [activeRange.end, activeRange.start, filteredSales]
   )
 
+  const forecastSeries = useMemo(
+    () => buildForecastSeries(trendSeries.rows, trendSeries.granularity),
+    [trendSeries.granularity, trendSeries.rows]
+  )
+
+  const categoryForecast = useMemo(
+    () => buildCategoryForecast(filteredSales, activeRange.start, activeRange.end, categoryNameMap, trendSeries.granularity),
+    [activeRange.end, activeRange.start, categoryNameMap, filteredSales, trendSeries.granularity]
+  )
+
+  const predictiveSummary = useMemo(() => {
+    const topCategory = categoryForecast.topCategory
+    const forecastWindow =
+      trendSeries.granularity === 'day'
+        ? `next ${forecastSeries.steps} days`
+        : `next ${forecastSeries.steps} period`
+
+    return {
+      forecastWindow,
+      projectedSales: forecastSeries.projectedTotal,
+      projectedFastMovingCategory: topCategory?.categoryName ?? 'Insufficient data',
+      projectedCategoryRevenue: topCategory?.projectedRevenue ?? 0,
+      projectedCategoryItems: topCategory?.projectedItemsSold ?? 0,
+    }
+  }, [categoryForecast.topCategory, forecastSeries.projectedTotal, forecastSeries.steps, trendSeries.granularity])
+
   const comparisonMetrics = useMemo(() => {
     const topCategoryRevenue = currentSummary.topCategory?.revenue ?? 0
     const previousTopCategoryRevenue = previousSummary.topCategory?.revenue ?? 0
@@ -756,17 +966,16 @@ function AnalyticsContent() {
   }, [allTopCategoryRows, openModal, timeRangePreset])
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-slate-100 p-6">
-      <div className="mx-auto max-w-[1700px] space-y-6">
+    <main className="min-h-[calc(100vh-64px)] bg-slate-100 px-2 py-2.5 sm:px-2.5">
+      <div className="mx-auto max-w-[1620px] space-y-3.5">
         <header>
-          <h1 className="text-2xl font-bold text-slate-900">Analytics</h1>
-          <p className="mt-1 text-sm text-gray-500">Monthly trends, category performance, and period-over-period comparisons.</p>
+          <h1 className="text-[1.6rem] font-bold text-slate-900">Analytics</h1>
         </header>
 
         <AnalyticsCard title="Filters" className="rounded-2xl">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Time Range</label>
+              <label className="mb-1.5 block text-xs font-medium text-slate-700">Time Range</label>
               <select
                 value={timeRangePreset}
                 onChange={(event) => setTimeRangePreset(event.target.value as TimeRangePreset)}
@@ -782,7 +991,7 @@ function AnalyticsContent() {
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Category</label>
+              <label className="mb-1.5 block text-xs font-medium text-slate-700">Category</label>
               <select
                 value={selectedCategory}
                 onChange={(event) => setSelectedCategory(event.target.value)}
@@ -798,7 +1007,7 @@ function AnalyticsContent() {
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Condition</label>
+              <label className="mb-1.5 block text-xs font-medium text-slate-700">Condition</label>
               <select
                 value={selectedCondition}
                 onChange={(event) =>
@@ -819,7 +1028,7 @@ function AnalyticsContent() {
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Start Date</label>
+              <label className="mb-1.5 block text-xs font-medium text-slate-700">Start Date</label>
               <input
                 type="date"
                 value={timeRangePreset === 'custom' ? customStartDate : formatDateInput(activeRange.start)}
@@ -830,7 +1039,7 @@ function AnalyticsContent() {
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">End Date</label>
+              <label className="mb-1.5 block text-xs font-medium text-slate-700">End Date</label>
               <input
                 type="date"
                 value={timeRangePreset === 'custom' ? customEndDate : formatDateInput(activeRange.end)}
@@ -842,19 +1051,19 @@ function AnalyticsContent() {
           </div>
 
           {timeRangePreset === 'custom' && dateRangeError ? (
-            <p className="mt-4 text-sm text-red-500">{dateRangeError}</p>
+            <p className="mt-3 text-sm text-red-500">{dateRangeError}</p>
           ) : null}
         </AnalyticsCard>
 
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
           <AnalyticsCard
             title="Total Sales"
             subtitle={getRangeLabel(timeRangePreset)}
             actions={<p className="text-lg font-semibold text-slate-900">{currency(currentSummary.totalSales)}</p>}
           >
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               {comparisonMetrics.totalSales.map((metric) => (
-                <div key={metric.label} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2">
+                <div key={metric.label} className="flex items-center justify-between gap-2.5 rounded-xl bg-slate-50 px-3 py-2">
                   <div>
                     <p className="text-sm font-medium text-slate-900">{metric.label}</p>
                     <p className="text-xs text-slate-500">{currency(metric.value)}</p>
@@ -872,9 +1081,9 @@ function AnalyticsContent() {
             subtitle={getRangeLabel(timeRangePreset)}
             actions={<p className="text-lg font-semibold text-slate-900">{compactNumber.format(currentSummary.itemsSold)}</p>}
           >
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               {comparisonMetrics.itemsSold.map((metric) => (
-                <div key={metric.label} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2">
+                <div key={metric.label} className="flex items-center justify-between gap-2.5 rounded-xl bg-slate-50 px-3 py-2">
                   <div>
                     <p className="text-sm font-medium text-slate-900">{metric.label}</p>
                     <p className="text-xs text-slate-500">{compactNumber.format(metric.value)} items</p>
@@ -901,9 +1110,9 @@ function AnalyticsContent() {
               </div>
             }
           >
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               {comparisonMetrics.topCategory.map((metric) => (
-                <div key={metric.label} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2">
+                <div key={metric.label} className="flex items-center justify-between gap-2.5 rounded-xl bg-slate-50 px-3 py-2">
                   <div>
                     <p className="text-sm font-medium text-slate-900">{metric.label}</p>
                     <p className="text-xs text-slate-500">{currency(metric.value)}</p>
@@ -929,14 +1138,14 @@ function AnalyticsContent() {
             </div>
           }
         >
-          <div className="h-72">
+          <div className="h-68">
             <Line
               data={{
-                labels: trendSeries.labels,
+                labels: forecastSeries.labels,
                 datasets: [
                   {
-                    label: 'Sales',
-                    data: trendSeries.values,
+                    label: 'Actual Sales',
+                    data: forecastSeries.actualValues,
                     fill: true,
                     borderColor: '#0f4c81',
                     backgroundColor: 'rgba(15, 76, 129, 0.12)',
@@ -945,12 +1154,31 @@ function AnalyticsContent() {
                     pointHoverRadius: trendSeries.hasSinglePoint ? 7 : 5,
                     tension: 0.3,
                   },
+                  {
+                    label: 'Forecast',
+                    data: forecastSeries.forecastValues,
+                    borderColor: '#f59e0b',
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    borderDash: [6, 6],
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    tension: 0.3,
+                    spanGaps: true,
+                  },
                 ],
               }}
               options={{
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: { legend: { display: false } },
+                plugins: {
+                  legend: { display: true, position: 'bottom' },
+                  tooltip: {
+                    callbacks: {
+                      label: (context) => `${context.dataset.label}: ${currency(Number(context.parsed.y ?? 0))}`,
+                    },
+                  },
+                },
                 scales: {
                   x: { grid: { display: false } },
                   y: {
@@ -963,7 +1191,54 @@ function AnalyticsContent() {
               }}
             />
           </div>
+          <p className="mt-3 text-xs text-slate-500">{forecastSeries.note}</p>
         </AnalyticsCard>
+
+        <section className="space-y-3">
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Predictive Analytics</h2>
+              <p className="text-xs text-slate-500">Based on sales trends</p>
+            </div>
+            <AnalyticsBadge variant="neutral">{predictiveSummary.forecastWindow}</AnalyticsBadge>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+            <AnalyticsCard
+              title="Predicted Fast-Moving Category"
+              subtitle={predictiveSummary.forecastWindow}
+              actions={
+                <p className="text-lg font-semibold text-slate-900">
+                  {predictiveSummary.projectedFastMovingCategory}
+                </p>
+              }
+            >
+              <div className="rounded-xl bg-slate-50 px-3 py-2.5">
+                <p className="text-sm text-slate-700">
+                  Projected revenue: <span className="font-semibold text-slate-900">{currency(predictiveSummary.projectedCategoryRevenue)}</span>
+                </p>
+                <p className="mt-1 text-sm text-slate-700">
+                  Projected items sold: <span className="font-semibold text-slate-900">{compactNumber.format(Math.round(predictiveSummary.projectedCategoryItems))}</span>
+                </p>
+              </div>
+            </AnalyticsCard>
+
+            <AnalyticsCard
+              title="Projected Demand"
+              subtitle={trendSeries.granularity === 'day' ? '7-day forecast' : 'Next-period forecast'}
+              actions={<p className="text-lg font-semibold text-slate-900">{currency(predictiveSummary.projectedSales)}</p>}
+            >
+              <div className="rounded-xl bg-slate-50 px-3 py-2.5">
+                <p className="text-sm text-slate-700">
+                  Forecast window: <span className="font-semibold text-slate-900">{forecastSeries.trailingWindow} {trendSeries.granularity === 'day' ? 'periods' : 'periods'}</span>
+                </p>
+                <p className="mt-1 text-sm text-slate-700">
+                  Source: <span className="font-semibold text-slate-900">sales transactions</span>
+                </p>
+              </div>
+            </AnalyticsCard>
+          </div>
+        </section>
 
         <AnalyticsCard
           title="Summary"
@@ -973,7 +1248,7 @@ function AnalyticsContent() {
           <p className="text-sm leading-6 text-slate-700">{analyticsSummary}</p>
         </AnalyticsCard>
 
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[2fr_1fr]">
+        <div className="grid grid-cols-1 gap-3.5 xl:grid-cols-[2fr_1fr]">
           <AnalyticsCard
             title="Top Categories"
             subtitle={`Ranked for ${getRangeLabel(timeRangePreset)}`}
@@ -1015,7 +1290,7 @@ function AnalyticsContent() {
       {modalConfig ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="flex max-h-[85vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-200 p-4">
+            <div className="flex items-center justify-between border-b border-slate-200 p-3.5">
               <h2 className="text-lg font-semibold text-slate-900">{modalConfig.title}</h2>
               <button
                 type="button"
@@ -1025,7 +1300,7 @@ function AnalyticsContent() {
                 Close
               </button>
             </div>
-            <div className="overflow-y-auto p-4">
+            <div className="overflow-y-auto p-3.5">
               <AnalyticsTable columns={modalConfig.columns} rows={modalConfig.rows} />
             </div>
           </div>

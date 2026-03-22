@@ -19,6 +19,13 @@ service cloud.firestore {
       return role() == 'staff' || role() == 'admin';
     }
 
+    function canViewStockLogs() {
+      return isAdmin() || (
+        isSignedIn() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.canViewStockLogs == true
+      );
+    }
+
     match /users/{userId} {
       allow create: if isSignedIn() && request.auth.uid == userId;
       allow read: if isAdmin() || (isSignedIn() && request.auth.uid == userId);
@@ -50,7 +57,7 @@ service cloud.firestore {
     }
 
     match /stockLogs/{logId} {
-      allow read: if isSignedIn();
+      allow read: if canViewStockLogs();
       allow create: if isStaffOrAdmin();
       allow update, delete: if false;
     }

@@ -10,6 +10,8 @@ export interface ProductFormValues {
   quantity: number
   minStock: number
   condition: 'New' | 'Refurbished'
+  reservedStock?: number
+  availableStock?: number
 }
 
 interface CategoryOption {
@@ -76,10 +78,9 @@ export default function ProductModal({
       !name.trim() ||
       !categoryId ||
       !Number.isFinite(parsedPrice) ||
-      !Number.isFinite(parsedQuantity) ||
       !Number.isFinite(parsedMinStock) ||
       parsedPrice <= 0 ||
-      parsedQuantity < 0 ||
+      (!initialValues && (!Number.isFinite(parsedQuantity) || parsedQuantity < 0)) ||
       parsedMinStock < 0
     ) {
       return
@@ -89,24 +90,26 @@ export default function ProductModal({
       name: name.trim(),
       categoryId,
       price: parsedPrice,
-      quantity: parsedQuantity,
+      quantity: initialValues ? initialValues.quantity : parsedQuantity,
       minStock: parsedMinStock,
       condition,
+      reservedStock: initialValues?.reservedStock,
+      availableStock: initialValues?.availableStock,
     })
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-3xl rounded-xl bg-white p-6 shadow-sm">
-        <div className="mb-5 flex items-center justify-between">
+      <div className="w-full max-w-2xl rounded-2xl bg-white p-5 shadow-sm sm:p-6">
+        <div className="mb-4 flex items-center justify-between">
           <h2 className="text-2xl font-semibold text-slate-900">{initialValues ? 'Edit Item' : 'Add Inventory Item'}</h2>
           <button onClick={onClose} className="text-slate-500 transition hover:text-slate-700" title="Close">
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-5">
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-900">Item Name *</label>
               <input
@@ -117,7 +120,7 @@ export default function ProductModal({
                 className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
               />
             </div>
-            <div className="space-y-2">
+            <div className="space-y-2 sm:col-span-1">
               <label className="text-sm font-medium text-slate-900">Category *</label>
               <select
                 value={categoryId}
@@ -146,15 +149,23 @@ export default function ProductModal({
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium text-slate-900">Quantity *</label>
-              <input
-                type="number"
-                min={0}
-                value={quantity}
-                onChange={(event) => setQuantity(event.target.value)}
-                required
-                className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
-              />
+              <label className="text-sm font-medium text-slate-900">Quantity {initialValues ? '' : '*'}</label>
+              {initialValues ? (
+                <div className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600">
+                  <p><span className="font-medium text-slate-900">Current Stock:</span> {initialValues.quantity}</p>
+                  <p><span className="font-medium text-slate-900">Reserved:</span> {initialValues.reservedStock ?? 0}</p>
+                  <p><span className="font-medium text-slate-900">Available:</span> {initialValues.availableStock ?? initialValues.quantity}</p>
+                </div>
+              ) : (
+                <input
+                  type="number"
+                  min={0}
+                  value={quantity}
+                  onChange={(event) => setQuantity(event.target.value)}
+                  required
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
+                />
+              )}
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-900">Minimum Stock *</label>
@@ -169,32 +180,38 @@ export default function ProductModal({
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-900">Condition *</label>
-              <select
-                value={condition}
-                onChange={(event) => setCondition(event.target.value === 'Refurbished' ? 'Refurbished' : 'New')}
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
-                required
-              >
-                <option value="New">New</option>
-                <option value="Refurbished">Refurbished</option>
-              </select>
+              {initialValues ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600">
+                  <p><span className="font-medium text-slate-900">Current Condition:</span> {initialValues.condition}</p>
+                </div>
+              ) : (
+                <select
+                  value={condition}
+                  onChange={(event) => setCondition(event.target.value === 'Refurbished' ? 'Refurbished' : 'New')}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
+                  required
+                >
+                  <option value="New">New</option>
+                  <option value="Refurbished">Refurbished</option>
+                </select>
+              )}
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            <button
-              type="submit"
-              disabled={submitting}
-              className="rounded-lg bg-sky-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {submitting ? 'Saving...' : initialValues ? 'Update Item' : 'Create Item'}
-            </button>
+          <div className="flex items-center justify-end gap-3 pt-1">
             <button
               type="button"
               onClick={onClose}
               className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
             >
               Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="rounded-lg bg-sky-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {submitting ? 'Saving...' : initialValues ? 'Update Item' : 'Create Item'}
             </button>
           </div>
         </form>

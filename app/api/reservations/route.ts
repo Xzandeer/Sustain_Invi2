@@ -9,21 +9,18 @@ import {
 import { createTransactionNumber } from '@/lib/server/transactionNumbers'
 import { parseDateRange, toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import {
-  SALES_THANK_YOU_NOTE,
+  DEFAULT_CLAIM_INSTRUCTIONS,
+  RESERVATION_NOTICE,
   STORE_NAME,
   STORE_TAGLINE,
   TransactionLineItem,
-  SaleReceiptDocument,
+  ReservationTicketDocument,
 } from '@/lib/transactionDocuments'
 
-interface SalesPayload {
-  itemId?: unknown
-  quantity?: unknown
+interface ReservationPayload {
   items?: unknown
-  customer?: unknown
   customerDetails?: unknown
   processedBy?: unknown
-  reduceQuantity?: unknown
 }
 
 interface CustomerDetails {
@@ -34,7 +31,6 @@ interface CustomerDetails {
 
 const parseCustomerDetails = (input: unknown): CustomerDetails | null => {
   if (!input || typeof input !== 'object') return null
-
   const data = input as Record<string, unknown>
   const fullName = typeof data.fullName === 'string' ? data.fullName.trim() : ''
   const email = typeof data.email === 'string' ? data.email.trim() : ''
@@ -52,23 +48,19 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url)
     const startDate = searchParams.get('startDate')
     const endDate = searchParams.get('endDate')
-    const categoryName = searchParams.get('category')
 
     const range = parseDateRange(startDate, endDate)
     if ('error' in range) {
       return NextResponse.json({ error: range.error }, { status: 400 })
     }
 
-    const snapshot = await getDocs(collection(db, 'sales'))
+    const reservationsQuery = query(collection(db, 'reservations'))
+    const snapshot = await getDocs(reservationsQuery)
 
-    let records: Array<Record<string, unknown> & { id: string }> = snapshot.docs.map((saleDoc) => ({
-      ...(saleDoc.data() as Record<string, unknown>),
-      id: saleDoc.id,
+    let records: Array<Record<string, unknown> & { id: string }> = snapshot.docs.map((reservationDoc) => ({
+      ...(reservationDoc.data() as Record<string, unknown>),
+      id: reservationDoc.id,
     }))
-
-    if (categoryName && categoryName !== 'all') {
-      records = records.filter((record) => record.categoryName === categoryName || record.category === categoryName)
-    }
 
     if (range.start || range.end) {
       records = records.filter((record) => {
@@ -88,22 +80,17 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ data: records }, { status: 200 })
   } catch (error) {
-    console.error('GET /api/sales error:', error)
+    console.error('GET /api/reservations error:', error)
     return NextResponse.json({ error: 'Server error' }, { status: 500 })
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const body = (await req.json()) as SalesPayload
+    const body = (await req.json()) as ReservationPayload
     const customerDetails = parseCustomerDetails(body.customerDetails)
     const processedBy = await getProcessedByInfo(body.processedBy)
-    const reduceQuantity = body.reduceQuantity !== false
-    const payloadItems = Array.isArray(body.items)
-      ? body.items
-      : typeof body.itemId === 'string'
-        ? [{ itemId: body.itemId, quantity: body.quantity }]
-        : []
+    const items = Array.isArray(body.items) ? body.items : []
 
     if (!customerDetails) {
       return NextResponse.json(
@@ -112,7 +99,7 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    const normalizedItems = payloadItems
+    const normalizedItems = items
       .map((item) => {
         const record = item as Record<string, unknown>
         const itemId = typeof record.itemId === 'string' ? record.itemId.trim() : ''
@@ -121,46 +108,31 @@ export async function POST(req: NextRequest) {
       })
       .filter((item) => item.itemId && Number.isFinite(item.quantity) && item.quantity > 0)
 
-    const mergedItems = Array.from(
-      normalizedItems.reduce<Map<string, { itemId: string; quantity: number }>>((result, item) => {
-        const existing = result.get(item.itemId)
-        if (existing) {
-          existing.quantity += item.quantity
-        } else {
-          result.set(item.itemId, { itemId: item.itemId, quantity: item.quantity })
-        }
-
-        return result
-      }, new Map()).values()
-    )
-
-    if (mergedItems.length === 0) {
+    if (normalizedItems.length === 0) {
       return NextResponse.json({ error: 'Add at least one valid item to continue.' }, { status: 400 })
     }
 
     const now = new Date()
     const nowIso = now.toISOString()
+    const expiresAt = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000)
     const preparedItems = await Promise.all(
-      mergedItems.map(async (requestedItem) => {
+      normalizedItems.map(async (requestedItem) => {
         const inventoryItem = await findInventoryVariantById(requestedItem.itemId)
         if (!inventoryItem || inventoryItem.isDeleted) {
           throw new Error('ITEM_NOT_FOUND')
         }
-        return {
-          requestedItem,
-          inventoryItem,
-        }
+        return { requestedItem, inventoryItem }
       })
     )
 
-    const saleLines: Array<{
-      itemId: string
+    const reservationItems: Array<{
+      id: string
       name: string
       quantity: number
       price: number
-      categoryId: string
-      categoryName: string
       condition: string
+      availableBefore: number
+      availableAfter: number
       stockBefore: number
       stockAfter: number
       reservedBefore: number
@@ -168,11 +140,6 @@ export async function POST(req: NextRequest) {
     }> = []
 
     await runTransaction(db, async (transaction) => {
-      const pendingUpdates: Array<{
-        ref: typeof preparedItems[number]['inventoryItem']['ref']
-        nextStock: number
-      }> = []
-
       for (const { requestedItem, inventoryItem } of preparedItems) {
         const inventorySnapshot = await transaction.get(inventoryItem.ref)
         if (!inventorySnapshot.exists()) {
@@ -188,154 +155,128 @@ export async function POST(req: NextRequest) {
           throw new Error('INSUFFICIENT_STOCK')
         }
 
-        const nextStock = currentStock - requestedItem.quantity
-        pendingUpdates.push({
-          ref: inventoryItem.ref,
-          nextStock,
+        const nextReservedStock = currentReservedStock + requestedItem.quantity
+        transaction.update(inventoryItem.ref, {
+          reservedStock: nextReservedStock,
+          updatedAt: nowIso,
         })
 
-        saleLines.push({
-          itemId: inventoryItem.id,
+        reservationItems.push({
+          id: inventoryItem.id,
           name: inventoryItem.name,
           quantity: requestedItem.quantity,
           price: inventoryItem.price,
-          categoryId: inventoryItem.categoryId,
-          categoryName: inventoryItem.categoryName,
           condition: inventoryItem.condition,
+          availableBefore: availableStock,
+          availableAfter: availableStock - requestedItem.quantity,
           stockBefore: currentStock,
-          stockAfter: nextStock,
+          stockAfter: currentStock,
           reservedBefore: currentReservedStock,
-          reservedAfter: currentReservedStock,
-        })
-      }
-
-      if (!reduceQuantity) {
-        return
-      }
-
-      for (const update of pendingUpdates) {
-        transaction.update(update.ref, {
-          quantity: update.nextStock,
-          stock: update.nextStock,
-          updatedAt: nowIso,
+          reservedAfter: nextReservedStock,
         })
       }
     })
 
-    const totalAmount = saleLines.reduce((sum, item) => sum + item.quantity * item.price, 0)
-    const categoryNames = Array.from(new Set(saleLines.map((item) => item.categoryName)))
-    const saleRef = doc(collection(db, 'sales'))
-    const numberResult = await createTransactionNumber('sale', saleRef, (numberInfo) => ({
-      ...(saleLines.length === 1 ? { itemId: saleLines[0].itemId } : {}),
-      id: saleRef.id,
-      receiptNumber: numberInfo.value,
-      transactionType: 'sale',
+    const reservationRef = doc(collection(db, 'reservations'))
+    const numberResult = await createTransactionNumber('reservation', reservationRef, (numberInfo) => ({
+      id: reservationRef.id,
+      reservationNumber: numberInfo.value,
+      transactionType: 'reservation',
       dateKey: numberInfo.dateKey,
       sequenceNumber: numberInfo.sequenceNumber,
       searchableNumber: numberInfo.value,
       customerSearchEmail: customerDetails.email.toLowerCase(),
-      items: saleLines.map((item) => ({
-        itemId: item.itemId,
+      items: reservationItems.map((item) => ({
+        id: item.id,
         name: item.name,
         quantity: item.quantity,
         price: item.price,
-        categoryId: item.categoryId,
-        categoryName: item.categoryName,
         condition: item.condition,
-        status: 'completed',
       })),
-      categoryName: categoryNames.join(', '),
-      category: categoryNames.join(', '),
       customer: customerDetails.fullName,
       customerName: customerDetails.fullName,
       customerEmail: customerDetails.email,
       customerContactNumber: customerDetails.contactNumber,
-      totalAmount,
-      quantity: saleLines.reduce((sum, item) => sum + item.quantity, 0),
-      total: totalAmount,
-      amount: totalAmount,
-      status: 'Completed',
       processedByName: processedBy.name,
       processedByEmail: processedBy.email ?? '',
+      status: 'Active',
+      claimInstructions: DEFAULT_CLAIM_INSTRUCTIONS,
       createdAt: serverTimestamp(),
-      transactionDate: nowIso,
+      expiresAt: expiresAt.toISOString(),
+      reservationDate: nowIso,
     }), nowIso)
 
     await Promise.all(
       [
-        ...saleLines.map((item) =>
+        ...reservationItems.map((item) =>
           createStockLog({
-            actionType: 'sale_deduction',
-            itemId: item.itemId,
+            actionType: 'reservation_deduction',
+            itemId: item.id,
             itemName: item.name,
             condition: item.condition === 'Refurbished' ? 'Refurbished' : 'New',
-            quantityBefore: item.stockBefore,
+            quantityBefore: item.availableBefore,
             quantityChanged: item.quantity * -1,
-            quantityAfter: item.stockAfter,
+            quantityAfter: item.availableAfter,
             stockBefore: item.stockBefore,
             stockAfter: item.stockAfter,
             reservedBefore: item.reservedBefore,
             reservedAfter: item.reservedAfter,
             user: processedBy,
-            relatedId: saleRef.id,
-            remarks: `Sale ${numberResult.value} completed.`,
+            relatedId: reservationRef.id,
+            remarks: `Reservation ${numberResult.value} created.`,
           })
         ),
       ]
     )
 
-    const receiptItems: TransactionLineItem[] = saleLines.map((item) => ({
-      itemId: item.itemId,
+    const ticketItems: TransactionLineItem[] = reservationItems.map((item) => ({
+      itemId: item.id,
       name: item.name,
       quantity: item.quantity,
       price: item.price,
-      categoryName: item.categoryName,
       condition: item.condition,
       subtotal: item.quantity * item.price,
     }))
 
-    const receiptDocument: SaleReceiptDocument = {
-      type: 'sale',
-      receiptNumber: numberResult.value,
+    const ticketDocument: ReservationTicketDocument = {
+      type: 'reservation',
+      reservationCode: numberResult.value,
       storeName: STORE_NAME,
       storeTagline: STORE_TAGLINE,
       customer: customerDetails,
-      items: receiptItems,
-      totalAmount,
-      transactionDate: nowIso,
+      items: ticketItems,
+      reservationDate: nowIso,
       processedBy: processedBy.name,
-      note: SALES_THANK_YOU_NOTE,
+      claimInstructions: DEFAULT_CLAIM_INSTRUCTIONS,
+      notice: RESERVATION_NOTICE,
     }
 
     return NextResponse.json(
       {
         data: {
-          id: saleRef.id,
-          receiptNumber: numberResult.value,
-          items: receiptItems,
-          totalAmount,
-          createdAt: nowIso,
+          id: reservationRef.id,
+          reservationNumber: numberResult.value,
+          items: ticketItems,
           customer: customerDetails.fullName,
+          createdAt: nowIso,
+          expiresAt: expiresAt.toISOString(),
         },
-        document: receiptDocument,
+        document: ticketDocument,
       },
       { status: 201 }
     )
   } catch (error) {
     if (error instanceof Error) {
       if (error.message === 'INSUFFICIENT_STOCK') {
-        return NextResponse.json({ error: 'Cannot sell more than available stock.' }, { status: 400 })
+        return NextResponse.json({ error: 'Cannot reserve more than available stock.' }, { status: 400 })
       }
 
       if (error.message === 'ITEM_NOT_FOUND') {
         return NextResponse.json({ error: 'One or more selected items were not found.' }, { status: 404 })
       }
-
-      console.error('SALE ERROR:', error)
-      return NextResponse.json({ error: error.message || 'Server error' }, { status: 500 })
     }
 
-    console.error('SALE ERROR:', error)
+    console.error('POST /api/reservations error:', error)
     return NextResponse.json({ error: 'Server error' }, { status: 500 })
   }
 }

@@ -4,8 +4,9 @@ import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { collection, onSnapshot } from 'firebase/firestore'
 import { ArrowLeft, RotateCcw, Trash2 } from 'lucide-react'
+import { toast } from 'sonner'
 import ProtectedRoute from '@/components/ProtectedRoute'
-import { db } from '@/lib/firebase'
+import { auth, db } from '@/lib/firebase'
 import { normalizeInventoryCondition } from '@/lib/server/salesInventoryMetrics'
 import { useUserRole } from '@/hooks/useUserRole'
 
@@ -25,7 +26,7 @@ const formatDeletedAt = (value: string | null) => {
 
 export default function InventoryTrashPage() {
   return (
-    <ProtectedRoute>
+    <ProtectedRoute requireAdmin>
       <InventoryTrashContent />
     </ProtectedRoute>
   )
@@ -87,26 +88,35 @@ function InventoryTrashContent() {
       const response = await fetch(`/api/inventory/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({
+          action,
+          processedBy: {
+            uid: auth.currentUser?.uid ?? '',
+            email: auth.currentUser?.email ?? '',
+            name: auth.currentUser?.displayName ?? auth.currentUser?.email ?? '',
+          },
+        }),
       })
       const payload = (await response.json()) as { error?: string }
       if (!response.ok) {
         throw new Error(payload.error || 'Action failed.')
       }
+      toast.success(action === 'restore' ? 'Item restored successfully.' : 'Item deleted permanently.')
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : 'Action failed.')
+      const message = actionError instanceof Error ? actionError.message : 'Action failed.'
+      setError(message)
+      toast.error(message)
     } finally {
       setActionId(null)
     }
   }
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-slate-100 px-4 py-8 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-[1700px] space-y-6">
+    <main className="min-h-[calc(100vh-64px)] bg-slate-100 px-2.5 py-3 sm:px-3">
+      <div className="mx-auto max-w-[1620px] space-y-4">
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h1 className="text-4xl font-bold text-slate-900">Inventory Trash</h1>
-            <p className="mt-1 text-lg text-slate-600">Restore deleted items or remove them permanently.</p>
+            <h1 className="text-[1.65rem] font-bold text-slate-900">Inventory Trash</h1>
           </div>
           <Link
             href="/inventory"
@@ -117,7 +127,7 @@ function InventoryTrashContent() {
           </Link>
         </header>
 
-        <section className="rounded-xl border bg-white p-6 shadow-sm">
+        <section className="rounded-xl border bg-white p-4 shadow-sm">
           {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
           {emptyMessage ? (
             <p className="text-sm text-slate-500">{emptyMessage}</p>

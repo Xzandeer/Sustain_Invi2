@@ -12,6 +12,7 @@ interface AppUser {
   name: string
   email: string
   role: UserRole
+  canViewStockLogs: boolean
 }
 
 export default function UsersPage() {
@@ -46,6 +47,7 @@ function UsersContent() {
           name: typeof data.name === 'string' && data.name.trim() ? data.name : 'Unknown User',
           email: typeof data.email === 'string' ? data.email : '',
           role: data.role === 'admin' ? 'admin' : 'staff',
+          canViewStockLogs: data.canViewStockLogs === true,
         }
       })
 
@@ -69,6 +71,19 @@ function UsersContent() {
     }
   }
 
+  const updateStockLogAccess = async (userId: string, canViewStockLogs: boolean) => {
+    setError('')
+    setUpdatingUserId(userId)
+    try {
+      await updateDoc(doc(db, 'users', userId), { canViewStockLogs })
+    } catch (updateError) {
+      console.error('Failed to update stock log access:', updateError)
+      setError('Failed to update stock log access.')
+    } finally {
+      setUpdatingUserId(null)
+    }
+  }
+
   if (roleLoading) {
     return <p className="text-sm text-slate-600">Loading...</p>
   }
@@ -82,7 +97,7 @@ function UsersContent() {
       <div className="mx-auto max-w-[1700px] space-y-6">
         <header>
           <h1 className="text-4xl font-bold text-slate-900">User Management</h1>
-          <p className="mt-1 text-lg text-slate-600">Assign admin and staff roles.</p>
+          <p className="mt-1 text-lg text-slate-600">Assign admin and staff roles, and control stock log access.</p>
         </header>
 
         <section className="rounded-xl border bg-white p-6 shadow-sm">
@@ -94,6 +109,7 @@ function UsersContent() {
                   <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Name</th>
                   <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Email</th>
                   <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Role</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Stock Logs</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 bg-white">
@@ -110,6 +126,17 @@ function UsersContent() {
                       >
                         <option value="staff">staff</option>
                         <option value="admin">admin</option>
+                      </select>
+                    </td>
+                    <td className="px-4 py-3 text-sm">
+                      <select
+                        value={user.canViewStockLogs ? 'allowed' : 'blocked'}
+                        onChange={(event) => updateStockLogAccess(user.id, event.target.value === 'allowed')}
+                        disabled={updatingUserId === user.id}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500 disabled:opacity-60"
+                      >
+                        <option value="blocked">blocked</option>
+                        <option value="allowed">allowed</option>
                       </select>
                     </td>
                   </tr>

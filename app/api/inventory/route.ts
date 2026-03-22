@@ -1,29 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server'
 import {
-  addDoc,
   collection,
   doc,
   getDoc,
   getDocs,
   orderBy,
   query,
-  runTransaction,
   updateDoc,
   where,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
+import { createInventoryVariant, createStockLog, findInventoryVariant, getProcessedByInfo } from '@/lib/server/inventory'
 
 interface InventoryPayload {
   name?: unknown
   categoryId?: unknown
   categoryName?: unknown
   category?: unknown
+  description?: unknown
+  imageUrl?: unknown
   price?: unknown
   quantity?: unknown
   stock?: unknown
   minStock?: unknown
   status?: unknown
+  processedBy?: unknown
+  remarks?: unknown
 }
 
 export async function GET(req: NextRequest) {
@@ -93,17 +96,21 @@ export async function POST(req: NextRequest) {
     const quantity = toNumber(body.stock ?? body.quantity, Number.NaN)
     const minStock = toNumber(body.minStock, Number.NaN)
     const condition = normalizeInventoryCondition(body.status)
+    const description = typeof body.description === 'string' ? body.description.trim() : ''
+    const imageUrl = typeof body.imageUrl === 'string' ? body.imageUrl.trim() : ''
+    const processedBy = await getProcessedByInfo(body.processedBy)
+    const remarks = typeof body.remarks === 'string' ? body.remarks.trim() : ''
 
     if (!name) {
-      return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
+      return NextResponse.json({ error: 'Item name is required.' }, { status: 400 })
     }
 
     if (![price, quantity, minStock].every((value) => Number.isFinite(value))) {
-      return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
+      return NextResponse.json({ error: 'Price, quantity, and minimum stock are required.' }, { status: 400 })
     }
 
     if (price <= 0 || quantity < 0 || minStock < 0) {
-      return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
+      return NextResponse.json({ error: 'Price must be greater than zero, and stock values cannot be negative.' }, { status: 400 })
     }
 
     let categoryId = categoryIdInput
@@ -130,11 +137,7 @@ export async function POST(req: NextRequest) {
             ? categoryData.name.trim()
             : categoryName
       } else {
-        const createdCategoryRef = await addDoc(collection(db, 'categories'), {
-          name: categoryName,
-          createdAt: new Date().toISOString(),
-        })
-        categoryId = createdCategoryRef.id
+        return NextResponse.json({ error: 'Category not found' }, { status: 404 })
       }
     }
 
@@ -142,98 +145,100 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid category' }, { status: 400 })
     }
 
-    const duplicateQuery = query(collection(db, 'inventory'), where('name', '==', name), where('categoryId', '==', categoryId))
-    const duplicateSnapshot = await getDocs(duplicateQuery)
-    const existingDoc =
-      duplicateSnapshot.docs.find((docItem) => {
-        const data = docItem.data() as Record<string, unknown>
-        return data.isDeleted !== true && normalizeInventoryCondition(data.status) === condition
-      }) ?? null
+    const existingVariant = await findInventoryVariant({ name, categoryId, condition })
 
-    if (existingDoc) {
+    if (existingVariant) {
       const now = new Date().toISOString()
-      let responseData: Record<string, unknown> | null = null
+      const updatedQuantity = existingVariant.stock + quantity
+      const stockStatus = getStockStatus({ stock: updatedQuantity, minStock: existingVariant.minStock })
 
-      await runTransaction(db, async (transaction) => {
-        const latestSnapshot = await transaction.get(existingDoc.ref)
-        if (!latestSnapshot.exists()) {
-          throw new Error('INVENTORY_ITEM_NOT_FOUND')
-        }
+      await updateDoc(existingVariant.ref, {
+        price,
+        quantity: updatedQuantity,
+        stock: updatedQuantity,
+        reservedStock: existingVariant.reservedStock,
+        minStock: existingVariant.minStock,
+        status: condition,
+        categoryName,
+        category: categoryName,
+        description,
+        imageUrl,
+        isDeleted: false,
+        deletedAt: null,
+        updatedAt: now,
+      })
 
-        const existingData = latestSnapshot.data() as Record<string, unknown>
-        const currentQuantity = toNumber(existingData.stock ?? existingData.quantity, 0)
-        const existingMinStock = toNumber(existingData.minStock, minStock)
-        const updatedQuantity = currentQuantity + quantity
-        const stockStatus = getStockStatus({ stock: updatedQuantity, minStock: existingMinStock })
-
-        transaction.update(existingDoc.ref, {
-          price,
-          quantity: updatedQuantity,
-          stock: updatedQuantity,
-          reservedStock: toNumber(existingData.reservedStock, 0),
-          status: condition,
-          isDeleted: false,
-          deletedAt: null,
-          updatedAt: now,
-        })
-
-        responseData = {
-          id:
-            typeof existingData.id === 'string' && existingData.id.trim()
-              ? existingData.id
-              : latestSnapshot.id,
-          ...existingData,
-          categoryId,
-          categoryName,
-          category: categoryName,
-          price,
-          quantity: updatedQuantity,
-          stock: updatedQuantity,
-          reservedStock: toNumber(existingData.reservedStock, 0),
-          minStock: existingMinStock,
-          status: condition,
-          stockStatus,
-          isDeleted: false,
-          deletedAt: null,
-          updatedAt: now,
-        }
+      await createStockLog({
+        actionType: 'stock_increased',
+        itemId: existingVariant.id,
+        itemName: existingVariant.name,
+        condition,
+        quantityBefore: existingVariant.stock,
+        quantityChanged: quantity,
+        quantityAfter: updatedQuantity,
+        stockBefore: existingVariant.stock,
+        stockAfter: updatedQuantity,
+        reservedBefore: existingVariant.reservedStock,
+        reservedAfter: existingVariant.reservedStock,
+        user: processedBy,
+        remarks: remarks || 'Inventory stock increased from add item flow.',
       })
 
       return NextResponse.json(
         {
-          data: responseData,
+          data: {
+            id: existingVariant.id,
+            name: existingVariant.name,
+            categoryId,
+            categoryName,
+            category: categoryName,
+            price,
+            quantity: updatedQuantity,
+            stock: updatedQuantity,
+            reservedStock: existingVariant.reservedStock,
+            minStock: existingVariant.minStock,
+            status: condition,
+            description,
+            imageUrl,
+            stockStatus,
+            isDeleted: false,
+            deletedAt: null,
+            updatedAt: now,
+          },
           message: 'Existing inventory item quantity updated.',
         },
         { status: 200 }
       )
     }
 
-    const now = new Date().toISOString()
-    const stockStatus = getStockStatus({ stock: quantity, minStock })
-
-    const docRef = await addDoc(collection(db, 'inventory'), {
+    const created = await createInventoryVariant({
       name,
       categoryId,
       categoryName,
-      category: categoryName,
       price,
       quantity,
-      stock: quantity,
-      reservedStock: 0,
       minStock,
-      status: condition,
-      isDeleted: false,
-      deletedAt: null,
-      createdAt: now,
-      updatedAt: now,
+      condition,
+      description,
+      imageUrl,
     })
 
-    await updateDoc(docRef, { id: docRef.id })
+    await createStockLog({
+      actionType: 'item_added',
+      itemId: created.id,
+      itemName: name,
+      condition,
+      quantityBefore: 0,
+      quantityChanged: quantity,
+      quantityAfter: quantity,
+      user: processedBy,
+      remarks: remarks || 'New inventory variant created.',
+    })
 
     return NextResponse.json(
       {
         data: {
-          id: docRef.id,
+          id: created.id,
           name,
           categoryId,
           categoryName,
@@ -244,11 +249,13 @@ export async function POST(req: NextRequest) {
           reservedStock: 0,
           minStock,
           status: condition,
-          stockStatus,
+          description,
+          imageUrl,
+          stockStatus: created.stockStatus,
           isDeleted: false,
           deletedAt: null,
-          createdAt: now,
-          updatedAt: now,
+          createdAt: created.now,
+          updatedAt: created.now,
         },
       },
       { status: 201 }

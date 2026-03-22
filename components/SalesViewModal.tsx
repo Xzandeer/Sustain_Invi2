@@ -5,7 +5,9 @@ import { X } from 'lucide-react'
 export interface SaleTransaction {
   docId: string
   id: string
+  receiptNumber: string
   customer: string
+  customerEmail: string
   items: Array<{
     name: string
     quantity: number
@@ -57,8 +59,9 @@ export default function SalesViewModal({ transaction, onClose }: SalesViewModalP
         </div>
 
         <div className="space-y-3 text-sm text-slate-700">
-          <p><span className="font-semibold text-slate-900">Transaction ID:</span> {transaction.id}</p>
+          <p><span className="font-semibold text-slate-900">Receipt Number:</span> {transaction.receiptNumber}</p>
           <p><span className="font-semibold text-slate-900">Customer:</span> {transaction.customer}</p>
+          <p><span className="font-semibold text-slate-900">Email:</span> {transaction.customerEmail || 'No email provided'}</p>
           <p>
             <span className="font-semibold text-slate-900">Items purchased:</span>{' '}
             {transaction.items.length > 0 ? transaction.items.map((item) => item.name).join(', ') : 'N/A'}

@@ -1,20 +1,13 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
-import {
-  collection,
-  doc,
-  onSnapshot,
-  orderBy,
-  query,
-  runTransaction,
-  serverTimestamp,
-} from 'firebase/firestore'
+import { useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { collection, onSnapshot, orderBy, query } from 'firebase/firestore'
 import { CheckCircle2, Package, XCircle } from 'lucide-react'
+import { toast } from 'sonner'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { db } from '@/lib/firebase'
+import { auth, db } from '@/lib/firebase'
 import { toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 
 type ReservationStatus = 'Active' | 'Completed' | 'Cancelled' | 'Expired'
@@ -24,12 +17,16 @@ interface ReservationItem {
   name: string
   quantity: number
   price: number
+  categoryName: string
 }
 
 interface Reservation {
   id: string
+  reservationNumber: string
   items: ReservationItem[]
   customer: string
+  customerEmail: string
+  customerContactNumber: string
   createdAt: Date | null
   expiresAt: Date | null
   status: ReservationStatus
@@ -66,8 +63,37 @@ function ReservationsContent() {
   const [loading, setLoading] = useState(true)
   const [actionId, setActionId] = useState<string | null>(null)
   const [pageError, setPageError] = useState('')
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | ReservationStatus>('all')
+  const [categoryFilter, setCategoryFilter] = useState('all')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  const [inventoryCategoryById, setInventoryCategoryById] = useState<Record<string, string>>({})
+  const deferredSearch = useDeferredValue(search)
 
   useEffect(() => {
+    const unsubscribeInventory = onSnapshot(
+      collection(db, 'inventory'),
+      (snapshot) => {
+        const nextMap = snapshot.docs.reduce<Record<string, string>>((result, itemDoc) => {
+          const data = itemDoc.data() as Record<string, unknown>
+          const categoryName =
+            (typeof data.categoryName === 'string' && data.categoryName.trim()) ||
+            (typeof data.category === 'string' && data.category.trim()) ||
+            ''
+
+          if (categoryName) {
+            result[itemDoc.id] = categoryName
+          }
+
+          return result
+        }, {})
+
+        setInventoryCategoryById(nextMap)
+      },
+      (error) => console.error('Error loading inventory categories for reservations:', error)
+    )
+
     const reservationsQuery = query(collection(db, 'reservations'), orderBy('createdAt', 'desc'))
 
     const unsubscribeReservations = onSnapshot(
@@ -89,6 +115,7 @@ function ReservationsContent() {
                     name,
                     quantity: Math.max(0, toNumber(reservationItem.quantity, 0)),
                     price: Math.max(0, toNumber(reservationItem.price, 0)),
+                    categoryName: '',
                   } satisfies ReservationItem
                 })
                 .filter((item): item is ReservationItem => item !== null && item.quantity > 0)
@@ -96,6 +123,10 @@ function ReservationsContent() {
 
           return {
             id: reservationDoc.id,
+            reservationNumber:
+              typeof data.reservationNumber === 'string' && data.reservationNumber.trim()
+                ? data.reservationNumber.trim()
+                : reservationDoc.id,
             items,
             customer:
               typeof data.customer === 'string' && data.customer.trim()
@@ -103,6 +134,9 @@ function ReservationsContent() {
                 : typeof data.customerName === 'string' && data.customerName.trim()
                   ? data.customerName.trim()
                   : 'Walk-in Customer',
+            customerEmail: typeof data.customerEmail === 'string' ? data.customerEmail.trim() : '',
+            customerContactNumber:
+              typeof data.customerContactNumber === 'string' ? data.customerContactNumber.trim() : '',
             createdAt: toDate(data.createdAt ?? data.reservationDate),
             expiresAt: toDate(data.expiresAt),
             status:
@@ -123,6 +157,7 @@ function ReservationsContent() {
     )
 
     return () => {
+      unsubscribeInventory()
       unsubscribeReservations()
     }
   }, [])
@@ -132,134 +167,95 @@ function ReservationsContent() {
     [reservations]
   )
 
+  const searchableReservations = useMemo(
+    () =>
+      reservations.map((reservation) => {
+        const categoryNames = Array.from(
+          new Set(
+            reservation.items
+              .map((item) => inventoryCategoryById[item.id] || item.categoryName)
+              .map((name) => name.trim())
+              .filter(Boolean)
+          )
+        )
+
+        return {
+          reservation,
+          categoryNames,
+          searchIndex: [
+            reservation.reservationNumber,
+            reservation.customer,
+            reservation.customerEmail,
+            ...reservation.items.map((item) => item.name),
+            ...categoryNames,
+          ]
+            .join(' ')
+            .toLowerCase(),
+        }
+      }),
+    [reservations, inventoryCategoryById]
+  )
+
+  const categoryOptions = useMemo(() => {
+    const optionSet = new Set<string>()
+
+    searchableReservations.forEach(({ categoryNames }) => {
+      categoryNames.forEach((name) => optionSet.add(name))
+    })
+
+    return Array.from(optionSet).sort((a, b) => a.localeCompare(b))
+  }, [searchableReservations])
+
+  const filteredReservations = useMemo(() => {
+    const searchTerm = deferredSearch.trim().toLowerCase()
+    const startTime = startDate ? new Date(startDate).getTime() : null
+    const endTime = endDate ? new Date(new Date(endDate).setHours(23, 59, 59, 999)).getTime() : null
+
+    return searchableReservations
+      .filter(({ reservation, categoryNames, searchIndex }) => {
+        const matchesSearch = !searchTerm || searchIndex.includes(searchTerm)
+        const matchesStatus = statusFilter === 'all' ? true : reservation.status === statusFilter
+        const matchesCategory = categoryFilter === 'all' ? true : categoryNames.includes(categoryFilter)
+        const createdTime = reservation.createdAt?.getTime()
+        const matchesDate =
+          createdTime == null
+            ? !startTime && !endTime
+            : (startTime == null || createdTime >= startTime) && (endTime == null || createdTime <= endTime)
+
+        return matchesSearch && matchesStatus && matchesCategory && matchesDate
+      })
+      .map(({ reservation }) => reservation)
+  }, [searchableReservations, deferredSearch, statusFilter, categoryFilter, startDate, endDate])
+
   const handleCompleteReservation = async (reservation: Reservation) => {
     if (reservation.status !== 'Active') return
     if (!window.confirm(`Complete reservation for ${reservation.customer}?`)) return
 
     setActionId(reservation.id)
     try {
-      const reservationRef = doc(db, 'reservations', reservation.id)
-      const saleRef = doc(collection(db, 'sales'))
-
-      await runTransaction(db, async (transaction) => {
-        const reservationSnapshot = await transaction.get(reservationRef)
-        if (!reservationSnapshot.exists()) {
-          throw new Error('Reservation not found')
-        }
-
-        const data = reservationSnapshot.data() as Record<string, unknown>
-        if (data.status !== 'Active') {
-          throw new Error('Reservation is no longer active.')
-        }
-
-        const reservationItems = Array.isArray(data.items)
-          ? data.items
-              .map((item) => {
-                const reservationItem = item as Record<string, unknown>
-                const id = typeof reservationItem.id === 'string' ? reservationItem.id : ''
-                const name = typeof reservationItem.name === 'string' ? reservationItem.name.trim() : ''
-                const quantity = Math.max(0, toNumber(reservationItem.quantity, 0))
-                const price = Math.max(0, toNumber(reservationItem.price, 0))
-
-                if (!id || !name || quantity <= 0) return null
-
-                return { id, name, quantity, price }
-              })
-              .filter((item): item is ReservationItem => item !== null)
-          : reservation.items
-
-        if (reservationItems.length === 0) {
-          throw new Error('Reservation has no items.')
-        }
-
-        const customer =
-          typeof data.customer === 'string' && data.customer.trim()
-            ? data.customer.trim()
-            : reservation.customer
-
-        const saleItems: Array<{
-          itemId: string
-          name: string
-          quantity: number
-          price: number
-          categoryId: string
-          categoryName: string
-          status: string
-        }> = []
-
-        for (const item of reservationItems) {
-          const inventoryRef = doc(db, 'inventory', item.id)
-          const inventorySnapshot = await transaction.get(inventoryRef)
-          if (!inventorySnapshot.exists()) {
-            throw new Error(`${item.name} no longer exists in inventory.`)
-          }
-
-          const inventoryData = inventorySnapshot.data() as Record<string, unknown>
-          const currentStock = Math.max(0, toNumber(inventoryData.stock ?? inventoryData.quantity, 0))
-          const currentReservedStock = Math.max(0, toNumber(inventoryData.reservedStock, 0))
-
-          if (item.quantity > currentReservedStock) {
-            throw new Error(`Reserved quantity is invalid for ${item.name}.`)
-          }
-
-          if (item.quantity > currentStock) {
-            throw new Error(`Insufficient stock to complete reservation for ${item.name}.`)
-          }
-
-          const nextStock = currentStock - item.quantity
-          const nextReservedStock = Math.max(0, currentReservedStock - item.quantity)
-          const categoryName =
-            (typeof inventoryData.categoryName === 'string' && inventoryData.categoryName.trim()) ||
-            (typeof inventoryData.category === 'string' && inventoryData.category.trim()) ||
-            'Uncategorized'
-          const categoryId =
-            typeof inventoryData.categoryId === 'string' && inventoryData.categoryId.trim()
-              ? inventoryData.categoryId.trim()
-              : ''
-
-          transaction.update(inventoryRef, {
-            stock: nextStock,
-            quantity: nextStock,
-            reservedStock: nextReservedStock,
-            updatedAt: new Date().toISOString(),
-          })
-
-          saleItems.push({
-            itemId: item.id,
-            name: item.name,
-            quantity: item.quantity,
-            price: item.price,
-            categoryId,
-            categoryName,
-            status: 'completed',
-          })
-        }
-
-        const totalAmount = saleItems.reduce((sum, item) => sum + item.quantity * item.price, 0)
-        const categoryNames = Array.from(new Set(saleItems.map((item) => item.categoryName)))
-
-        transaction.set(saleRef, {
-          ...(saleItems.length === 1 ? { itemId: saleItems[0].itemId } : {}),
-          id: saleRef.id,
-          items: saleItems,
-          categoryName: categoryNames.join(', '),
-          category: categoryNames.join(', '),
-          customer,
-          totalAmount,
-          quantity: saleItems.reduce((sum, item) => sum + item.quantity, 0),
-          total: totalAmount,
-          amount: totalAmount,
-          status: 'Completed',
-          createdAt: serverTimestamp(),
-        })
-
-        transaction.update(reservationRef, {
-          status: 'Completed',
-          completedAt: serverTimestamp(),
-        })
+      const response = await fetch(`/api/reservations/${reservation.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'complete',
+          processedBy: {
+            uid: auth.currentUser?.uid ?? '',
+            email: auth.currentUser?.email ?? '',
+            name: auth.currentUser?.displayName ?? auth.currentUser?.email ?? '',
+          },
+        }),
       })
+
+      const payload = (await response.json()) as { error?: string }
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to complete reservation.')
+      }
+
+      toast.success('Reservation completed successfully.')
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : 'Failed to complete reservation.')
+      const message = error instanceof Error ? error.message : 'Failed to complete reservation.'
+      setPageError(message)
+      toast.error(message)
     } finally {
       setActionId(null)
     }
@@ -271,84 +267,102 @@ function ReservationsContent() {
 
     setActionId(reservation.id)
     try {
-      const reservationRef = doc(db, 'reservations', reservation.id)
-
-      await runTransaction(db, async (transaction) => {
-        const reservationSnapshot = await transaction.get(reservationRef)
-        if (!reservationSnapshot.exists()) {
-          throw new Error('Reservation not found')
-        }
-
-        const reservationData = reservationSnapshot.data() as Record<string, unknown>
-        if (reservationData.status !== 'Active') {
-          throw new Error('Reservation is no longer active.')
-        }
-
-        const reservationItems = Array.isArray(reservationData.items)
-          ? reservationData.items
-              .map((item) => {
-                const reservationItem = item as Record<string, unknown>
-                const id = typeof reservationItem.id === 'string' ? reservationItem.id : ''
-                const name = typeof reservationItem.name === 'string' ? reservationItem.name.trim() : ''
-                const quantity = Math.max(0, toNumber(reservationItem.quantity, 0))
-                const price = Math.max(0, toNumber(reservationItem.price, 0))
-
-                if (!id || !name || quantity <= 0) return null
-
-                return { id, name, quantity, price }
-              })
-              .filter((item): item is ReservationItem => item !== null)
-          : reservation.items
-
-        for (const item of reservationItems) {
-          const inventoryRef = doc(db, 'inventory', item.id)
-          const inventorySnapshot = await transaction.get(inventoryRef)
-          if (!inventorySnapshot.exists()) {
-            throw new Error(`${item.name} no longer exists in inventory.`)
-          }
-
-          const inventoryData = inventorySnapshot.data() as Record<string, unknown>
-          const currentReservedStock = Math.max(0, toNumber(inventoryData.reservedStock, 0))
-
-          if (item.quantity > currentReservedStock) {
-            throw new Error(`Reserved quantity is invalid for ${item.name}.`)
-          }
-
-          transaction.update(inventoryRef, {
-            reservedStock: Math.max(0, currentReservedStock - item.quantity),
-            updatedAt: new Date().toISOString(),
-          })
-        }
-
-        transaction.update(reservationRef, {
-          status: 'Cancelled',
-          cancelledAt: serverTimestamp(),
-        })
+      const response = await fetch(`/api/reservations/${reservation.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'cancel',
+          processedBy: {
+            uid: auth.currentUser?.uid ?? '',
+            email: auth.currentUser?.email ?? '',
+            name: auth.currentUser?.displayName ?? auth.currentUser?.email ?? '',
+          },
+        }),
       })
+
+      const payload = (await response.json()) as { error?: string }
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to cancel reservation.')
+      }
+
+      toast.success('Reservation cancelled and reserved stock released.')
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : 'Failed to cancel reservation.')
+      const message = error instanceof Error ? error.message : 'Failed to cancel reservation.'
+      setPageError(message)
+      toast.error(message)
     } finally {
       setActionId(null)
     }
   }
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-slate-100 px-4 py-8 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-[1700px] space-y-6">
-        <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+    <main className="min-h-[calc(100vh-64px)] bg-slate-100 px-2.5 py-3 sm:px-3">
+      <div className="mx-auto max-w-[1620px] space-y-4">
+        <header className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h1 className="text-4xl font-bold text-slate-900">Reservations</h1>
-            <p className="mt-1 text-lg text-slate-600">Review active reservations, complete reserved orders, or release held stock.</p>
+            <h1 className="text-[1.65rem] font-bold text-slate-900">Reservations</h1>
           </div>
-          <div className="rounded-xl border bg-white px-4 py-3 text-sm text-slate-700 shadow-sm">
+          <div className="rounded-xl border bg-white px-3.5 py-2 text-sm text-slate-700 shadow-sm">
             Active Reservations: <span className="font-semibold text-slate-900">{activeReservations}</span>
           </div>
         </header>
 
-        <section className="rounded-xl border bg-white p-6 shadow-sm">
-          <div className="mb-4 flex items-center gap-2">
+        <section className="rounded-xl border bg-white p-4 shadow-sm">
+          <div className="mb-3 flex items-center gap-2">
             <Package className="h-5 w-5 text-sky-900" />
-            <h2 className="text-xl font-semibold text-slate-900">Reservation Records</h2>
+            <h2 className="text-lg font-semibold text-slate-900">Reservation Records</h2>
+          </div>
+          <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <input
+              type="text"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Reservation number, customer, email, or item name"
+              className="w-full rounded-lg border border-slate-300 px-3.5 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500 md:col-span-2"
+            />
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as 'all' | ReservationStatus)}
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+            >
+              <option value="all">All Statuses</option>
+              <option value="Active">Active</option>
+              <option value="Completed">Completed</option>
+              <option value="Cancelled">Cancelled</option>
+              <option value="Expired">Expired</option>
+            </select>
+            <select
+              value={categoryFilter}
+              onChange={(event) => setCategoryFilter(event.target.value)}
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+            >
+              <option value="all">All Categories</option>
+              {categoryOptions.map((category) => (
+                <option key={category} value={category}>
+                  {category}
+                </option>
+              ))}
+            </select>
+            <input
+              type="date"
+              value={startDate}
+              max={endDate || undefined}
+              onChange={(event) => {
+                const nextStartDate = event.target.value
+                setStartDate(nextStartDate)
+                if (endDate && nextStartDate && new Date(endDate) < new Date(nextStartDate)) {
+                  setEndDate(nextStartDate)
+                }
+              }}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+            />
+            <input
+              type="date"
+              value={endDate}
+              min={startDate || undefined}
+              onChange={(event) => setEndDate(event.target.value)}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+            />
           </div>
 
           {pageError ? <p className="mb-4 text-sm text-red-600">{pageError}</p> : null}
@@ -356,8 +370,10 @@ function ReservationsContent() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead>Reservation No.</TableHead>
                 <TableHead>Item Name</TableHead>
                 <TableHead>Customer Name</TableHead>
+                <TableHead>Contact</TableHead>
                 <TableHead>Quantity Reserved</TableHead>
                 <TableHead>Reservation Date</TableHead>
                 <TableHead>Expires At</TableHead>
@@ -368,25 +384,32 @@ function ReservationsContent() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-slate-500">
+                  <TableCell colSpan={9} className="py-8 text-center text-slate-500">
                     Loading reservations...
                   </TableCell>
                 </TableRow>
-              ) : reservations.length === 0 ? (
+              ) : filteredReservations.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-slate-500">
+                  <TableCell colSpan={9} className="py-8 text-center text-slate-500">
                     No reservations found.
                   </TableCell>
                 </TableRow>
               ) : (
-                reservations.map((reservation) => (
+                filteredReservations.map((reservation) => (
                   <TableRow key={reservation.id}>
+                    <TableCell className="font-medium text-slate-900">{reservation.reservationNumber}</TableCell>
                     <TableCell className="font-medium text-slate-900">
                       {reservation.items.length > 0
                         ? reservation.items.map((item) => item.name).join(', ')
                         : 'No items'}
                     </TableCell>
                     <TableCell>{reservation.customer}</TableCell>
+                    <TableCell>
+                      <div className="text-sm text-slate-700">
+                        <p>{reservation.customerContactNumber || 'N/A'}</p>
+                        <p className="text-xs text-slate-500">{reservation.customerEmail || 'No email'}</p>
+                      </div>
+                    </TableCell>
                     <TableCell>{reservation.items.reduce((sum, item) => sum + item.quantity, 0)}</TableCell>
                     <TableCell>{formatDate(reservation.createdAt)}</TableCell>
                     <TableCell>{formatDate(reservation.expiresAt)}</TableCell>
@@ -419,9 +442,7 @@ function ReservationsContent() {
                             Cancel
                           </Button>
                         </div>
-                      ) : (
-                        <span className="text-sm text-slate-500">No actions available</span>
-                      )}
+                      ) : null}
                     </TableCell>
                   </TableRow>
                 ))

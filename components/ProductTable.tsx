@@ -1,6 +1,6 @@
 'use client'
 
-import { Pencil, Trash2 } from 'lucide-react'
+import { ArrowRightLeft, Pencil, Trash2 } from 'lucide-react'
 
 export interface Product {
   id: string
@@ -9,8 +9,12 @@ export interface Product {
   category: string
   price: number
   quantity: number
+  reservedStock: number
+  availableStock: number
   minStock: number
   condition: 'New' | 'Refurbished'
+  description?: string
+  imageUrl?: string
   stockStatus: 'Available' | 'Low Stock' | 'Out of Stock'
   isDeleted?: boolean
 }
@@ -19,6 +23,7 @@ interface ProductTableProps {
   products: Product[]
   canManage: boolean
   onEdit: (product: Product) => void
+  onAdjustStock: (product: Product) => void
   onDelete: (productId: string) => Promise<void> | void
   deletingProductId?: string | null
   loading?: boolean
@@ -47,6 +52,7 @@ export default function ProductTable({
   products,
   canManage,
   onEdit,
+  onAdjustStock,
   onDelete,
   deletingProductId,
   loading = false,
@@ -64,40 +70,54 @@ export default function ProductTable({
       <table className="min-w-full divide-y divide-slate-200">
         <thead className="bg-slate-50">
           <tr>
-            <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Item Name</th>
-            <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Category</th>
-            <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Price</th>
-            <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Quantity</th>
-            <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Condition</th>
-            <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Stock Status</th>
-            {canManage && <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Actions</th>}
+            <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Item Name</th>
+            <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Category</th>
+            <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Price</th>
+            <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Stock</th>
+            <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Reserved</th>
+            <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Available</th>
+            <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Condition</th>
+            <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Stock Status</th>
+            {canManage && <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Actions</th>}
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-200 bg-white">
           {products.map((product) => (
             <tr key={product.id} className="hover:bg-slate-50">
-              <td className="px-4 py-3 text-sm font-medium text-slate-900">{product.name}</td>
-              <td className="px-4 py-3 text-sm text-slate-700">{product.category}</td>
-              <td className="px-4 py-3 text-sm text-slate-900">{formatPrice(product.price)}</td>
-              <td className="px-4 py-3 text-sm font-semibold text-slate-900">
+              <td className="px-3.5 py-2.5 text-sm text-slate-700">
+                <p className="font-medium text-slate-900">{product.name}</p>
+                <p className="text-xs text-slate-500">Variant: {product.condition}</p>
+              </td>
+              <td className="px-3.5 py-2.5 text-sm text-slate-700">{product.category}</td>
+              <td className="px-3.5 py-2.5 text-sm text-slate-900">{formatPrice(product.price)}</td>
+              <td className="px-3.5 py-2.5 text-sm font-semibold text-slate-900">
                 {product.quantity}
                 <span className="ml-2 text-xs font-normal text-slate-500">Min: {product.minStock}</span>
               </td>
-              <td className="px-4 py-3 text-sm">
+              <td className="px-3.5 py-2.5 text-sm text-slate-700">{product.reservedStock}</td>
+              <td className="px-3.5 py-2.5 text-sm font-semibold text-slate-900">{product.availableStock}</td>
+              <td className="px-3.5 py-2.5 text-sm">
                 <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${conditionClass(product.condition)}`}>
                   {product.condition}
                 </span>
               </td>
-              <td className="px-4 py-3 text-sm">
+              <td className="px-3.5 py-2.5 text-sm">
                 <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${stockStatusClass(product.stockStatus)}`}>
                   {product.stockStatus}
                 </span>
               </td>
               {canManage && (
-                <td className="px-4 py-3 text-sm">
-                  <div className="flex items-center gap-3">
+                <td className="px-3.5 py-2.5 text-sm">
+                  <div className="flex items-center gap-2.5">
                     <button onClick={() => onEdit(product)} title="Edit" className="text-sky-800 transition hover:text-sky-600">
                       <Pencil className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={() => onAdjustStock(product)}
+                      title="Adjust stock"
+                      className="text-amber-700 transition hover:text-amber-600"
+                    >
+                      <ArrowRightLeft className="h-4 w-4" />
                     </button>
                     <button
                       onClick={() => onDelete(product.id)}

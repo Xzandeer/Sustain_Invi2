@@ -7,6 +7,9 @@ interface SalesFiltersProps {
   onSearchChange: (value: string) => void
   statusFilter: 'all' | 'completed' | 'voided'
   onStatusFilterChange: (value: 'all' | 'completed' | 'voided') => void
+  categoryFilter: string
+  onCategoryFilterChange: (value: string) => void
+  categoryOptions: string[]
   startDate: string
   onStartDateChange: (value: string) => void
   endDate: string
@@ -18,6 +21,9 @@ export default function SalesFilters({
   onSearchChange,
   statusFilter,
   onStatusFilterChange,
+  categoryFilter,
+  onCategoryFilterChange,
+  categoryOptions,
   startDate,
   onStartDateChange,
   endDate,
@@ -87,18 +93,34 @@ export default function SalesFilters({
   }
 
   return (
-    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-      <div className="md:col-span-2">
+    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <div className="md:col-span-2 xl:col-span-2">
         <label className="mb-1 block text-sm font-medium text-slate-700">
-          Search by Transaction ID or Customer
+          Search Sales Records
         </label>
         <input
           type="text"
           value={search}
           onChange={(event) => onSearchChange(event.target.value)}
-          placeholder="Enter transaction ID or customer name..."
+          placeholder="Receipt number, customer, email, or item name"
           className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-500"
         />
+      </div>
+
+      <div>
+        <label className="mb-1 block text-sm font-medium text-slate-700">Category</label>
+        <select
+          value={categoryFilter}
+          onChange={(event) => onCategoryFilterChange(event.target.value)}
+          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+        >
+          <option value="all">All Categories</option>
+          {categoryOptions.map((category) => (
+            <option key={category} value={category}>
+              {category}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div>
@@ -138,7 +160,7 @@ export default function SalesFilters({
         </select>
       </div>
 
-      {error && <p className="text-sm text-red-500 md:col-span-2 xl:col-span-4">{error}</p>}
+      {error && <p className="text-sm text-red-500 md:col-span-2 xl:col-span-5">{error}</p>}
     </div>
   )
 }

@@ -21,26 +21,28 @@ interface StatCard {
 function StatCard({ title, value, subtitle, icon: Icon, danger = false, loading = false }: StatCard & { loading?: boolean }) {
   return (
     <article
-      className={`rounded-2xl border p-6 shadow-sm ${
-        danger ? 'border-red-200 bg-red-50' : 'border-slate-200 bg-white'
+      className={`rounded-2xl border p-5 shadow-sm ${
+        danger
+          ? 'border-rose-200 bg-rose-50/90 shadow-[0_10px_24px_rgba(190,24,93,0.08)]'
+          : 'border-slate-200/90 bg-white shadow-[0_10px_24px_rgba(59,76,117,0.08)]'
       }`}
     >
-      <div className="flex items-start justify-between gap-4">
-        <div className="space-y-3">
-          <p className="text-sm text-gray-500">{title}</p>
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-2.5">
+          <p className="text-xs uppercase tracking-[0.08em] text-slate-500">{title}</p>
           {loading ? (
-            <div className="space-y-2">
+              <div className="space-y-2">
               <div className="h-8 w-28 animate-pulse rounded bg-slate-200" />
               <div className="h-4 w-24 animate-pulse rounded bg-slate-200" />
-            </div>
+              </div>
           ) : (
             <>
-              <p className={`text-2xl font-semibold ${danger ? 'text-red-600' : 'text-slate-900'}`}>{value}</p>
-              <p className="text-sm text-gray-500">{subtitle}</p>
+              <p className={`text-[1.65rem] font-semibold ${danger ? 'text-rose-700' : 'text-slate-900'}`}>{value}</p>
+              <p className="text-xs text-slate-500">{subtitle}</p>
             </>
           )}
         </div>
-        <div className={`rounded-xl p-2 ${danger ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-700'}`}>
+        <div className={`rounded-xl p-2 ${danger ? 'bg-rose-100 text-rose-700' : 'bg-[color:var(--accent)] text-[color:var(--primary)]'}`}>
           <Icon className="h-5 w-5" />
         </div>
       </div>
@@ -85,7 +87,7 @@ export default function DashboardStats({
   ]
 
   return (
-    <section className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
+    <section className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
       {cards.map((card) => (
         <StatCard key={card.title} {...card} loading={loading} />
       ))}

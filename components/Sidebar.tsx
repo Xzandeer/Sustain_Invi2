@@ -32,8 +32,18 @@ const bottomItems = [
 export default function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
-  const { isAdmin } = useUserRole()
+  const { isAdmin, canViewStockLogs } = useUserRole()
   const visibleBottomItems = bottomItems.filter((item) => (item.href === '/users' ? isAdmin : true))
+  const visibleNavItems = navItems.filter((item) => {
+    if (item.href === '/inventory/trash') return isAdmin
+    return true
+  })
+
+  const inventoryExtras = [
+    isAdmin || canViewStockLogs
+      ? { name: 'Stock Logs', href: '/inventory/logs', icon: Package }
+      : null,
+  ].filter((item): item is { name: string; href: string; icon: typeof Package } => item !== null)
 
   const handleLogout = async () => {
     try {
@@ -45,16 +55,15 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="h-screen w-64 bg-slate-100 border-r flex flex-col">
+    <aside className="flex h-screen w-48 flex-col border-r border-slate-200/90 bg-[color:var(--sidebar)]">
       <div className="flex-1">
-        <div className="p-6 border-b">
-          <h1 className="text-lg font-bold text-slate-900">JMGS JAPON SURPLUS</h1>
-          <p className="text-sm text-gray-500">Sales & Inventory</p>
+        <div className="border-b border-slate-200/90 px-3.5 py-3.5">
+          <h1 className="text-[0.95rem] font-bold tracking-[0.02em] text-[color:var(--sidebar-foreground)]">JMGS JAPON SURPLUS</h1>
         </div>
 
-        <div className="flex-1 p-4 space-y-2">
-          <nav className="space-y-2">
-            {navItems.map((item) => {
+        <div className="flex-1 p-2">
+          <nav className="space-y-1">
+            {visibleNavItems.map((item) => {
               const Icon = item.icon
               const active = pathname === item.href
 
@@ -62,10 +71,29 @@ export default function Sidebar() {
                 <Link
                   key={item.name}
                   href={item.href}
-                  className={`flex items-center gap-3 px-4 py-3 rounded-lg cursor-pointer transition ${
+                  className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.75 transition ${
                     active
-                      ? 'bg-blue-900 text-white'
-                      : 'text-gray-700 hover:bg-slate-200'
+                      ? 'bg-[color:var(--sidebar-primary)] text-[color:var(--sidebar-primary-foreground)] shadow-sm'
+                      : 'text-slate-700 hover:bg-sky-50 hover:text-slate-900'
+                  }`}
+                >
+                  <Icon className="h-5 w-5" />
+                  <span className="text-sm font-medium">{item.name}</span>
+                </Link>
+              )
+            })}
+            {inventoryExtras.map((item) => {
+              const Icon = item.icon
+              const active = pathname === item.href
+
+              return (
+                <Link
+                  key={item.name}
+                  href={item.href}
+                  className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.75 transition ${
+                    active
+                      ? 'bg-[color:var(--sidebar-primary)] text-[color:var(--sidebar-primary-foreground)] shadow-sm'
+                      : 'text-slate-700 hover:bg-sky-50 hover:text-slate-900'
                   }`}
                 >
                   <Icon className="h-5 w-5" />
@@ -77,7 +105,7 @@ export default function Sidebar() {
         </div>
       </div>
 
-      <div className="p-4 border-t">
+      <div className="border-t border-slate-200/90 p-2">
         {visibleBottomItems.map((item) => {
           const Icon = item.icon
           const active = pathname === item.href
@@ -86,10 +114,10 @@ export default function Sidebar() {
             <Link
               key={item.name}
               href={item.href}
-              className={`mb-2 flex items-center gap-3 rounded-lg px-4 py-3 transition last:mb-0 ${
+              className={`mb-2 flex items-center gap-2.5 rounded-lg px-2.5 py-1.75 transition last:mb-0 ${
                 active
-                  ? 'bg-blue-900 text-white'
-                  : 'text-gray-700 hover:bg-slate-200'
+                  ? 'bg-[color:var(--sidebar-primary)] text-[color:var(--sidebar-primary-foreground)] shadow-sm'
+                  : 'text-slate-700 hover:bg-sky-50 hover:text-slate-900'
               }`}
             >
               <Icon className="h-5 w-5" />
@@ -101,7 +129,7 @@ export default function Sidebar() {
         <button
           type="button"
           onClick={handleLogout}
-          className="mb-2 flex w-full items-center gap-3 rounded-lg px-4 py-3 text-gray-700 transition last:mb-0 hover:bg-slate-200"
+          className="mb-2 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.75 text-slate-700 transition last:mb-0 hover:bg-sky-50 hover:text-slate-900"
         >
           <LogOut className="h-5 w-5" />
           <span className="text-sm font-medium">Logout</span>

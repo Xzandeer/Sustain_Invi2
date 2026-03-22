@@ -5,12 +5,15 @@ import { Eye, X } from 'lucide-react'
 export interface SaleTransaction {
   docId: string
   id: string
+  receiptNumber: string
   customer: string
+  customerEmail: string
   items: Array<{
     name: string
     quantity: number
     price: number
     categoryId: string
+    categoryName?: string
     status: string
   }>
   totalAmount: number
@@ -70,7 +73,7 @@ export default function SalesTable({
           <tr>
             <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Item Name</th>
             <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Date & Time</th>
-            <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Transaction ID</th>
+            <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Receipt No.</th>
             <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Customer</th>
             <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Amount</th>
             <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Status</th>
@@ -88,8 +91,11 @@ export default function SalesTable({
                   {transaction.items.length > 0 ? transaction.items.map((item) => item.name).join(', ') : '-'}
                 </td>
                 <td className="px-4 py-3 text-sm text-slate-700">{formatDate(transaction.createdAt)}</td>
-                <td className="px-4 py-3 text-sm font-medium text-slate-900">{transaction.id}</td>
-                <td className="px-4 py-3 text-sm text-slate-700">{transaction.customer}</td>
+                <td className="px-4 py-3 text-sm font-medium text-slate-900">{transaction.receiptNumber}</td>
+                <td className="px-4 py-3 text-sm text-slate-700">
+                  <p>{transaction.customer}</p>
+                  <p className="text-xs text-slate-500">{transaction.customerEmail || 'No email'}</p>
+                </td>
                 <td className="px-4 py-3 text-sm font-semibold text-slate-900">{formatAmount(transaction.totalAmount)}</td>
                 <td className="px-4 py-3 text-sm">
                   <span
