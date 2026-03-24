@@ -3,7 +3,7 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { collection, onSnapshot } from 'firebase/firestore'
 import { toPng } from 'html-to-image'
-import { Download, Mail, Minus, Plus, Search, ShoppingCart, Trash2 } from 'lucide-react'
+import { Download, Mail, Minus, Plus, Printer, Search, ShoppingCart, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { auth, db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/ProtectedRoute'
@@ -15,8 +15,10 @@ import {
   buildGmailComposeLink,
   buildMailtoLink,
   CompletedTransactionDocument,
+  ReceiptRecord,
 } from '@/lib/transactionDocuments'
 import { normalizeInventoryCondition } from '@/lib/server/salesInventoryMetrics'
+import { openReceiptPrintWindow } from '@/lib/receiptPrint'
 
 interface SaleTransaction {
   docId: string
@@ -31,7 +33,7 @@ interface SaleTransaction {
     price: number
     categoryId: string
     categoryName?: string
-    status: string
+    condition: string
   }>
   totalAmount: number
   status: 'completed' | 'voided'
@@ -45,7 +47,7 @@ interface ParsedSaleItem {
   price: number
   categoryId: string
   categoryName: string
-  status: string
+  condition: string
 }
 
 interface InventoryItem {
@@ -147,10 +149,50 @@ function SalesContent() {
   const [customerContactNumber, setCustomerContactNumber] = useState('')
   const [cart, setCart] = useState<CartItem[]>([])
   const [completedDocument, setCompletedDocument] = useState<CompletedTransactionDocument | null>(null)
+  const [activeReceipt, setActiveReceipt] = useState<ReceiptRecord | null>(null)
 
   const [selectedTransaction, setSelectedTransaction] = useState<SaleTransaction | null>(null)
   const documentRef = useRef<HTMLDivElement | null>(null)
   const deferredSearch = useDeferredValue(search)
+
+  const RECEIPT_STORAGE_KEY = 'sustain-invi2-activeReceipt'
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem(RECEIPT_STORAGE_KEY)
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved) as ReceiptRecord
+        setActiveReceipt(parsed)
+        setCompletedDocument(parsed.document)
+        return
+      } catch (jsonError) {
+        console.warn('Failed to parse saved receipt from localStorage:', jsonError)
+      }
+    }
+
+    ;(async () => {
+      try {
+        const response = await fetch('/api/receipts?status=active&limit=1')
+        if (!response.ok) return
+        const payload = (await response.json()) as { data?: ReceiptRecord[] }
+        const [latest] = payload.data ?? []
+        if (latest) {
+          setActiveReceipt(latest)
+          setCompletedDocument(latest.document)
+        }
+      } catch (fetchError) {
+        console.error('Error loading latest active receipt:', fetchError)
+      }
+    })()
+  }, [])
+
+  useEffect(() => {
+    if (activeReceipt) {
+      window.localStorage.setItem(RECEIPT_STORAGE_KEY, JSON.stringify(activeReceipt))
+    } else {
+      window.localStorage.removeItem(RECEIPT_STORAGE_KEY)
+    }
+  }, [activeReceipt])
 
   useEffect(() => {
     const unsubscribeCategories = onSnapshot(
@@ -196,7 +238,7 @@ function SalesContent() {
                         : typeof saleItem.category === 'string' && saleItem.category.trim()
                           ? saleItem.category.trim()
                           : '',
-                    status: typeof saleItem.status === 'string' ? saleItem.status : 'completed',
+                    condition: saleItem.condition,
                   }
                 })
                 .filter((item): item is ParsedSaleItem => item !== null)
@@ -242,7 +284,7 @@ function SalesContent() {
                 (typeof data.category === 'string' && data.category.trim()) ||
                 'Uncategorized',
               price: Math.max(0, toNumber(data.price, 0)),
-              condition: normalizeInventoryCondition(data.status),
+              condition: normalizeInventoryCondition(data.condition),
               stock: Math.max(0, toNumber(data.stock ?? data.quantity, 0)),
               reservedStock: Math.max(0, toNumber(data.reservedStock, 0)),
               availableStock: Math.max(
@@ -437,7 +479,9 @@ function SalesContent() {
   }
 
   const startNewTransaction = () => {
+    setCart([])
     setCompletedDocument(null)
+    setActiveReceipt(null)
     setError('')
     setSuccessMessage('')
   }
@@ -580,6 +624,8 @@ function SalesContent() {
       setCustomerFullName('')
       setCustomerEmail('')
       setCustomerContactNumber('')
+      const active = result.receipt ?? null
+      setActiveReceipt(active)
       setCompletedDocument(result.document ?? null)
       setSuccessMessage('Sale completed successfully.')
       toast.success('Sale completed successfully.')
@@ -656,6 +702,8 @@ function SalesContent() {
       setCustomerFullName('')
       setCustomerEmail('')
       setCustomerContactNumber('')
+      const active = result.receipt ?? null
+      setActiveReceipt(active)
       setCompletedDocument(result.document ?? null)
       setSuccessMessage('Reservation created successfully.')
       toast.success('Reservation created successfully.')
@@ -849,6 +897,18 @@ function SalesContent() {
                   >
                     <Download className="h-4 w-4" />
                     Download Image
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (completedDocument) {
+                        openReceiptPrintWindow(completedDocument)
+                      }
+                    }}
+                    className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+                  >
+                    <Printer className="h-4 w-4" />
+                    Print Receipt
                   </button>
                   <button
                     type="button"

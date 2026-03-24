@@ -5,10 +5,13 @@ import { collection, onSnapshot, orderBy, query } from 'firebase/firestore'
 import { CheckCircle2, Package, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import ProtectedRoute from '@/components/ProtectedRoute'
+import { CancellationReasonModal } from '@/components/CancellationReasonModal'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { auth, db } from '@/lib/firebase'
 import { toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
+import { getCancellationReasonTypeLabel, type CancellationReasonOption } from '@/lib/cancellationReasons'
+import { expireReservations } from '@/lib/reservationExpiration'
 
 type ReservationStatus = 'Active' | 'Completed' | 'Cancelled' | 'Expired'
 
@@ -18,6 +21,7 @@ interface ReservationItem {
   quantity: number
   price: number
   categoryName: string
+  condition: string
 }
 
 interface Reservation {
@@ -30,6 +34,10 @@ interface Reservation {
   createdAt: Date | null
   expiresAt: Date | null
   status: ReservationStatus
+  cancellationReason?: string
+  cancellationReasonType?: 'manual' | 'system'
+  cancelledBy?: string
+  cancelledAt?: Date | null
 }
 
 const formatDate = (value: Date | null) => {
@@ -71,7 +79,16 @@ function ReservationsContent() {
   const [inventoryCategoryById, setInventoryCategoryById] = useState<Record<string, string>>({})
   const deferredSearch = useDeferredValue(search)
 
+  // Cancellation modal state
+  const [cancellationModalOpen, setCancellationModalOpen] = useState(false)
+  const [reservationToCancel, setReservationToCancel] = useState<Reservation | null>(null)
+
   useEffect(() => {
+    // Check and expire reservations that have passed their expiration date
+    expireReservations().catch((error) => {
+      console.error('Error expiring reservations:', error)
+    })
+
     const unsubscribeInventory = onSnapshot(
       collection(db, 'inventory'),
       (snapshot) => {
@@ -116,6 +133,7 @@ function ReservationsContent() {
                     quantity: Math.max(0, toNumber(reservationItem.quantity, 0)),
                     price: Math.max(0, toNumber(reservationItem.price, 0)),
                     categoryName: '',
+                    condition: typeof reservationItem.condition === 'string' ? reservationItem.condition : 'New',
                   } satisfies ReservationItem
                 })
                 .filter((item): item is ReservationItem => item !== null && item.quantity > 0)
@@ -143,6 +161,10 @@ function ReservationsContent() {
               data.status === 'Active' || data.status === 'Completed' || data.status === 'Cancelled' || data.status === 'Expired'
                 ? data.status
                 : 'Active',
+            cancellationReason: typeof data.cancellationReason === 'string' ? data.cancellationReason : undefined,
+            cancellationReasonType: data.cancellationReasonType === 'manual' || data.cancellationReasonType === 'system' ? data.cancellationReasonType : undefined,
+            cancelledBy: typeof data.cancelledByName === 'string' ? data.cancelledByName : undefined,
+            cancelledAt: toDate(data.cancelledAt),
           } satisfies Reservation
         })
 
@@ -187,6 +209,7 @@ function ReservationsContent() {
             reservation.customer,
             reservation.customerEmail,
             ...reservation.items.map((item) => item.name),
+            ...reservation.items.map((item) => item.condition),
             ...categoryNames,
           ]
             .join(' ')
@@ -261,17 +284,25 @@ function ReservationsContent() {
     }
   }
 
-  const handleCancelReservation = async (reservation: Reservation) => {
+  const handleCancelReservation = (reservation: Reservation) => {
     if (reservation.status !== 'Active') return
-    if (!window.confirm(`Cancel reservation for ${reservation.customer}?`)) return
+    setReservationToCancel(reservation)
+    setCancellationModalOpen(true)
+  }
 
-    setActionId(reservation.id)
+  const handleConfirmCancellation = async (reason: CancellationReasonOption, customReason?: string) => {
+    if (!reservationToCancel) return
+
+    setActionId(reservationToCancel.id)
     try {
-      const response = await fetch(`/api/reservations/${reservation.id}`, {
+      const response = await fetch(`/api/reservations/${reservationToCancel.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'cancel',
+          cancellationReason: reason,
+          cancellationReasonType: 'manual',
+          customCancellationReason: customReason,
           processedBy: {
             uid: auth.currentUser?.uid ?? '',
             email: auth.currentUser?.email ?? '',
@@ -286,6 +317,8 @@ function ReservationsContent() {
       }
 
       toast.success('Reservation cancelled and reserved stock released.')
+      setCancellationModalOpen(false)
+      setReservationToCancel(null)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to cancel reservation.'
       setPageError(message)
@@ -378,19 +411,20 @@ function ReservationsContent() {
                 <TableHead>Reservation Date</TableHead>
                 <TableHead>Expires At</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Cancellation Info</TableHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-8 text-center text-slate-500">
+                  <TableCell colSpan={10} className="py-8 text-center text-slate-500">
                     Loading reservations...
                   </TableCell>
                 </TableRow>
               ) : filteredReservations.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-8 text-center text-slate-500">
+                  <TableCell colSpan={10} className="py-8 text-center text-slate-500">
                     No reservations found.
                   </TableCell>
                 </TableRow>
@@ -400,7 +434,7 @@ function ReservationsContent() {
                     <TableCell className="font-medium text-slate-900">{reservation.reservationNumber}</TableCell>
                     <TableCell className="font-medium text-slate-900">
                       {reservation.items.length > 0
-                        ? reservation.items.map((item) => item.name).join(', ')
+                        ? reservation.items.map((item) => `${item.name} (${item.condition})`).join(', ')
                         : 'No items'}
                     </TableCell>
                     <TableCell>{reservation.customer}</TableCell>
@@ -417,6 +451,23 @@ function ReservationsContent() {
                       <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${badgeClassNames[reservation.status]}`}>
                         {reservation.status}
                       </span>
+                    </TableCell>
+                    <TableCell>
+                      {reservation.status === 'Cancelled' && reservation.cancellationReason ? (
+                        <div className="space-y-1 text-xs">
+                          <p className="font-medium text-slate-900">{reservation.cancellationReason}</p>
+                          <p className="text-slate-600">
+                            {reservation.cancellationReasonType
+                              ? getCancellationReasonTypeLabel(reservation.cancellationReasonType)
+                              : 'Unknown'}
+                          </p>
+                          {reservation.cancelledBy && (
+                            <p className="text-slate-500">By: {reservation.cancelledBy}</p>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-slate-400">—</span>
+                      )}
                     </TableCell>
                     <TableCell>
                       {reservation.status === 'Active' ? (
@@ -451,6 +502,20 @@ function ReservationsContent() {
           </Table>
         </section>
       </div>
+
+      {reservationToCancel && (
+        <CancellationReasonModal
+          isOpen={cancellationModalOpen}
+          customerName={reservationToCancel.customer}
+          reservationNumber={reservationToCancel.reservationNumber}
+          isLoading={actionId === reservationToCancel.id}
+          onConfirm={handleConfirmCancellation}
+          onCancel={() => {
+            setCancellationModalOpen(false)
+            setReservationToCancel(null)
+          }}
+        />
+      )}
     </main>
   )
 }

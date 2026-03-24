@@ -14,7 +14,7 @@ export interface SaleTransaction {
     price: number
     categoryId: string
     categoryName?: string
-    status: string
+    condition: string
   }>
   totalAmount: number
   status: 'completed' | 'voided'

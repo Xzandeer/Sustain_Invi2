@@ -67,7 +67,7 @@ export async function GET(req: NextRequest) {
         stock: toNumber(data.stock ?? data.quantity, 0),
         reservedStock: toNumber(data.reservedStock, 0),
         minStock: toNumber(data.minStock, 0),
-        status: normalizeInventoryCondition(data.status),
+        condition: normalizeInventoryCondition(data.condition),
         stockStatus: getStockStatus(data),
         isDeleted: data.isDeleted === true,
       }
@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
     const price = toNumber(body.price, Number.NaN)
     const quantity = toNumber(body.stock ?? body.quantity, Number.NaN)
     const minStock = toNumber(body.minStock, Number.NaN)
-    const condition = normalizeInventoryCondition(body.status)
+    const condition = normalizeInventoryCondition(body.condition)
     const description = typeof body.description === 'string' ? body.description.trim() : ''
     const imageUrl = typeof body.imageUrl === 'string' ? body.imageUrl.trim() : ''
     const processedBy = await getProcessedByInfo(body.processedBy)
@@ -158,7 +158,7 @@ export async function POST(req: NextRequest) {
         stock: updatedQuantity,
         reservedStock: existingVariant.reservedStock,
         minStock: existingVariant.minStock,
-        status: condition,
+        condition: condition,
         categoryName,
         category: categoryName,
         description,
@@ -197,7 +197,7 @@ export async function POST(req: NextRequest) {
             stock: updatedQuantity,
             reservedStock: existingVariant.reservedStock,
             minStock: existingVariant.minStock,
-            status: condition,
+            condition: condition,
             description,
             imageUrl,
             stockStatus,
@@ -248,7 +248,7 @@ export async function POST(req: NextRequest) {
           stock: quantity,
           reservedStock: 0,
           minStock,
-          status: condition,
+          condition: condition,
           description,
           imageUrl,
           stockStatus: created.stockStatus,

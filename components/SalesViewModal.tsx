@@ -13,7 +13,7 @@ export interface SaleTransaction {
     quantity: number
     price: number
     categoryId: string
-    status: string
+    condition: string
   }>
   totalAmount: number
   status: 'completed' | 'voided'
@@ -64,7 +64,7 @@ export default function SalesViewModal({ transaction, onClose }: SalesViewModalP
           <p><span className="font-semibold text-slate-900">Email:</span> {transaction.customerEmail || 'No email provided'}</p>
           <p>
             <span className="font-semibold text-slate-900">Items purchased:</span>{' '}
-            {transaction.items.length > 0 ? transaction.items.map((item) => item.name).join(', ') : 'N/A'}
+            {transaction.items.length > 0 ? transaction.items.map((item) => `${item.name} (${item.condition})`).join(', ') : 'N/A'}
           </p>
           <p><span className="font-semibold text-slate-900">Total amount:</span> {formatAmount(transaction.totalAmount)}</p>
           <p><span className="font-semibold text-slate-900">Date:</span> {formatDate(transaction.createdAt)}</p>

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { collection, doc, getDocs, query, runTransaction, serverTimestamp } from 'firebase/firestore'
+import { collection, doc, getDocs, query, runTransaction, serverTimestamp, addDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import {
   createStockLog,
@@ -15,6 +15,7 @@ import {
   STORE_TAGLINE,
   TransactionLineItem,
   ReservationTicketDocument,
+  ReceiptRecord,
 } from '@/lib/transactionDocuments'
 
 interface ReservationPayload {
@@ -251,6 +252,25 @@ export async function POST(req: NextRequest) {
       notice: RESERVATION_NOTICE,
     }
 
+    const receiptRecord: ReceiptRecord = {
+      id: reservationRef.id,
+      receiptNumber: numberResult.value,
+      transactionType: 'reservation',
+      transactionId: reservationRef.id,
+      customerName: customerDetails.fullName,
+      contactNumber: customerDetails.contactNumber,
+      items: ticketItems,
+      subtotal: reservationItems.reduce((sum, item) => sum + item.quantity * item.price, 0),
+      discount: 0,
+      total: reservationItems.reduce((sum, item) => sum + item.quantity * item.price, 0),
+      cashierName: processedBy.name,
+      createdAt: nowIso,
+      status: 'active',
+      document: ticketDocument,
+    }
+
+    await addDoc(collection(db, 'receipts'), receiptRecord)
+
     return NextResponse.json(
       {
         data: {
@@ -262,6 +282,7 @@ export async function POST(req: NextRequest) {
           expiresAt: expiresAt.toISOString(),
         },
         document: ticketDocument,
+        receipt: receiptRecord,
       },
       { status: 201 }
     )

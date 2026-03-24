@@ -3,6 +3,7 @@ import { addDoc, collection, doc, getDoc, runTransaction, serverTimestamp } from
 import { db } from '@/lib/firebase'
 import { createStockLog, getProcessedByInfo } from '@/lib/server/inventory'
 import { toNumber } from '@/lib/server/salesInventoryMetrics'
+import { isCancellationReasonValid, SYSTEM_CANCELLATION_REASON, type CancellationReasonType } from '@/lib/cancellationReasons'
 
 interface RouteContext {
   params: Promise<{ id: string }>
@@ -11,6 +12,9 @@ interface RouteContext {
 interface ReservationActionPayload {
   action?: unknown
   processedBy?: unknown
+  cancellationReason?: unknown
+  cancellationReasonType?: unknown
+  customCancellationReason?: unknown
 }
 
 type ReservationStatus = 'Active' | 'Completed' | 'Cancelled' | 'Expired'
@@ -63,8 +67,22 @@ export async function PATCH(req: Request, context: RouteContext) {
     const action = typeof body.action === 'string' ? body.action.trim().toLowerCase() : ''
     const processedBy = await getProcessedByInfo(body.processedBy)
 
-    if (!id || !['complete', 'cancel'].includes(action)) {
+    // Parse and validate cancellation reason if provided
+    const selectedReason = isCancellationReasonValid(body.cancellationReason)
+      ? (body.cancellationReason as string)
+      : null
+    const cancellationReasonType = body.cancellationReasonType === 'manual' ? 'manual' : 'system'
+
+    if (!id || !['complete', 'cancel', 'expire'].includes(action)) {
       return NextResponse.json({ error: 'Invalid reservation action.' }, { status: 400 })
+    }
+
+    // For manual cancellation, require a reason
+    if (action === 'cancel' && !selectedReason) {
+      return NextResponse.json(
+        { error: 'Cancellation reason is required for manual cancellation.' },
+        { status: 400 }
+      )
     }
 
     const reservationRef = doc(db, 'reservations', id)
@@ -221,6 +239,27 @@ export async function PATCH(req: Request, context: RouteContext) {
           updatedAt: nowIso,
         })
 
+        const cancellationDetails =
+          action === 'expire'
+            ? {
+                cancellationReason: SYSTEM_CANCELLATION_REASON,
+                cancellationReasonType: 'system' as CancellationReasonType,
+                cancelledBy: 'System',
+              }
+            : {
+                cancellationReason:
+                  selectedReason === 'Other'
+                    ? typeof body.customCancellationReason === 'string'
+                      ? body.customCancellationReason.trim()
+                      : selectedReason
+                    : selectedReason,
+                cancellationReasonType: 'manual' as CancellationReasonType,
+                cancelledBy: processedBy.name,
+              }
+
+        const reasonSuffix =
+          action === 'expire' ? `Reservation expired - ${SYSTEM_CANCELLATION_REASON}` : `Reservation cancelled - ${cancellationDetails.cancellationReason}`
+
         pendingLogs.push({
           actionType: 'reservation_release',
           itemId: item.id,
@@ -233,14 +272,34 @@ export async function PATCH(req: Request, context: RouteContext) {
           stockAfter: currentStock,
           reservedBefore: currentReservedStock,
           reservedAfter: nextReservedStock,
-          remarks: `Reservation ${id} released.`,
+          remarks: reasonSuffix,
         })
       }
+
+      const cancellationDetails =
+        action === 'expire'
+          ? {
+              cancellationReason: SYSTEM_CANCELLATION_REASON,
+              cancellationReasonType: 'system' as CancellationReasonType,
+              cancelledBy: 'System',
+            }
+          : {
+              cancellationReason:
+                selectedReason === 'Other'
+                  ? typeof body.customCancellationReason === 'string'
+                    ? body.customCancellationReason.trim()
+                    : selectedReason
+                  : selectedReason,
+              cancellationReasonType: 'manual' as CancellationReasonType,
+              cancelledBy: processedBy.name,
+            }
 
       transaction.update(reservationRef, {
         status: 'Cancelled',
         cancelledAt: serverTimestamp(),
-        cancelledByName: processedBy.name,
+        cancelledByName: cancellationDetails.cancelledBy,
+        cancellationReason: cancellationDetails.cancellationReason,
+        cancellationReasonType: cancellationDetails.cancellationReasonType,
         updatedAt: nowIso,
       })
     })

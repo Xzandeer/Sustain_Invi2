@@ -105,7 +105,7 @@ function InventoryContent() {
                 Math.max(0, toNumber(data.stock ?? data.quantity, 0)) - Math.max(0, toNumber(data.reservedStock, 0))
               ),
               minStock: Math.max(0, toNumber(data.minStock, 0)),
-              condition: normalizeInventoryCondition(data.status),
+              condition: normalizeInventoryCondition(data.condition),
               description: typeof data.description === 'string' ? data.description.trim() : '',
               imageUrl: typeof data.imageUrl === 'string' ? data.imageUrl.trim() : '',
               stockStatus: getStockStatus(data),
@@ -175,7 +175,7 @@ function InventoryContent() {
           price: values.price,
           quantity: values.quantity,
           minStock: values.minStock,
-          status: values.condition,
+          condition: values.condition,
           processedBy: {
             uid: auth.currentUser?.uid ?? '',
             email: auth.currentUser?.email ?? '',

@@ -49,6 +49,30 @@ export interface ReservationTicketDocument {
 
 export type CompletedTransactionDocument = SaleReceiptDocument | ReservationTicketDocument
 
+export interface ReceiptRecord {
+  id: string
+  receiptNumber: string
+  transactionType: 'sale' | 'reservation'
+  transactionId: string
+  customerName: string
+  contactNumber: string
+  items: Array<{
+    itemId?: string
+    name: string
+    quantity: number
+    price: number
+    condition: string
+    subtotal: number
+  }>
+  subtotal: number
+  discount: number
+  total: number
+  cashierName: string
+  createdAt: string
+  status: 'active' | 'closed'
+  document: SaleReceiptDocument | ReservationTicketDocument
+}
+
 export const formatCurrency = (value: number) =>
   value.toLocaleString('en-PH', {
     style: 'currency',

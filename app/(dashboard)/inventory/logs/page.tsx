@@ -3,6 +3,7 @@
 import { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { collection, onSnapshot, orderBy, query } from 'firebase/firestore'
 import ProtectedRoute from '@/components/ProtectedRoute'
+import { ActionBadge, QuantityChange, StockValueDisplay } from '@/components/StockLogComponents'
 import { db } from '@/lib/firebase'
 import { getStockLogActionLabel, resolveStockLogAction, ResolvedStockLogAction } from '@/lib/stockLogActions'
 import { toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
@@ -39,29 +40,6 @@ const formatDate = (value: Date | null) => {
     hour: '2-digit',
     minute: '2-digit',
   })
-}
-
-const actionBadgeClassName = (value: ResolvedStockLogAction) => {
-  switch (value) {
-    case 'stock_increased':
-    case 'item_added':
-    case 'stock_transferred_in':
-    case 'reservation_release':
-      return 'bg-emerald-100 text-emerald-800'
-    case 'stock_decreased':
-    case 'sale_deduction':
-    case 'reservation_deduction':
-    case 'reservation_claim':
-    case 'stock_transferred_out':
-      return 'bg-amber-100 text-amber-800'
-    case 'condition_changed':
-    case 'item_edited':
-      return 'bg-sky-100 text-sky-800'
-    case 'unmapped_action':
-      return 'bg-rose-100 text-rose-700'
-    default:
-      return 'bg-slate-100 text-slate-700'
-  }
 }
 
 export default function InventoryLogsPage() {
@@ -250,22 +228,26 @@ function InventoryLogsContent() {
             />
           </div>
 
-          <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Visible Logs</p>
-              <p className="mt-1 text-2xl font-semibold text-slate-900">{summary.total}</p>
+          <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-lg border border-slate-200 bg-linear-to-br from-slate-50 to-slate-100/50 px-4 py-4 shadow-sm transition hover:shadow-md">
+              <p className="text-xs font-semibold uppercase tracking-widest text-slate-600">Total Logs</p>
+              <p className="mt-3 text-3xl font-bold text-slate-900">{summary.total}</p>
+              <p className="mt-2 text-xs text-slate-500">Audit records</p>
             </div>
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
-              <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">Stock Changes</p>
-              <p className="mt-1 text-2xl font-semibold text-emerald-900">{summary.stockChanges}</p>
+            <div className="rounded-lg border border-emerald-200 bg-linear-to-br from-emerald-50 to-emerald-100/50 px-4 py-4 shadow-sm transition hover:shadow-md">
+              <p className="text-xs font-semibold uppercase tracking-widest text-emerald-700">Stock Changes</p>
+              <p className="mt-3 text-3xl font-bold text-emerald-900">{summary.stockChanges}</p>
+              <p className="mt-2 text-xs text-emerald-600">Quantity adjustments</p>
             </div>
-            <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3">
-              <p className="text-xs font-medium uppercase tracking-wide text-sky-700">Item Updates</p>
-              <p className="mt-1 text-2xl font-semibold text-sky-900">{summary.itemUpdates}</p>
+            <div className="rounded-lg border border-sky-200 bg-linear-to-br from-sky-50 to-sky-100/50 px-4 py-4 shadow-sm transition hover:shadow-md">
+              <p className="text-xs font-semibold uppercase tracking-widest text-sky-700">Item Updates</p>
+              <p className="mt-3 text-3xl font-bold text-sky-900">{summary.itemUpdates}</p>
+              <p className="mt-2 text-xs text-sky-600">Created & modified</p>
             </div>
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-              <p className="text-xs font-medium uppercase tracking-wide text-amber-700">Reservation / Sales</p>
-              <p className="mt-1 text-2xl font-semibold text-amber-900">{summary.reservationAndSales}</p>
+            <div className="rounded-lg border border-amber-200 bg-linear-to-br from-amber-50 to-amber-100/50 px-4 py-4 shadow-sm transition hover:shadow-md">
+              <p className="text-xs font-semibold uppercase tracking-widest text-amber-700">Reservations & Sales</p>
+              <p className="mt-3 text-3xl font-bold text-amber-900">{summary.reservationAndSales}</p>
+              <p className="mt-2 text-xs text-amber-600">Transactions</p>
             </div>
           </div>
 
@@ -275,57 +257,86 @@ function InventoryLogsContent() {
           ) : filteredLogs.length === 0 ? (
             <p className="text-sm text-slate-500">No stock logs found.</p>
           ) : (
-            <div className="overflow-x-auto rounded-xl border border-slate-200">
-              <table className="min-w-full divide-y divide-slate-200 bg-white">
-                <thead className="bg-slate-50">
-                  <tr>
-                    <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Date/Time</th>
-                    <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Action</th>
-                    <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Item</th>
-                    <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Previous Value</th>
-                    <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">New Value</th>
-                    <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Quantity Change</th>
-                    <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Performed By</th>
-                    <th className="px-3.5 py-2.5 text-left text-sm font-semibold text-slate-700">Note</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {filteredLogs.map((log) => (
-                    <tr key={log.id} className="hover:bg-slate-50">
-                      <td className="px-3.5 py-2.5 text-sm text-slate-700">{formatDate(log.createdAt)}</td>
-                      <td className="px-3.5 py-2.5 text-sm">
-                        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${actionBadgeClassName(log.resolvedAction)}`}>
-                          {getStockLogActionLabel(log.resolvedAction)}
-                        </span>
-                      </td>
-                      <td className="px-3.5 py-2.5 text-sm text-slate-700">
-                        <p className="font-medium text-slate-900">{log.itemName}</p>
-                        <p className="text-xs text-slate-500">{log.itemId}</p>
-                        <p className="mt-1 text-xs text-slate-500">{log.condition}</p>
-                      </td>
-                      <td className="px-3.5 py-2.5 text-sm text-slate-700">
-                        <p>{log.previousValue || `Stock: ${log.stockBefore}, Reserved: ${log.reservedBefore}`}</p>
-                      </td>
-                      <td className="px-3.5 py-2.5 text-sm text-slate-700">
-                        <p>{log.newValue || `Stock: ${log.stockAfter}, Reserved: ${log.reservedAfter}`}</p>
-                      </td>
-                      <td className="px-3.5 py-2.5 text-sm">
-                        <span className={`font-semibold ${log.quantityChanged > 0 ? 'text-emerald-700' : log.quantityChanged < 0 ? 'text-amber-700' : 'text-slate-700'}`}>
-                          {log.quantityChanged > 0 ? `+${log.quantityChanged}` : log.quantityChanged}
-                        </span>
-                      </td>
-                      <td className="px-3.5 py-2.5 text-sm text-slate-700">
-                        <p>{log.userName}</p>
-                        <p className="text-xs text-slate-500">{log.userEmail || 'No email'}</p>
-                      </td>
-                      <td className="px-3.5 py-2.5 text-sm text-slate-700">
-                        <p>{log.remarks || '-'}</p>
-                        {log.relatedId ? <p className="mt-1 text-xs text-slate-500">Ref: {log.relatedId}</p> : null}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="space-y-3">
+              {filteredLogs.map((log) => (
+                <div key={log.id} className="rounded-lg border border-slate-200 bg-white p-4 transition hover:border-slate-300 hover:shadow-sm">
+                  <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+                    <div>
+                      <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Date & Time</p>
+                      <p className="text-sm font-semibold text-slate-900">{formatDate(log.createdAt)}</p>
+                    </div>
+
+                    <div>
+                      <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Action</p>
+                      <ActionBadge action={log.resolvedAction} label={getStockLogActionLabel(log.resolvedAction)} />
+                    </div>
+
+                    <div>
+                      <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Item Details</p>
+                      <div className="space-y-1">
+                        <p className="text-sm font-semibold text-slate-900">{log.itemName}</p>
+                        <p className="text-xs text-slate-500 font-mono">{log.itemId}</p>
+                        {log.condition && (
+                          <span className="inline-block mt-1.5 rounded-md bg-slate-100 px-1.5 py-1 text-xs font-medium text-slate-700">
+                            {log.condition}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Quantity Change</p>
+                      <QuantityChange change={log.quantityChanged} />
+                      <p className="mt-1.5 text-xs text-slate-600">{log.quantityBefore} → {log.quantityAfter}</p>
+                    </div>
+
+                    <div>
+                      <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Performed By</p>
+                      <div className="space-y-0.5">
+                        <p className="text-sm font-semibold text-slate-900">{log.userName}</p>
+                        {log.userEmail && <p className="text-xs text-slate-500 truncate">{log.userEmail}</p>}
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Notes</p>
+                      <div className="space-y-1">
+                        {log.remarks ? (
+                          <p className="text-sm text-slate-700">{log.remarks}</p>
+                        ) : (
+                          <p className="text-sm text-slate-400">—</p>
+                        )}
+                        {log.relatedId && (
+                          <p className="text-xs text-slate-500 font-mono break-all">Ref: {log.relatedId.slice(0, 12)}...</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {((log.stockBefore > 0 || log.reservedBefore > 0) || (log.stockAfter > 0 || log.reservedAfter > 0)) && (
+                    <div className="mt-4 border-t border-slate-100 pt-4 grid gap-4 sm:grid-cols-2">
+                      {(log.stockBefore > 0 || log.reservedBefore > 0) && (
+                        <StockValueDisplay
+                          label="Before"
+                          stock={log.stockBefore}
+                          reserved={log.reservedBefore}
+                          available={Math.max(0, log.stockBefore - log.reservedBefore)}
+                          condition={log.condition}
+                        />
+                      )}
+                      {(log.stockAfter > 0 || log.reservedAfter > 0) && (
+                        <StockValueDisplay
+                          label="After"
+                          stock={log.stockAfter}
+                          reserved={log.reservedAfter}
+                          available={Math.max(0, log.stockAfter - log.reservedAfter)}
+                          condition={log.condition}
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </section>

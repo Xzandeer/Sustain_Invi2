@@ -236,7 +236,7 @@ const parseInventoryVariant = (id: string, data: Record<string, unknown>): Inven
     stock: Math.max(0, toNumber(data.stock ?? data.quantity, 0)),
     reservedStock: Math.max(0, toNumber(data.reservedStock, 0)),
     minStock: Math.max(0, toNumber(data.minStock, 0)),
-    condition: normalizeInventoryCondition(data.status),
+    condition: normalizeInventoryCondition(data.condition),
     isDeleted: data.isDeleted === true,
     data,
   }

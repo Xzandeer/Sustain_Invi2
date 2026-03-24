@@ -32,7 +32,7 @@ interface SaleRecord {
     quantity: number
     price: number
     categoryId: string
-    status: SaleItemCondition
+    condition: SaleItemCondition
   }>
   totalAmount: number
   createdAt: Date | null
@@ -613,7 +613,7 @@ function AnalyticsContent() {
                       typeof saleItem.categoryId === 'string' && saleItem.categoryId.trim()
                         ? saleItem.categoryId
                         : '',
-                    status: (saleItem.status === 'Refurbished' ? 'Refurbished' : 'New') as SaleItemCondition,
+                    condition: (saleItem.condition === 'Refurbished' ? 'Refurbished' : 'New') as SaleItemCondition,
                   }
                 })
                 .filter((item) => item.quantity > 0 || item.price > 0)
@@ -751,7 +751,7 @@ function AnalyticsContent() {
   const filterSaleItems = (sale: SaleRecord) =>
     sale.items.filter((item) => {
       const categoryMatch = selectedCategory === 'All Categories' || item.categoryId === selectedCategory
-      const conditionMatch = selectedCondition === 'All Conditions' || item.status === selectedCondition
+      const conditionMatch = selectedCondition === 'All Conditions' || item.condition === selectedCondition
       return categoryMatch && conditionMatch
     })
 

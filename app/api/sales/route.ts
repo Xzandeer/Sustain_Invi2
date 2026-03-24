@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { collection, doc, getDocs, query, runTransaction, serverTimestamp } from 'firebase/firestore'
+import { collection, doc, getDocs, query, runTransaction, serverTimestamp, addDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import {
   createStockLog,
@@ -14,6 +14,7 @@ import {
   STORE_TAGLINE,
   TransactionLineItem,
   SaleReceiptDocument,
+  ReceiptRecord,
 } from '@/lib/transactionDocuments'
 
 interface SalesPayload {
@@ -307,6 +308,25 @@ export async function POST(req: NextRequest) {
       note: SALES_THANK_YOU_NOTE,
     }
 
+    const receiptRecord: ReceiptRecord = {
+      id: saleRef.id,
+      receiptNumber: numberResult.value,
+      transactionType: 'sale',
+      transactionId: saleRef.id,
+      customerName: customerDetails.fullName,
+      contactNumber: customerDetails.contactNumber,
+      items: receiptItems,
+      subtotal: totalAmount,
+      discount: 0,
+      total: totalAmount,
+      cashierName: processedBy.name,
+      createdAt: nowIso,
+      status: 'active',
+      document: receiptDocument,
+    }
+
+    await addDoc(collection(db, 'receipts'), receiptRecord)
+
     return NextResponse.json(
       {
         data: {
@@ -318,6 +338,7 @@ export async function POST(req: NextRequest) {
           customer: customerDetails.fullName,
         },
         document: receiptDocument,
+        receipt: receiptRecord,
       },
       { status: 201 }
     )

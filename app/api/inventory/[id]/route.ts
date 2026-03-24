@@ -95,9 +95,9 @@ export async function PUT(req: Request, context: RouteContext) {
         : Number.NaN
     )
 
-    const currentCondition = normalizeInventoryCondition(current.status)
+    const currentCondition = normalizeInventoryCondition(current.condition)
     const requestedCondition =
-      body.status !== undefined ? normalizeInventoryCondition(body.status) : currentCondition
+      body.condition !== undefined ? normalizeInventoryCondition(body.condition) : currentCondition
     const reservedStock = toNumber(
       current.reservedStock,
       typeof current.reservedStock === 'number' || typeof current.reservedStock === 'string'
@@ -170,7 +170,7 @@ export async function PUT(req: Request, context: RouteContext) {
       stock: quantity,
       reservedStock,
       minStock,
-      status: currentCondition,
+      condition: currentCondition,
       description,
       imageUrl,
       isDeleted: false,
@@ -266,7 +266,7 @@ export async function DELETE(_: Request, context: RouteContext) {
       actionType: 'item_deleted',
       itemId: id,
       itemName: typeof data.name === 'string' ? data.name.trim() : 'Unnamed Item',
-      condition: normalizeInventoryCondition(data.status),
+      condition: normalizeInventoryCondition(data.condition),
       quantityBefore: currentStock,
       quantityChanged: 0,
       quantityAfter: currentStock,
@@ -305,7 +305,7 @@ export async function PATCH(req: Request, context: RouteContext) {
     const processedBy = await assertAdminUser((body as Record<string, unknown>).processedBy)
     const snapshotData = snapshot.data() as Record<string, unknown>
     const itemName = typeof snapshotData.name === 'string' ? snapshotData.name.trim() : 'Unnamed Item'
-    const condition = normalizeInventoryCondition(snapshotData.status)
+    const condition = normalizeInventoryCondition(snapshotData.condition)
     const currentStock = toNumber(snapshotData.stock ?? snapshotData.quantity, 0)
     const currentReservedStock = toNumber(snapshotData.reservedStock, 0)
 

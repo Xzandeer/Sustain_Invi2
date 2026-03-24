@@ -44,7 +44,7 @@ export async function POST(req: Request, context: RouteContext) {
     }
 
     const data = snapshot.data() as Record<string, unknown>
-    const sourceCondition = normalizeInventoryCondition(data.status)
+    const sourceCondition = normalizeInventoryCondition(data.condition)
     const itemName = typeof data.name === 'string' ? data.name.trim() : ''
     const categoryId = typeof data.categoryId === 'string' ? data.categoryId.trim() : ''
     const categoryName =

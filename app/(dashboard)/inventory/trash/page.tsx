@@ -53,7 +53,7 @@ function InventoryTrashContent() {
                 (typeof data.categoryName === 'string' && data.categoryName.trim()) ||
                 (typeof data.category === 'string' && data.category.trim()) ||
                 'Uncategorized',
-              condition: normalizeInventoryCondition(data.status),
+              condition: normalizeInventoryCondition(data.condition),
               deletedAt: typeof data.deletedAt === 'string' ? data.deletedAt : null,
               isDeleted: data.isDeleted === true,
             }
