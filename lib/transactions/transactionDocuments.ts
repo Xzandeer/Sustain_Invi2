@@ -1,3 +1,5 @@
+// Transaction document types and helpers - generates receipts and reservation tickets
+// Constants for receipt/ticket generation
 export const STORE_NAME = 'JMGS JAPON SURPLUS'
 export const STORE_TAGLINE = 'Sales & Inventory'
 export const SALES_THANK_YOU_NOTE = 'Thank you for your purchase.'
@@ -73,6 +75,7 @@ export interface ReceiptRecord {
   document: SaleReceiptDocument | ReservationTicketDocument
 }
 
+// Format number as Philippine Peso currency
 export const formatCurrency = (value: number) =>
   value.toLocaleString('en-PH', {
     style: 'currency',
@@ -81,6 +84,7 @@ export const formatCurrency = (value: number) =>
     maximumFractionDigits: 2,
   })
 
+// Format timestamp as readable date/time (e.g. Jan 04, 2025 at 2:30 PM)
 export const formatTransactionDateTime = (value: string | Date) =>
   new Date(value).toLocaleString('en-PH', {
     year: 'numeric',
@@ -90,8 +94,10 @@ export const formatTransactionDateTime = (value: string | Date) =>
     minute: '2-digit',
   })
 
+// Helper: Encode string for URL parameters (replace spaces with +)
 const encodeQueryValue = (value: string) => encodeURIComponent(value).replace(/%20/g, '+')
 
+// Helper: Format sale items for email body (shows condition, qty, subtotal)
 const formatSaleItemLines = (items: TransactionLineItem[]) =>
   items
     .map(
@@ -100,17 +106,21 @@ const formatSaleItemLines = (items: TransactionLineItem[]) =>
     )
     .join('\n\n')
 
+// Helper: Format reservation items for email body (shows condition and quantity compactly)
 const formatReservationItemLines = (items: TransactionLineItem[]) =>
   items.map((item, index) => `${index + 1}. ${item.name} (${item.condition}) x${item.quantity}`).join('\n')
 
+// Build email subject line based on transaction type
 export const buildManualEmailSubject = (document: CompletedTransactionDocument) =>
   document.type === 'sale'
     ? `Sales Receipt ${document.receiptNumber} - ${document.storeName}`
     : `Reservation Ticket ${document.reservationCode} - ${document.storeName}`
 
+// Build email body with full transaction details
 export const buildManualEmailBody = (document: CompletedTransactionDocument) => {
   const greeting = `Hello ${document.customer.fullName},`
 
+  // Format for sales receipt
   if (document.type === 'sale') {
     return [
       greeting,
@@ -136,6 +146,7 @@ export const buildManualEmailBody = (document: CompletedTransactionDocument) => 
     ].join('\n')
   }
 
+  // Format for reservation ticket
   return [
     greeting,
     '',
@@ -157,6 +168,7 @@ export const buildManualEmailBody = (document: CompletedTransactionDocument) => 
   ].join('\n')
 }
 
+// Generate mailto: link for default email client
 export const buildMailtoLink = (document: CompletedTransactionDocument) => {
   const recipient = document.customer.email.trim()
   const params = new URLSearchParams({
@@ -167,6 +179,7 @@ export const buildMailtoLink = (document: CompletedTransactionDocument) => {
   return `mailto:${encodeURIComponent(recipient)}?${params.toString()}`
 }
 
+// Generate Gmail compose link (opens Gmail in browser)
 export const buildGmailComposeLink = (document: CompletedTransactionDocument) => {
   const recipient = document.customer.email.trim()
   const subject = encodeQueryValue(buildManualEmailSubject(document))

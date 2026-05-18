@@ -1,3 +1,4 @@
+// Protected route wrapper - checks authentication and role-based permissions
 'use client'
 
 import { useEffect, useState } from 'react'
@@ -22,6 +23,7 @@ export default function ProtectedRoute({
   const [authenticated, setAuthenticated] = useState(false)
   const { isAdmin, canViewStockLogs, loading: roleLoading } = useUserRole()
 
+  // Step 1: Check if user is logged in
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
@@ -30,6 +32,7 @@ export default function ProtectedRoute({
       } else {
         setAuthenticated(false)
         setLoading(false)
+        // Not logged in - redirect to login page
         router.replace('/login')
       }
     })
@@ -37,21 +40,25 @@ export default function ProtectedRoute({
     return () => unsubscribe()
   }, [router])
 
+  // Step 2: Check role-based permissions once roles are loaded
   useEffect(() => {
     if (loading || roleLoading || !authenticated) {
       return
     }
 
+    // Redirect if admin access is required but user is not admin
     if (requireAdmin && !isAdmin) {
       router.replace('/dashboard')
       return
     }
 
+    // Redirect if stock logs access is required but user doesn't have permission
     if (allowStockLogs && !isAdmin && !canViewStockLogs) {
       router.replace('/dashboard')
     }
   }, [allowStockLogs, authenticated, canViewStockLogs, isAdmin, loading, requireAdmin, roleLoading, router])
 
+  // Show loading spinner while checking auth or role
   if (loading || roleLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -60,13 +67,16 @@ export default function ProtectedRoute({
     )
   }
 
+  // Render nothing if not authenticated (redirect is already happening)
   if (!authenticated) {
     return null
   }
 
+  // Render nothing if role check fails (redirect is already happening)
   if ((requireAdmin && !isAdmin) || (allowStockLogs && !isAdmin && !canViewStockLogs)) {
     return null
   }
 
+  // All checks passed - render the protected page
   return <>{children}</>
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
-import type { Product } from '@/components/ProductTable'
+import type { Product } from './ProductTable'
 
 type StockAction = 'add' | 'deduct' | 'transfer'
 

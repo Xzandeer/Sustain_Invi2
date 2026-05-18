@@ -1,4 +1,5 @@
-import Sidebar from '@/components/Sidebar'
+import Sidebar from '@/components/layout/Sidebar'
+import FloatingChatBot from '@/components/chatbot/FloatingChatBot'
 
 export default function DashboardLayout({
   children,
@@ -13,6 +14,7 @@ export default function DashboardLayout({
       <main className="ml-48 min-h-screen w-full overflow-y-auto bg-slate-100 px-2 py-2 lg:px-2.5">
         {children}
       </main>
+      <FloatingChatBot />
     </div>
   )
 }

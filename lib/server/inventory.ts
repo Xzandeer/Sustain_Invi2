@@ -1,3 +1,4 @@
+// Server-side inventory operations - creates items, logs stock changes, retrieves user info
 import {
   addDoc,
   collection,
@@ -10,11 +11,12 @@ import {
   where,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
-import { normalizeStockLogActionForStorage, ResolvedStockLogAction } from '@/lib/stockLogActions'
+import { normalizeStockLogActionForStorage, ResolvedStockLogAction } from '@/lib/inventory/stockLogActions'
 import { InventoryCondition, getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
 
 export type StockLogAction = Exclude<ResolvedStockLogAction, 'unmapped_action'>
 
+// Info about who processed a transaction (user name, email, Firebase ID)
 export interface ProcessedByInfo {
   uid?: string
   name: string
@@ -33,6 +35,7 @@ export interface InventoryVariant {
   minStock: number
   condition: InventoryCondition
   isDeleted: boolean
+  isVoided: boolean
   data: Record<string, unknown>
 }
 
@@ -55,8 +58,10 @@ export interface StockLogEntryInput {
   newValue?: string
 }
 
+// Helper: Normalize item name for comparison (trim, lowercase, single spaces)
 const normalizeName = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase()
 
+// Helper: Build human-readable summary of inventory state
 const buildValueSummary = (input: {
   stock: number
   reserved: number
@@ -67,6 +72,7 @@ const buildValueSummary = (input: {
   return `Stock: ${input.stock} | Reserved: ${input.reserved} | Available: ${available} | Qty: ${input.quantity} | Condition: ${input.condition}`
 }
 
+// Get user info from Firebase or fallback to provided data
 export const getProcessedByInfo = async (input: unknown): Promise<ProcessedByInfo> => {
   const fallback = { name: 'System User' }
 
@@ -79,6 +85,7 @@ export const getProcessedByInfo = async (input: unknown): Promise<ProcessedByInf
   const providedName = typeof data.name === 'string' && data.name.trim() ? data.name.trim() : ''
   const providedEmail = typeof data.email === 'string' && data.email.trim() ? data.email.trim() : ''
 
+  // No UID means we can't look up user, use provided data
   if (!uid) {
     return {
       name: providedName || providedEmail || fallback.name,
@@ -86,6 +93,7 @@ export const getProcessedByInfo = async (input: unknown): Promise<ProcessedByInf
     }
   }
 
+  // Try to get full user details from users collection
   try {
     const userSnapshot = await getDoc(doc(db, 'users', uid))
     if (userSnapshot.exists()) {
@@ -112,18 +120,22 @@ export const getProcessedByInfo = async (input: unknown): Promise<ProcessedByInf
   }
 }
 
+// Verify user is admin, throw error if not
 export const assertAdminUser = async (input: unknown): Promise<ProcessedByInfo> => {
   const processedBy = await getProcessedByInfo(input)
 
+  // Step 1: Check user has UID (not anonymous)
   if (!processedBy.uid) {
     throw new Error('ADMIN_REQUIRED')
   }
 
+  // Step 2: Get user document from Firebase
   const userSnapshot = await getDoc(doc(db, 'users', processedBy.uid))
   if (!userSnapshot.exists()) {
     throw new Error('ADMIN_REQUIRED')
   }
 
+  // Step 3: Verify role is 'admin'
   const userData = userSnapshot.data() as Record<string, unknown>
   if (userData.role !== 'admin') {
     throw new Error('ADMIN_REQUIRED')
@@ -173,17 +185,21 @@ export const findInventoryVariant = async (params: {
   return parseInventoryVariant(match.id, match.data() as Record<string, unknown>)
 }
 
+// Create stock log entry to track inventory changes (audit trail)
 export const createStockLog = async (entry: StockLogEntryInput) => {
+  // Normalize stock values (use provided or fall back to quantity)
   const stockBefore = entry.stockBefore ?? entry.quantityBefore
   const stockAfter = entry.stockAfter ?? entry.quantityAfter
   const reservedBefore = entry.reservedBefore ?? 0
   const reservedAfter = entry.reservedAfter ?? 0
   const actionType = normalizeStockLogActionForStorage(entry.actionType)
 
+  // Validate action type
   if (!actionType) {
     throw new Error(`INVALID_STOCK_LOG_ACTION:${String(entry.actionType)}`)
   }
 
+  // Step 1: Save log entry to stockLogs collection
   await addDoc(collection(db, 'stockLogs'), {
     createdAt: serverTimestamp(),
     actionType,
@@ -197,6 +213,7 @@ export const createStockLog = async (entry: StockLogEntryInput) => {
     stockAfter,
     reservedBefore,
     reservedAfter,
+    // Store human-readable summary of state before/after
     previousValue:
       entry.previousValue ??
       buildValueSummary({
@@ -217,7 +234,7 @@ export const createStockLog = async (entry: StockLogEntryInput) => {
     userEmail: entry.user.email ?? '',
     userId: entry.user.uid ?? '',
     remarks: entry.remarks ?? '',
-    relatedId: entry.relatedId ?? '',
+    relatedId: entry.relatedId ?? '', // Links to sale/reservation if applicable
   })
 }
 
@@ -238,10 +255,41 @@ const parseInventoryVariant = (id: string, data: Record<string, unknown>): Inven
     minStock: Math.max(0, toNumber(data.minStock, 0)),
     condition: normalizeInventoryCondition(data.condition),
     isDeleted: data.isDeleted === true,
+    isVoided: data.isVoided === true,
     data,
   }
 }
 
+// ── SKU generation ─────────────────────────────────────────────────────────────
+const CATEGORY_CODES: Record<string, string> = {
+  'Bags': 'BAG',
+  'Clothing': 'CLO',
+  'Footwear': 'FTW',
+  'Accessories': 'ACC',
+  'Kitchenware': 'KIT',
+  'Appliances': 'APP',
+  'Electronics': 'ELC',
+  'Furniture': 'FUR',
+  'Toys': 'TOY',
+  'Home Decor': 'HMD',
+  'School Supplies': 'SCH',
+  'Collectibles': 'COL',
+}
+
+async function generateSku(categoryName: string, condition: string): Promise<string> {
+  const catCode = CATEGORY_CODES[categoryName] ?? categoryName.slice(0, 3).toUpperCase()
+  const condCode = condition === 'New' ? 'N' : 'R'
+  const prefix = `${catCode}-${condCode}`
+
+  // Count existing items with same prefix to get next sequence number
+  const existing = await getDocs(
+    query(collection(db, 'inventory'), where('sku', '>=', `${prefix}-`), where('sku', '<', `${prefix}-￿`))
+  )
+  const next = existing.size + 1
+  return `${prefix}-${String(next).padStart(3, '0')}`
+}
+
+// Create new inventory item/variant with initial stock
 export const createInventoryVariant = async (input: {
   name: string
   categoryId: string
@@ -255,6 +303,9 @@ export const createInventoryVariant = async (input: {
 }) => {
   const now = new Date().toISOString()
   const stockStatus = getStockStatus({ stock: input.quantity, minStock: input.minStock })
+  const sku = await generateSku(input.categoryName, input.condition)
+
+  // Step 1: Create inventory document
   const docRef = await addDoc(collection(db, 'inventory'), {
     name: input.name,
     categoryId: input.categoryId,
@@ -265,7 +316,9 @@ export const createInventoryVariant = async (input: {
     stock: input.quantity,
     reservedStock: 0,
     minStock: input.minStock,
+    condition: input.condition,
     status: input.condition,
+    sku,
     description: input.description ?? '',
     imageUrl: input.imageUrl ?? '',
     stockStatus,
@@ -275,6 +328,7 @@ export const createInventoryVariant = async (input: {
     updatedAt: now,
   })
 
+  // Step 2: Update document to add its own ID (for cross-references)
   await runTransaction(db, async (transaction) => {
     transaction.update(docRef, { id: docRef.id })
   })

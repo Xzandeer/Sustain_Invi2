@@ -1,3 +1,4 @@
+// Reservations API endpoint - POST to create reservations, GET to list reservations
 import { NextRequest, NextResponse } from 'next/server'
 import { collection, doc, getDocs, query, runTransaction, serverTimestamp, addDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
@@ -16,7 +17,7 @@ import {
   TransactionLineItem,
   ReservationTicketDocument,
   ReceiptRecord,
-} from '@/lib/transactionDocuments'
+} from '@/lib/transactions/transactionDocuments'
 
 interface ReservationPayload {
   items?: unknown
@@ -30,6 +31,7 @@ interface CustomerDetails {
   contactNumber: string
 }
 
+// Helper: Validate and parse customer information
 const parseCustomerDetails = (input: unknown): CustomerDetails | null => {
   if (!input || typeof input !== 'object') return null
   const data = input as Record<string, unknown>
@@ -37,24 +39,24 @@ const parseCustomerDetails = (input: unknown): CustomerDetails | null => {
   const email = typeof data.email === 'string' ? data.email.trim() : ''
   const contactNumber = typeof data.contactNumber === 'string' ? data.contactNumber.trim() : ''
 
-  if (!fullName || !contactNumber) {
-    return null
-  }
-
   return { fullName, email, contactNumber }
 }
 
+// GET /api/reservations - List reservations with optional date filtering
 export async function GET(req: NextRequest) {
   try {
+    // Step 1: Parse query parameters
     const { searchParams } = new URL(req.url)
     const startDate = searchParams.get('startDate')
     const endDate = searchParams.get('endDate')
 
+    // Step 2: Validate date range
     const range = parseDateRange(startDate, endDate)
     if ('error' in range) {
       return NextResponse.json({ error: range.error }, { status: 400 })
     }
 
+    // Step 3: Fetch all reservations
     const reservationsQuery = query(collection(db, 'reservations'))
     const snapshot = await getDocs(reservationsQuery)
 
@@ -63,6 +65,7 @@ export async function GET(req: NextRequest) {
       id: reservationDoc.id,
     }))
 
+    // Step 4: Filter by date range if specified
     if (range.start || range.end) {
       records = records.filter((record) => {
         const recordDate = toDate(record.createdAt)
@@ -73,6 +76,7 @@ export async function GET(req: NextRequest) {
       })
     }
 
+    // Step 5: Sort by most recent first
     records.sort((a, b) => {
       const aDate = toDate(a.createdAt)?.getTime() ?? 0
       const bDate = toDate(b.createdAt)?.getTime() ?? 0
@@ -88,6 +92,8 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
+    // STEP 1: Parse request body
+    console.log('[reservations POST] step 1: parsing body')
     const body = (await req.json()) as ReservationPayload
     const customerDetails = parseCustomerDetails(body.customerDetails)
     const processedBy = await getProcessedByInfo(body.processedBy)
@@ -95,7 +101,7 @@ export async function POST(req: NextRequest) {
 
     if (!customerDetails) {
       return NextResponse.json(
-        { error: 'Customer full name and contact number are required.' },
+        { error: 'Invalid customer details.' },
         { status: 400 }
       )
     }
@@ -116,11 +122,17 @@ export async function POST(req: NextRequest) {
     const now = new Date()
     const nowIso = now.toISOString()
     const expiresAt = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000)
+
+    // STEP 2: Fetch inventory items
+    console.log('[reservations POST] step 2: fetching inventory items', normalizedItems)
     const preparedItems = await Promise.all(
       normalizedItems.map(async (requestedItem) => {
         const inventoryItem = await findInventoryVariantById(requestedItem.itemId)
         if (!inventoryItem || inventoryItem.isDeleted) {
           throw new Error('ITEM_NOT_FOUND')
+        }
+        if (inventoryItem.isVoided) {
+          throw new Error('ITEM_VOIDED')
         }
         return { requestedItem, inventoryItem }
       })
@@ -140,6 +152,8 @@ export async function POST(req: NextRequest) {
       reservedAfter: number
     }> = []
 
+    // STEP 3: Firestore transaction - update reservedStock
+    console.log('[reservations POST] step 3: running inventory transaction')
     await runTransaction(db, async (transaction) => {
       for (const { requestedItem, inventoryItem } of preparedItems) {
         const inventorySnapshot = await transaction.get(inventoryItem.ref)
@@ -178,6 +192,8 @@ export async function POST(req: NextRequest) {
       }
     })
 
+    // STEP 4: Generate reservation number + create Firestore doc
+    console.log('[reservations POST] step 4: creating transaction number')
     const reservationRef = doc(collection(db, 'reservations'))
     const numberResult = await createTransactionNumber('reservation', reservationRef, (numberInfo) => ({
       id: reservationRef.id,
@@ -206,30 +222,33 @@ export async function POST(req: NextRequest) {
       expiresAt: expiresAt.toISOString(),
       reservationDate: nowIso,
     }), nowIso)
+    console.log('[reservations POST] step 4 done, number:', numberResult.value)
 
+    // STEP 5: Create stock logs
+    console.log('[reservations POST] step 5: writing stock logs')
     await Promise.all(
-      [
-        ...reservationItems.map((item) =>
-          createStockLog({
-            actionType: 'reservation_deduction',
-            itemId: item.id,
-            itemName: item.name,
-            condition: item.condition === 'Refurbished' ? 'Refurbished' : 'New',
-            quantityBefore: item.availableBefore,
-            quantityChanged: item.quantity * -1,
-            quantityAfter: item.availableAfter,
-            stockBefore: item.stockBefore,
-            stockAfter: item.stockAfter,
-            reservedBefore: item.reservedBefore,
-            reservedAfter: item.reservedAfter,
-            user: processedBy,
-            relatedId: reservationRef.id,
-            remarks: `Reservation ${numberResult.value} created.`,
-          })
-        ),
-      ]
+      reservationItems.map((item) =>
+        createStockLog({
+          actionType: 'reservation_deduction',
+          itemId: item.id,
+          itemName: item.name,
+          condition: item.condition === 'Refurbished' ? 'Refurbished' : 'New',
+          quantityBefore: item.availableBefore,
+          quantityChanged: item.quantity * -1,
+          quantityAfter: item.availableAfter,
+          stockBefore: item.stockBefore,
+          stockAfter: item.stockAfter,
+          reservedBefore: item.reservedBefore,
+          reservedAfter: item.reservedAfter,
+          user: processedBy,
+          relatedId: reservationRef.id,
+          remarks: `Reservation ${numberResult.value} created.`,
+        })
+      )
     )
 
+    // STEP 6: Build ticket document + receipt record
+    console.log('[reservations POST] step 6: building documents')
     const ticketItems: TransactionLineItem[] = reservationItems.map((item) => ({
       itemId: item.id,
       name: item.name,
@@ -269,7 +288,10 @@ export async function POST(req: NextRequest) {
       document: ticketDocument,
     }
 
+    // STEP 7: Save receipt to Firestore
+    console.log('[reservations POST] step 7: saving receipt')
     await addDoc(collection(db, 'receipts'), receiptRecord)
+    console.log('[reservations POST] done!')
 
     return NextResponse.json(
       {
@@ -297,7 +319,9 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    console.error('POST /api/reservations error:', error)
-    return NextResponse.json({ error: 'Server error' }, { status: 500 })
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    const errorCode = (error as Record<string, unknown>)?.code
+    console.error('[reservations POST] FAILED:', { step: 'unknown', message: errorMessage, code: errorCode, error })
+    return NextResponse.json({ error: errorMessage || 'Server error', code: errorCode }, { status: 500 })
   }
 }

@@ -61,5 +61,25 @@ service cloud.firestore {
       allow create: if isStaffOrAdmin();
       allow update, delete: if false;
     }
+
+    match /reservations/{reservationId} {
+      allow read: if isSignedIn();
+      allow create: if isStaffOrAdmin();
+      allow update: if isStaffOrAdmin();
+      allow delete: if false;
+    }
+
+    match /receipts/{receiptId} {
+      allow read: if isSignedIn();
+      allow create: if isStaffOrAdmin();
+      allow update: if isStaffOrAdmin();
+      allow delete: if false;
+    }
+
+    match /transactionCounters/{counterId} {
+      allow read: if isSignedIn();
+      allow create, update: if isStaffOrAdmin();
+      allow delete: if false;
+    }
   }
 }

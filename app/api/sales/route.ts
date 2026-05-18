@@ -1,3 +1,4 @@
+// Sales API endpoint - POST to create sales, GET to list sales
 import { NextRequest, NextResponse } from 'next/server'
 import { collection, doc, getDocs, query, runTransaction, serverTimestamp, addDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
@@ -15,7 +16,7 @@ import {
   TransactionLineItem,
   SaleReceiptDocument,
   ReceiptRecord,
-} from '@/lib/transactionDocuments'
+} from '@/lib/transactions/transactionDocuments'
 
 interface SalesPayload {
   itemId?: unknown
@@ -33,6 +34,7 @@ interface CustomerDetails {
   contactNumber: string
 }
 
+// Helper: Validate and parse customer information
 const parseCustomerDetails = (input: unknown): CustomerDetails | null => {
   if (!input || typeof input !== 'object') return null
 
@@ -41,25 +43,25 @@ const parseCustomerDetails = (input: unknown): CustomerDetails | null => {
   const email = typeof data.email === 'string' ? data.email.trim() : ''
   const contactNumber = typeof data.contactNumber === 'string' ? data.contactNumber.trim() : ''
 
-  if (!fullName || !contactNumber) {
-    return null
-  }
-
   return { fullName, email, contactNumber }
 }
 
+// GET /api/sales - List sales with optional filtering by date and category
 export async function GET(req: NextRequest) {
   try {
+    // Step 1: Parse query parameters
     const { searchParams } = new URL(req.url)
     const startDate = searchParams.get('startDate')
     const endDate = searchParams.get('endDate')
     const categoryName = searchParams.get('category')
 
+    // Step 2: Validate date range
     const range = parseDateRange(startDate, endDate)
     if ('error' in range) {
       return NextResponse.json({ error: range.error }, { status: 400 })
     }
 
+    // Step 3: Fetch all sales from database
     const snapshot = await getDocs(collection(db, 'sales'))
 
     let records: Array<Record<string, unknown> & { id: string }> = snapshot.docs.map((saleDoc) => ({
@@ -67,10 +69,12 @@ export async function GET(req: NextRequest) {
       id: saleDoc.id,
     }))
 
+    // Step 4: Filter by category if specified
     if (categoryName && categoryName !== 'all') {
       records = records.filter((record) => record.categoryName === categoryName || record.category === categoryName)
     }
 
+    // Step 5: Filter by date range if specified
     if (range.start || range.end) {
       records = records.filter((record) => {
         const recordDate = toDate(record.createdAt)
@@ -81,6 +85,7 @@ export async function GET(req: NextRequest) {
       })
     }
 
+    // Step 6: Sort by most recent first
     records.sort((a, b) => {
       const aDate = toDate(a.createdAt)?.getTime() ?? 0
       const bDate = toDate(b.createdAt)?.getTime() ?? 0
@@ -94,8 +99,10 @@ export async function GET(req: NextRequest) {
   }
 }
 
+// POST /api/sales - Create a new sale, reduce inventory, and generate receipt
 export async function POST(req: NextRequest) {
   try {
+    // Step 1: Parse request body
     const body = (await req.json()) as SalesPayload
     const customerDetails = parseCustomerDetails(body.customerDetails)
     const processedBy = await getProcessedByInfo(body.processedBy)
@@ -106,13 +113,15 @@ export async function POST(req: NextRequest) {
         ? [{ itemId: body.itemId, quantity: body.quantity }]
         : []
 
+    // Step 2: Parse customer details (all fields optional)
     if (!customerDetails) {
       return NextResponse.json(
-        { error: 'Customer full name and contact number are required.' },
+        { error: 'Invalid customer details.' },
         { status: 400 }
       )
     }
 
+    // Step 3: Normalize and validate items (ensure itemId and quantity are valid)
     const normalizedItems = payloadItems
       .map((item) => {
         const record = item as Record<string, unknown>
@@ -122,6 +131,7 @@ export async function POST(req: NextRequest) {
       })
       .filter((item) => item.itemId && Number.isFinite(item.quantity) && item.quantity > 0)
 
+    // Step 4: Merge duplicate items (if same itemId appears multiple times, combine quantities)
     const mergedItems = Array.from(
       normalizedItems.reduce<Map<string, { itemId: string; quantity: number }>>((result, item) => {
         const existing = result.get(item.itemId)
@@ -135,17 +145,24 @@ export async function POST(req: NextRequest) {
       }, new Map()).values()
     )
 
+    // Step 5: Require at least one valid item
     if (mergedItems.length === 0) {
       return NextResponse.json({ error: 'Add at least one valid item to continue.' }, { status: 400 })
     }
 
+    // Step 6: Check current time
     const now = new Date()
     const nowIso = now.toISOString()
+
+    // Step 7: Fetch inventory items and validate they exist
     const preparedItems = await Promise.all(
       mergedItems.map(async (requestedItem) => {
         const inventoryItem = await findInventoryVariantById(requestedItem.itemId)
         if (!inventoryItem || inventoryItem.isDeleted) {
           throw new Error('ITEM_NOT_FOUND')
+        }
+        if (inventoryItem.isVoided) {
+          throw new Error('ITEM_VOIDED')
         }
         return {
           requestedItem,
@@ -154,6 +171,7 @@ export async function POST(req: NextRequest) {
       })
     )
 
+    // Step 8: Prepare to track sale line items
     const saleLines: Array<{
       itemId: string
       name: string
@@ -168,23 +186,27 @@ export async function POST(req: NextRequest) {
       reservedAfter: number
     }> = []
 
+    // Step 9: Atomic transaction - check stock and reduce quantities
     await runTransaction(db, async (transaction) => {
       const pendingUpdates: Array<{
         ref: typeof preparedItems[number]['inventoryItem']['ref']
         nextStock: number
       }> = []
 
+      // Loop through each item in sale
       for (const { requestedItem, inventoryItem } of preparedItems) {
         const inventorySnapshot = await transaction.get(inventoryItem.ref)
         if (!inventorySnapshot.exists()) {
           throw new Error('ITEM_NOT_FOUND')
         }
 
+        // Get current stock and reserved amounts
         const latestData = inventorySnapshot.data() as Record<string, unknown>
         const currentStock = Math.max(0, toNumber(latestData.stock ?? latestData.quantity, 0))
         const currentReservedStock = Math.max(0, toNumber(latestData.reservedStock, 0))
         const availableStock = Math.max(0, currentStock - currentReservedStock)
 
+        // Check sufficient stock available (after reservations)
         if (requestedItem.quantity > availableStock) {
           throw new Error('INSUFFICIENT_STOCK')
         }
@@ -195,6 +217,7 @@ export async function POST(req: NextRequest) {
           nextStock,
         })
 
+        // Record this line item for the sale
         saleLines.push({
           itemId: inventoryItem.id,
           name: inventoryItem.name,
@@ -210,10 +233,12 @@ export async function POST(req: NextRequest) {
         })
       }
 
+      // Only reduce inventory if reduceQuantity flag is true
       if (!reduceQuantity) {
         return
       }
 
+      // Apply all inventory updates atomically
       for (const update of pendingUpdates) {
         transaction.update(update.ref, {
           quantity: update.nextStock,
@@ -223,8 +248,11 @@ export async function POST(req: NextRequest) {
       }
     })
 
+    // Step 10: Calculate total amount and get unique categories
     const totalAmount = saleLines.reduce((sum, item) => sum + item.quantity * item.price, 0)
     const categoryNames = Array.from(new Set(saleLines.map((item) => item.categoryName)))
+
+    // Step 11: Create sale document reference and generate unique receipt number
     const saleRef = doc(collection(db, 'sales'))
     const numberResult = await createTransactionNumber('sale', saleRef, (numberInfo) => ({
       ...(saleLines.length === 1 ? { itemId: saleLines[0].itemId } : {}),
@@ -308,6 +336,7 @@ export async function POST(req: NextRequest) {
       note: SALES_THANK_YOU_NOTE,
     }
 
+
     const receiptRecord: ReceiptRecord = {
       id: saleRef.id,
       receiptNumber: numberResult.value,
@@ -348,6 +377,9 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Cannot sell more than available stock.' }, { status: 400 })
       }
 
+      if (error.message === 'ITEM_VOIDED') {
+        return NextResponse.json({ error: 'One or more items have been voided and cannot be sold.' }, { status: 400 })
+      }
       if (error.message === 'ITEM_NOT_FOUND') {
         return NextResponse.json({ error: 'One or more selected items were not found.' }, { status: 404 })
       }

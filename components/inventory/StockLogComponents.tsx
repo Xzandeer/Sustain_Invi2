@@ -1,6 +1,6 @@
 'use client'
 
-import { ResolvedStockLogAction } from '@/lib/stockLogActions'
+import { ResolvedStockLogAction } from '@/lib/inventory/stockLogActions'
 
 interface StockValueDisplayProps {
   label: string

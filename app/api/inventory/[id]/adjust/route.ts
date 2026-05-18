@@ -1,3 +1,4 @@
+// Stock adjustment API - POST to add/deduct/transfer stock between conditions
 import { NextResponse } from 'next/server'
 import { doc, getDoc, updateDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
@@ -14,15 +15,17 @@ interface RouteContext {
 }
 
 interface AdjustPayload {
-  action?: unknown
+  action?: unknown // 'add', 'deduct', 'transfer'
   quantity?: unknown
-  targetCondition?: unknown
+  targetCondition?: unknown // 'New' or 'Refurbished' (for transfers)
   remarks?: unknown
   processedBy?: unknown
 }
 
+// POST /api/inventory/[id]/adjust - Adjust stock (add/deduct/transfer between conditions)
 export async function POST(req: Request, context: RouteContext) {
   try {
+    // Step 1: Parse request
     const { id } = await context.params
     const body = (await req.json()) as AdjustPayload
     const action = typeof body.action === 'string' ? body.action.trim().toLowerCase() : ''
@@ -30,6 +33,7 @@ export async function POST(req: Request, context: RouteContext) {
     const remarks = typeof body.remarks === 'string' ? body.remarks.trim() : ''
     const processedBy = await getProcessedByInfo(body.processedBy)
 
+    // Step 2: Validate action and quantity
     if (!id || !['add', 'deduct', 'transfer'].includes(action)) {
       return NextResponse.json({ error: 'Invalid stock adjustment request.' }, { status: 400 })
     }
@@ -38,6 +42,7 @@ export async function POST(req: Request, context: RouteContext) {
       return NextResponse.json({ error: 'Adjustment quantity must be greater than zero.' }, { status: 400 })
     }
 
+    // Step 3: Get current item data
     const snapshot = await getDoc(doc(db, 'inventory', id))
     if (!snapshot.exists()) {
       return NextResponse.json({ error: 'Item not found.' }, { status: 404 })
@@ -58,10 +63,12 @@ export async function POST(req: Request, context: RouteContext) {
     const availableStock = Math.max(0, currentStock - currentReservedStock)
     const sourceRef = doc(db, 'inventory', id)
 
+    // Step 4: Validate item has required fields
     if (!itemName || !categoryId) {
       return NextResponse.json({ error: 'Inventory variant is missing required fields.' }, { status: 400 })
     }
 
+    // Step 5: Handle ADD action (simple stock increase)
     if (action === 'add') {
       const nextStock = currentStock + quantity
       await updateDoc(sourceRef, {
@@ -90,6 +97,7 @@ export async function POST(req: Request, context: RouteContext) {
       return NextResponse.json({ success: true }, { status: 200 })
     }
 
+    // Step 6: Check sufficient available stock for deduct/transfer (reserved can't be touched)
     if (quantity > availableStock) {
       return NextResponse.json(
         { error: 'Adjustment exceeds available stock. Reserved stock cannot be reduced.' },
@@ -97,6 +105,7 @@ export async function POST(req: Request, context: RouteContext) {
       )
     }
 
+    // Step 7: Handle DEDUCT action (simple stock decrease)
     if (action === 'deduct') {
       const nextStock = currentStock - quantity
       await updateDoc(sourceRef, {
@@ -125,11 +134,13 @@ export async function POST(req: Request, context: RouteContext) {
       return NextResponse.json({ success: true }, { status: 200 })
     }
 
+    // Step 8: Handle TRANSFER action (move stock between conditions - New <-> Refurbished)
     const targetCondition = normalizeInventoryCondition(body.targetCondition) as InventoryCondition
     if (targetCondition === sourceCondition) {
       return NextResponse.json({ error: 'Select a different condition for transfer.' }, { status: 400 })
     }
 
+    // Step 9: Find or prepare target variant (other condition of same item)
     const targetVariant = await findInventoryVariant({
       name: itemName,
       categoryId,
@@ -142,6 +153,7 @@ export async function POST(req: Request, context: RouteContext) {
     let targetReservedBefore = targetVariant?.reservedStock ?? 0
     let targetMinStock = targetVariant?.minStock ?? minStock
 
+    // Step 10: Reduce source stock
     await updateDoc(sourceRef, {
       stock: nextSourceStock,
       quantity: nextSourceStock,
@@ -149,6 +161,7 @@ export async function POST(req: Request, context: RouteContext) {
       updatedAt: new Date().toISOString(),
     })
 
+    // Step 11: Update or create target variant
     if (targetVariant) {
       const nextTargetStock = targetVariant.stock + quantity
       await updateDoc(doc(db, 'inventory', targetVariant.id), {
@@ -160,6 +173,7 @@ export async function POST(req: Request, context: RouteContext) {
         updatedAt: new Date().toISOString(),
       })
     } else {
+      // Create new variant for target condition
       const created = await createInventoryVariant({
         name: itemName,
         categoryId,
@@ -177,6 +191,7 @@ export async function POST(req: Request, context: RouteContext) {
 
     const nextTargetStock = targetStockBefore + quantity
 
+    // Step 12: Log transfer OUT from source
     await createStockLog({
       actionType: 'stock_transferred_out',
       itemId: id,
@@ -194,27 +209,6 @@ export async function POST(req: Request, context: RouteContext) {
       relatedId: targetId,
     })
 
-    await createStockLog({
-      actionType: 'stock_transferred_in',
-      itemId: targetId,
-      itemName,
-      condition: targetCondition,
-      quantityBefore: targetStockBefore,
-      quantityChanged: quantity,
-      quantityAfter: nextTargetStock,
-      stockBefore: targetStockBefore,
-      stockAfter: nextTargetStock,
-      reservedBefore: targetReservedBefore,
-      reservedAfter: targetReservedBefore,
-      user: processedBy,
-      remarks: remarks || `Received stock from ${sourceCondition}.`,
-      relatedId: id,
-    })
-
-    await updateDoc(doc(db, 'inventory', targetId), {
-      stockStatus: getStockStatus({ stock: nextTargetStock, minStock: targetMinStock }),
-      updatedAt: new Date().toISOString(),
-    })
 
     return NextResponse.json({ success: true }, { status: 200 })
   } catch (error) {

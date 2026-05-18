@@ -1,10 +1,13 @@
-import { CompletedTransactionDocument, formatCurrency, formatTransactionDateTime } from '@/lib/transactionDocuments'
+// Print-formatted receipt/ticket - generates HTML for thermal printer output (80mm width)
+import { CompletedTransactionDocument, formatCurrency, formatTransactionDateTime } from '@/lib/transactions/transactionDocuments'
 
+// Open receipt in new window with print dialog auto-opened
 export const openReceiptPrintWindow = (document: CompletedTransactionDocument) => {
   if (!document) return
 
   const isSale = document.type === 'sale'
 
+  // Step 1: Build HTML document formatted for 80mm thermal receipts
   const html = `
 <!DOCTYPE html>
 <html lang="en">
@@ -314,9 +317,11 @@ export const openReceiptPrintWindow = (document: CompletedTransactionDocument) =
 </html>
   `
 
+  // Step 2: Open new window and write HTML
   const printWindow = window.open('', '_blank', 'width=400,height=600')
   if (printWindow) {
     printWindow.document.write(html)
     printWindow.document.close()
+    // JavaScript inside HTML will trigger print dialog on page load
   }
 }

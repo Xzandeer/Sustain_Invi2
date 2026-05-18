@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { collection, getDocs, query, where, orderBy, limit } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
-import { ReceiptRecord } from '@/lib/transactionDocuments'
+import { ReceiptRecord } from '@/lib/transactions/transactionDocuments'
 
 export async function GET(req: NextRequest) {
   try {
@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
 
     const snapshot = await getDocs(receiptsQuery)
     const data: ReceiptRecord[] = snapshot.docs
-      .map((docEntry) => ({ id: docEntry.id, ...(docEntry.data() as ReceiptRecord) }))
+      .map((docEntry) => ({ id: docEntry.id, ...(docEntry.data() as Omit<ReceiptRecord, 'id'>) }))
 
     return NextResponse.json({ data }, { status: 200 })
   } catch (error) {

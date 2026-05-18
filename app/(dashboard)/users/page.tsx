@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { doc, onSnapshot, updateDoc, collection } from 'firebase/firestore'
 import { useRouter } from 'next/navigation'
 import { db } from '@/lib/firebase'
-import ProtectedRoute from '@/components/ProtectedRoute'
+import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { useUserRole, UserRole } from '@/hooks/useUserRole'
 
 interface AppUser {
@@ -95,9 +95,16 @@ function UsersContent() {
   return (
     <main className="min-h-[calc(100vh-64px)] bg-slate-100 px-4 py-8 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-[1700px] space-y-6">
-        <header>
-          <h1 className="text-4xl font-bold text-slate-900">User Management</h1>
-          <p className="mt-1 text-lg text-slate-600">Assign admin and staff roles, and control stock log access.</p>
+        <header className="flex items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          </div>
+          <div>
+            <h1 className="text-lg font-bold text-slate-900 sm:text-2xl">User Management</h1>
+            <p className="mt-0.5 text-sm text-slate-500">Assign admin and staff roles, and control stock log access.</p>
+          </div>
         </header>
 
         <section className="rounded-xl border bg-white p-6 shadow-sm">

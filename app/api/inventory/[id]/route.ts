@@ -1,3 +1,4 @@
+// Inventory item detail API - PUT to edit, DELETE to move to trash, PATCH to restore/permanently delete
 import { NextResponse } from 'next/server'
 import { deleteDoc, doc, getDoc, updateDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
@@ -20,12 +21,15 @@ interface InventoryUpdatePayload {
   stock?: unknown
   minStock?: unknown
   status?: unknown
+  condition?: unknown
   processedBy?: unknown
   remarks?: unknown
 }
 
+// PUT /api/inventory/[id] - Update item details (name, price, category, etc.)
 export async function PUT(req: Request, context: RouteContext) {
   try {
+    // Step 1: Get item ID and fetch current item
     const { id } = await context.params
     if (!id) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
@@ -36,6 +40,7 @@ export async function PUT(req: Request, context: RouteContext) {
       return NextResponse.json({ error: 'Item not found' }, { status: 404 })
     }
 
+    // Step 2: Parse request and get user info
     const body = (await req.json()) as InventoryUpdatePayload
     const current = snapshot.data() as Record<string, unknown>
     const processedBy = await getProcessedByInfo(body.processedBy)
@@ -229,8 +234,10 @@ export async function PUT(req: Request, context: RouteContext) {
   }
 }
 
+// DELETE /api/inventory/[id] - Move item to trash (soft delete, requires zero stock)
 export async function DELETE(_: Request, context: RouteContext) {
   try {
+    // Step 1: Parse ID and verify admin access
     const { id } = await context.params
     if (!id) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
@@ -239,6 +246,7 @@ export async function DELETE(_: Request, context: RouteContext) {
     const body = (await _.json().catch(() => ({}))) as { processedBy?: unknown }
     await assertAdminUser(body.processedBy)
 
+    // Step 2: Get current item data
     const docRef = doc(db, 'inventory', id)
     const snapshot = await getDoc(docRef)
     if (!snapshot.exists()) {
@@ -249,19 +257,22 @@ export async function DELETE(_: Request, context: RouteContext) {
     const currentStock = toNumber(data.stock ?? data.quantity, 0)
     const currentReservedStock = toNumber(data.reservedStock, 0)
 
+    // Step 3: Check item has zero stock and zero reservations (can't delete if stock exists)
     if (currentStock > 0 || currentReservedStock > 0) {
       return NextResponse.json(
-        { error: 'Cannot delete an item variant with remaining stock or reservations.' },
+        { error: 'This item cannot be permanently deleted because it still contains inventory or transaction history. You may void the item instead.' },
         { status: 400 }
       )
     }
 
+    // Step 4: Mark as deleted (soft delete, can be restored)
     await updateDoc(docRef, {
       isDeleted: true,
       deletedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     })
 
+    // Step 5: Log the deletion
     await createStockLog({
       actionType: 'item_deleted',
       itemId: id,
@@ -287,8 +298,10 @@ export async function DELETE(_: Request, context: RouteContext) {
   }
 }
 
+// PATCH /api/inventory/[id] - Restore from trash or permanently delete
 export async function PATCH(req: Request, context: RouteContext) {
   try {
+    // Step 1: Get item ID and verify admin access
     const { id } = await context.params
     if (!id) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
@@ -300,6 +313,7 @@ export async function PATCH(req: Request, context: RouteContext) {
       return NextResponse.json({ error: 'Item not found' }, { status: 404 })
     }
 
+    // Step 2: Parse request and get admin user
     const body = (await req.json()) as { action?: unknown }
     const action = typeof body.action === 'string' ? body.action : ''
     const processedBy = await assertAdminUser((body as Record<string, unknown>).processedBy)
@@ -309,6 +323,7 @@ export async function PATCH(req: Request, context: RouteContext) {
     const currentStock = toNumber(snapshotData.stock ?? snapshotData.quantity, 0)
     const currentReservedStock = toNumber(snapshotData.reservedStock, 0)
 
+    // Step 3: Handle restore action (move back from trash)
     if (action === 'restore') {
       await updateDoc(docRef, {
         isDeleted: false,
@@ -329,6 +344,129 @@ export async function PATCH(req: Request, context: RouteContext) {
         reservedAfter: currentReservedStock,
         user: processedBy,
         remarks: 'Item restored from trash.',
+      })
+      return NextResponse.json({ success: true }, { status: 200 })
+    }
+
+
+    if (action === 'void') {
+      const voidReason = typeof (body as Record<string, unknown>).voidReason === 'string'
+        ? ((body as Record<string, unknown>).voidReason as string).trim()
+        : ''
+      if (!voidReason) {
+        return NextResponse.json({ error: 'A void reason is required.' }, { status: 400 })
+      }
+
+      // Parse voidQuantity — defaults to full stock if not provided
+      const rawVoidQty = (body as Record<string, unknown>).voidQuantity
+      const voidQuantity = typeof rawVoidQty === 'number' && rawVoidQty > 0
+        ? Math.floor(rawVoidQty)
+        : currentStock
+      if (voidQuantity > currentStock) {
+        return NextResponse.json(
+          { error: `Cannot void ${voidQuantity} units — only ${currentStock} in stock.` },
+          { status: 400 }
+        )
+      }
+
+      const isFullVoid = voidQuantity >= currentStock
+
+      // Check for active reservations (only block full voids)
+      if (isFullVoid) {
+        const { collection: fsCollection, getDocs, query: fsQuery, where } = await import('firebase/firestore')
+        const activeResQuery = fsQuery(
+          fsCollection(db, 'reservations'),
+          where('status', '==', 'active')
+        )
+        const activeResDocs = await getDocs(activeResQuery)
+        const hasActiveReservation = activeResDocs.docs.some((resDoc) => {
+          const resData = resDoc.data() as Record<string, unknown>
+          const items = Array.isArray(resData.items) ? resData.items : []
+          return items.some((item: Record<string, unknown>) => item.itemId === id || item.id === id)
+        })
+        if (hasActiveReservation) {
+          return NextResponse.json(
+            { error: 'This item has an active reservation and cannot be fully voided. Please cancel or complete the reservation first.' },
+            { status: 400 }
+          )
+        }
+      }
+
+      const newStock = currentStock - voidQuantity
+
+      if (isFullVoid) {
+        // Full void: mark item as voided and zero out stock
+        await updateDoc(docRef, {
+          isVoided: true,
+          voidedAt: new Date().toISOString(),
+          voidedBy: processedBy.name ?? processedBy.email ?? 'Admin',
+          voidReason,
+          quantity: 0,
+          updatedAt: new Date().toISOString(),
+        })
+        await createStockLog({
+          actionType: 'item_voided',
+          itemId: id,
+          itemName,
+          condition,
+          quantityBefore: currentStock,
+          quantityChanged: -voidQuantity,
+          quantityAfter: 0,
+          stockBefore: currentStock,
+          stockAfter: 0,
+          reservedBefore: currentReservedStock,
+          reservedAfter: currentReservedStock,
+          user: processedBy,
+          remarks: `Item fully voided (${voidQuantity} unit${voidQuantity !== 1 ? 's' : ''}). Reason: ${voidReason}`,
+        })
+      } else {
+        // Partial void: reduce stock only, item stays active
+        await updateDoc(docRef, {
+          quantity: newStock,
+          updatedAt: new Date().toISOString(),
+        })
+        await createStockLog({
+          actionType: 'item_voided',
+          itemId: id,
+          itemName,
+          condition,
+          quantityBefore: currentStock,
+          quantityChanged: -voidQuantity,
+          quantityAfter: newStock,
+          stockBefore: currentStock,
+          stockAfter: newStock,
+          reservedBefore: currentReservedStock,
+          reservedAfter: currentReservedStock,
+          user: processedBy,
+          remarks: `Partial void: ${voidQuantity} of ${currentStock} unit${currentStock !== 1 ? 's' : ''} removed. Reason: ${voidReason}`,
+        })
+      }
+
+      return NextResponse.json({ success: true, isFullVoid, newStock }, { status: 200 })
+    }
+
+    if (action === 'unvoid') {
+      await updateDoc(docRef, {
+        isVoided: false,
+        voidedAt: null,
+        voidedBy: null,
+        voidReason: null,
+        updatedAt: new Date().toISOString(),
+      })
+      await createStockLog({
+        actionType: 'item_unvoided',
+        itemId: id,
+        itemName,
+        condition,
+        quantityBefore: currentStock,
+        quantityChanged: 0,
+        quantityAfter: currentStock,
+        stockBefore: currentStock,
+        stockAfter: currentStock,
+        reservedBefore: currentReservedStock,
+        reservedAfter: currentReservedStock,
+        user: processedBy,
+        remarks: 'Item restored from voided state.',
       })
       return NextResponse.json({ success: true }, { status: 200 })
     }

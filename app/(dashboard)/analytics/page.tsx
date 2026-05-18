@@ -7,22 +7,23 @@ import {
   LinearScale,
   PointElement,
   LineElement,
+  ArcElement,
   Tooltip,
   Legend,
 } from 'chart.js'
-import { Line } from 'react-chartjs-2'
+import { Line, Doughnut } from 'react-chartjs-2'
 import { collection, onSnapshot } from 'firebase/firestore'
-import ProtectedRoute from '@/components/ProtectedRoute'
+import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { db } from '@/lib/firebase'
 import AnalyticsCard from '@/components/analytics/AnalyticsCard'
 import AnalyticsBadge from '@/components/analytics/AnalyticsBadge'
 import AnalyticsTable from '@/components/analytics/AnalyticsTable'
 import type { InventoryRecord } from '@/lib/server/salesInventoryMetrics'
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend)
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ArcElement, Tooltip, Legend)
 
 type SaleItemCondition = 'New' | 'Refurbished'
-type AnalyticsModalType = 'top' | null
+type AnalyticsModalType = 'top' | 'products' | null
 type TimeRangePreset = 'this-week' | 'this-month' | 'last-month' | 'last-6-months' | 'this-year' | 'custom'
 
 interface SaleRecord {
@@ -62,6 +63,21 @@ interface CategoryForecastRow {
   categoryName: string
   projectedRevenue: number
   projectedItemsSold: number
+}
+
+// Tracks reservation status counts for the Reservation Activity panel
+interface ReservationRecord {
+  id: string
+  status: 'Active' | 'Completed' | 'Cancelled' | 'Expired'
+  createdAt: Date | null
+}
+
+// Color map for each reservation status used in the donut chart and legend
+const RESERVATION_STATUS_COLORS: Record<ReservationRecord['status'], string> = {
+  Active: '#3b82f6',
+  Completed: '#22c55e',
+  Cancelled: '#ef4444',
+  Expired: '#94a3b8',
 }
 
 const toNumber = (value: unknown, fallback = 0) => {
@@ -570,6 +586,7 @@ function AnalyticsContent() {
   const [sales, setSales] = useState<SaleRecord[]>([])
   const [inventory, setInventory] = useState<InventoryRecord[]>([])
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([])
+  const [reservations, setReservations] = useState<ReservationRecord[]>([])
   const [timeRangePreset, setTimeRangePreset] = useState<TimeRangePreset>('this-month')
   const [customStartDate, setCustomStartDate] = useState('')
   const [customEndDate, setCustomEndDate] = useState('')
@@ -646,10 +663,31 @@ function AnalyticsContent() {
       setInventory(rows)
     })
 
+    // Listen to reservations collection for the Reservation Activity panel
+    const unsubscribeReservations = onSnapshot(collection(db, 'reservations'), (snapshot) => {
+      const rows: ReservationRecord[] = snapshot.docs.map((resDoc) => {
+        const data = resDoc.data() as Record<string, unknown>
+        // Normalize status — default to 'Active' if unrecognized
+        const rawStatus = typeof data.status === 'string' ? data.status : ''
+        const status = (['Active', 'Completed', 'Cancelled', 'Expired'] as const).includes(
+          rawStatus as ReservationRecord['status']
+        )
+          ? (rawStatus as ReservationRecord['status'])
+          : 'Active'
+        return {
+          id: resDoc.id,
+          status,
+          createdAt: toDate(data.createdAt),
+        }
+      })
+      setReservations(rows)
+    })
+
     return () => {
       unsubscribeCategories()
       unsubscribeSales()
       unsubscribeInventory()
+      unsubscribeReservations()
     }
   }, [])
 
@@ -910,6 +948,22 @@ function AnalyticsContent() {
       .sort((a, b) => a.categoryName.localeCompare(b.categoryName))
   }, [inventory])
 
+  // Counts reservations by status for the selected date range
+  const reservationActivity = useMemo(() => {
+    const filtered = reservations.filter((r) => inRange(r.createdAt, activeRange.start, activeRange.end))
+    const counts: Record<ReservationRecord['status'], number> = {
+      Active: 0,
+      Completed: 0,
+      Cancelled: 0,
+      Expired: 0,
+    }
+    filtered.forEach((r) => {
+      counts[r.status]++
+    })
+    const total = Object.values(counts).reduce((sum, n) => sum + n, 0)
+    return { counts, total }
+  }, [reservations, activeRange.start, activeRange.end])
+
   const topCategoryRows = useMemo(
     () =>
       currentSummary.categories.slice(0, 6).map((row, index) => ({
@@ -950,36 +1004,188 @@ function AnalyticsContent() {
     [inventorySummary]
   )
 
-  const modalConfig = useMemo(() => {
-    if (openModal !== 'top') return null
+  // Top individual products ranked by revenue
+  const topProducts = useMemo(() => {
+    const productMap = new Map<string, { itemsSold: number; revenue: number }>()
+    filteredSales.forEach((sale) => {
+      sale.items.forEach((item) => {
+        const current = productMap.get(item.name) ?? { itemsSold: 0, revenue: 0 }
+        current.itemsSold += item.quantity
+        current.revenue += item.quantity * item.price
+        productMap.set(item.name, current)
+      })
+    })
+    return Array.from(productMap.entries())
+      .map(([name, data]) => ({ name, ...data }))
+      .sort((a, b) => b.revenue - a.revenue)
+  }, [filteredSales])
 
-    return {
-      title: `Top Categories - ${getRangeLabel(timeRangePreset)}`,
-      columns: [
-        { header: '#' },
-        { header: 'Category' },
-        { header: 'Items Sold', className: 'text-right' },
-        { header: 'Sales', className: 'text-right' },
-      ],
-      rows: allTopCategoryRows,
+  // Rows for the products modal
+  const allProductRows = useMemo(
+    () =>
+      topProducts.map((row, index) => ({
+        key: row.name,
+        cells: [
+          <span key={`${row.name}-rank`} className="font-medium text-slate-900">{index + 1}</span>,
+          <span key={`${row.name}-name`} className="font-medium text-slate-900">{row.name}</span>,
+          <span key={`${row.name}-items`} className="block text-right">{compactNumber.format(row.itemsSold)}</span>,
+          <span key={`${row.name}-rev`} className="block text-right">{currency(row.revenue)}</span>,
+        ],
+      })),
+    [topProducts]
+  )
+
+  const modalConfig = useMemo(() => {
+    if (openModal === 'top') {
+      return {
+        title: `Top Categories — ${getRangeLabel(timeRangePreset)}`,
+        columns: [
+          { header: '#' },
+          { header: 'Category' },
+          { header: 'Qty Sold', className: 'text-right' },
+          { header: 'Sales Amount', className: 'text-right' },
+        ],
+        rows: allTopCategoryRows,
+      }
     }
-  }, [allTopCategoryRows, openModal, timeRangePreset])
+    if (openModal === 'products') {
+      return {
+        title: `Top Products — ${getRangeLabel(timeRangePreset)}`,
+        columns: [
+          { header: '#' },
+          { header: 'Product' },
+          { header: 'Qty Sold', className: 'text-right' },
+          { header: 'Sales', className: 'text-right' },
+        ],
+        rows: allProductRows,
+      }
+    }
+    return null
+  }, [allTopCategoryRows, allProductRows, openModal, timeRangePreset])
+
+
+  // ── New computed values for redesigned analytics page ─────────────────────
+
+  const transactionCount = filteredSales.length
+  const previousTransactionCount = filteredPreviousPeriodSales.length
+  const averageOrderValue = transactionCount > 0 ? currentSummary.totalSales / transactionCount : 0
+  const previousAverageOrderValue =
+    previousTransactionCount > 0 ? previousSummary.totalSales / previousTransactionCount : 0
+  const avgOrderValueChange = calculatePercentChange(averageOrderValue, previousAverageOrderValue)
+  const transactionCountChange = calculatePercentChange(transactionCount, previousTransactionCount)
+
+  const handleResetFilters = () => {
+    setTimeRangePreset('this-month')
+    setCustomStartDate('')
+    setCustomEndDate('')
+    setSelectedCategory('All Categories')
+    setSelectedCondition('All Conditions')
+    setDateRangeError('')
+  }
+
+  const headerDateLabel = useMemo(() => {
+    const fmt = (d: Date) =>
+      d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })
+    return `${fmt(activeRange.start)} – ${fmt(activeRange.end)}`
+  }, [activeRange])
+
+  const previousPeriodLabel = useMemo(() => {
+    const fmt = (d: Date) => d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })
+    return `vs ${fmt(previousPeriodRange.start)} – ${fmt(previousPeriodRange.end)}`
+  }, [previousPeriodRange])
+
+  // Revenue breakdown by item condition (New vs Refurbished)
+  const salesByCondition = useMemo(() => {
+    const breakdown = { New: 0, Refurbished: 0 }
+    filteredSales.forEach((sale) => {
+      sale.items.forEach((item) => {
+        if (item.condition === 'Refurbished') {
+          breakdown.Refurbished += item.quantity * item.price
+        } else {
+          breakdown.New += item.quantity * item.price
+        }
+      })
+    })
+    const total = breakdown.New + breakdown.Refurbished
+    return {
+      New: breakdown.New,
+      Refurbished: breakdown.Refurbished,
+      total,
+      newPct: total > 0 ? Math.round((breakdown.New / total) * 100) : 0,
+      refurbishedPct: total > 0 ? Math.round((breakdown.Refurbished / total) * 100) : 0,
+    }
+  }, [filteredSales])
+
+  // Category demand donut — top 5 categories + Others bucket
+  const CATEGORY_CHART_COLORS = ['#2563eb', '#16a34a', '#d97706', '#7c3aed', '#6b7280', '#94a3b8']
+  const categoryDemandData = useMemo(() => {
+    const top5 = currentSummary.categories.slice(0, 5)
+    const othersRevenue = currentSummary.categories.slice(5).reduce((sum, c) => sum + c.revenue, 0)
+    const total = currentSummary.totalSales
+    const items = [
+      ...top5.map((c, i) => ({
+        label: c.categoryName,
+        revenue: c.revenue,
+        color: CATEGORY_CHART_COLORS[i] ?? '#6b7280',
+        pct: total > 0 ? Math.round((c.revenue / total) * 100) : 0,
+      })),
+      ...(othersRevenue > 0
+        ? [{ label: 'Others', revenue: othersRevenue, color: '#94a3b8', pct: total > 0 ? Math.round((othersRevenue / total) * 100) : 0 }]
+        : []),
+    ]
+    return { items, total }
+  }, [currentSummary])
+
+
+  // Demand level label based on projected vs current revenue ratio
+  const projectedDemandLevel = useMemo(() => {
+    const projected = predictiveSummary.projectedSales
+    const current = currentSummary.totalSales
+    if (current === 0) return projected > 0 ? 'High' : 'Low'
+    const ratio = projected / current
+    if (ratio >= 0.9) return 'High'
+    if (ratio >= 0.5) return 'Medium'
+    return 'Low'
+  }, [predictiveSummary.projectedSales, currentSummary.totalSales])
+
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-slate-100 px-2 py-2.5 sm:px-2.5">
-      <div className="mx-auto max-w-[1620px] space-y-3.5">
-        <header>
-          <h1 className="text-[1.6rem] font-bold text-slate-900">Analytics</h1>
-        </header>
+    <main className="min-h-[calc(100vh-64px)] bg-slate-50 px-3 py-3 sm:px-4 sm:py-4">
+      <div className="mx-auto max-w-[1400px] space-y-3">
 
-        <AnalyticsCard title="Filters" className="rounded-2xl">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+        {/* ── Page Header ── */}
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+              </svg>
+            </div>
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-slate-700">Time Range</label>
+              <h1 className="text-lg font-bold text-slate-900 sm:text-2xl">Analytics</h1>
+              <p className="mt-0.5 text-sm text-slate-500">
+                Analyze sales trends and predict category demand for surplus inventory.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm">
+            <svg className="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
+            </svg>
+            <span className="font-medium">{headerDateLabel}</span>
+          </div>
+        </div>
+
+        {/* ── Filters ── */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+          <h2 className="mb-2 text-xs font-semibold text-slate-700">Filters</h2>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600">Time Range</label>
               <select
                 value={timeRangePreset}
                 onChange={(event) => setTimeRangePreset(event.target.value as TimeRangePreset)}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-blue-500 focus:outline-none"
               >
                 <option value="this-week">This Week</option>
                 <option value="this-month">This Month</option>
@@ -989,309 +1195,574 @@ function AnalyticsContent() {
                 <option value="custom">Custom Range</option>
               </select>
             </div>
-
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-slate-700">Category</label>
+              <label className="mb-1 block text-xs font-medium text-slate-600">Start Date</label>
+              <input
+                type="date"
+                value={timeRangePreset === 'custom' ? customStartDate : formatDateInput(activeRange.start)}
+                max={timeRangePreset === 'custom' && customEndDate ? customEndDate : undefined}
+                onChange={(event) => handleCustomStartDateChange(event.target.value)}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600">End Date</label>
+              <input
+                type="date"
+                value={timeRangePreset === 'custom' ? customEndDate : formatDateInput(activeRange.end)}
+                min={timeRangePreset === 'custom' && customStartDate ? customStartDate : undefined}
+                onChange={(event) => handleCustomEndDateChange(event.target.value)}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600">Category</label>
               <select
                 value={selectedCategory}
                 onChange={(event) => setSelectedCategory(event.target.value)}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-blue-500 focus:outline-none"
               >
                 <option value="All Categories">All Categories</option>
-                {availableCategoryIds.map((categoryId) => (
-                  <option key={categoryId} value={categoryId}>
-                    {categoryNameMap[categoryId] ?? categoryId}
-                  </option>
+                {availableCategoryIds.map((id) => (
+                  <option key={id} value={id}>{categoryNameMap[id] ?? id}</option>
                 ))}
               </select>
             </div>
-
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-slate-700">Condition</label>
+              <label className="mb-1 block text-xs font-medium text-slate-600">Condition</label>
               <select
                 value={selectedCondition}
                 onChange={(event) =>
                   setSelectedCondition(
-                    event.target.value === 'Refurbished'
-                      ? 'Refurbished'
-                      : event.target.value === 'New'
-                        ? 'New'
-                        : 'All Conditions'
+                    event.target.value === 'Refurbished' ? 'Refurbished'
+                      : event.target.value === 'New' ? 'New'
+                      : 'All Conditions'
                   )
                 }
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-blue-500 focus:outline-none"
               >
                 <option value="All Conditions">All Conditions</option>
                 <option value="New">New</option>
                 <option value="Refurbished">Refurbished</option>
               </select>
             </div>
-
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-slate-700">Start Date</label>
-              <input
-                type="date"
-                value={timeRangePreset === 'custom' ? customStartDate : formatDateInput(activeRange.start)}
-                max={timeRangePreset === 'custom' && customEndDate ? customEndDate : undefined}
-                onChange={(event) => handleCustomStartDateChange(event.target.value)}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              />
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-slate-700">End Date</label>
-              <input
-                type="date"
-                value={timeRangePreset === 'custom' ? customEndDate : formatDateInput(activeRange.end)}
-                min={timeRangePreset === 'custom' && customStartDate ? customStartDate : undefined}
-                onChange={(event) => handleCustomEndDateChange(event.target.value)}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              />
-            </div>
           </div>
-
-          {timeRangePreset === 'custom' && dateRangeError ? (
-            <p className="mt-3 text-sm text-red-500">{dateRangeError}</p>
-          ) : null}
-        </AnalyticsCard>
-
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
-          <AnalyticsCard
-            title="Total Sales"
-            subtitle={getRangeLabel(timeRangePreset)}
-            actions={<p className="text-lg font-semibold text-slate-900">{currency(currentSummary.totalSales)}</p>}
-          >
-            <div className="space-y-2.5">
-              {comparisonMetrics.totalSales.map((metric) => (
-                <div key={metric.label} className="flex items-center justify-between gap-2.5 rounded-xl bg-slate-50 px-3 py-2">
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">{metric.label}</p>
-                    <p className="text-xs text-slate-500">{currency(metric.value)}</p>
-                  </div>
-                  <AnalyticsBadge variant={getChangeVariant(metric.change)}>
-                    {getComparisonText(metric.change)}
-                  </AnalyticsBadge>
-                </div>
-              ))}
-            </div>
-          </AnalyticsCard>
-
-          <AnalyticsCard
-            title="Items Sold"
-            subtitle={getRangeLabel(timeRangePreset)}
-            actions={<p className="text-lg font-semibold text-slate-900">{compactNumber.format(currentSummary.itemsSold)}</p>}
-          >
-            <div className="space-y-2.5">
-              {comparisonMetrics.itemsSold.map((metric) => (
-                <div key={metric.label} className="flex items-center justify-between gap-2.5 rounded-xl bg-slate-50 px-3 py-2">
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">{metric.label}</p>
-                    <p className="text-xs text-slate-500">{compactNumber.format(metric.value)} items</p>
-                  </div>
-                  <AnalyticsBadge variant={getChangeVariant(metric.change)}>
-                    {getComparisonText(metric.change)}
-                  </AnalyticsBadge>
-                </div>
-              ))}
-            </div>
-          </AnalyticsCard>
-
-          <AnalyticsCard
-            title="Top Category"
-            subtitle={getRangeLabel(timeRangePreset)}
-            actions={
-              <div className="text-right">
-                <p className="text-lg font-semibold text-slate-900">
-                  {currentSummary.topCategory?.categoryName ?? 'No sales'}
-                </p>
-                <p className="text-xs text-slate-500">
-                  {currentSummary.topCategory ? currency(currentSummary.topCategory.revenue) : 'No revenue'}
-                </p>
-              </div>
-            }
-          >
-            <div className="space-y-2.5">
-              {comparisonMetrics.topCategory.map((metric) => (
-                <div key={metric.label} className="flex items-center justify-between gap-2.5 rounded-xl bg-slate-50 px-3 py-2">
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">{metric.label}</p>
-                    <p className="text-xs text-slate-500">{currency(metric.value)}</p>
-                  </div>
-                  <AnalyticsBadge variant={getChangeVariant(metric.change)}>
-                    {getComparisonText(metric.change)}
-                  </AnalyticsBadge>
-                </div>
-              ))}
-            </div>
-          </AnalyticsCard>
+          {dateRangeError ? <p className="mt-2 text-xs text-red-500">{dateRangeError}</p> : null}
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              className="flex items-center gap-1.5 rounded-lg bg-[#1e3a5f] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#162d4a]"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L13 13.414V19a1 1 0 01-.553.894l-4 2A1 1 0 017 21v-7.586L3.293 6.707A1 1 0 013 6V4z" />
+              </svg>
+              Apply Filters
+            </button>
+            <button
+              type="button"
+              onClick={handleResetFilters}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Reset Filters
+            </button>
+          </div>
         </div>
 
-        <AnalyticsCard
-          title="Sales Trend"
-          subtitle={`${trendSeries.granularity === 'day' ? 'Daily' : 'Monthly'} trend from ${formatMonthLabel(activeRange.start)} to ${formatMonthLabel(activeRange.end)}`}
-          actions={
-            <div className="text-right">
-              <p className="text-sm font-medium text-slate-900">{getRangeLabel(timeRangePreset)}</p>
-              <p className="text-sm text-gray-500">
-                {selectedCategory === 'All Categories' ? 'All categories' : categoryNameMap[selectedCategory] ?? selectedCategory}
+        {/* ── 5 KPI Cards ── */}
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">
+
+          {/* Total Sales */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+            <div className="rounded-xl bg-blue-50 p-2.5 w-fit">
+              <svg className="h-5 w-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <p className="mt-2 text-xs font-medium text-slate-500">Total Sales</p>
+            <p className="mt-0.5 text-lg font-bold text-slate-900 sm:text-2xl">{currency(currentSummary.totalSales)}</p>
+            {comparisonMetrics.totalSales[0] ? (
+              <p className={`mt-1.5 text-xs font-medium ${comparisonMetrics.totalSales[0].change === null ? 'text-slate-400' : comparisonMetrics.totalSales[0].change >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                {comparisonMetrics.totalSales[0].change === null ? '—' : comparisonMetrics.totalSales[0].change >= 0 ? '↑' : '↓'}{' '}
+                {comparisonMetrics.totalSales[0].change === null ? 'No prior data' : `${percentFormatter.format(Math.abs(comparisonMetrics.totalSales[0].change))}%`}
+                <span className="ml-1 font-normal text-slate-400">{previousPeriodLabel}</span>
               </p>
-            </div>
-          }
-        >
-          <div className="h-68">
-            <Line
-              data={{
-                labels: forecastSeries.labels,
-                datasets: [
-                  {
-                    label: 'Actual Sales',
-                    data: forecastSeries.actualValues,
-                    fill: true,
-                    borderColor: '#0f4c81',
-                    backgroundColor: 'rgba(15, 76, 129, 0.12)',
-                    borderWidth: 2,
-                    pointRadius: trendSeries.hasSinglePoint ? 6 : 3,
-                    pointHoverRadius: trendSeries.hasSinglePoint ? 7 : 5,
-                    tension: 0.3,
-                  },
-                  {
-                    label: 'Forecast',
-                    data: forecastSeries.forecastValues,
-                    borderColor: '#f59e0b',
-                    backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    borderDash: [6, 6],
-                    pointRadius: 0,
-                    pointHoverRadius: 4,
-                    tension: 0.3,
-                    spanGaps: true,
-                  },
-                ],
-              }}
-              options={{
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                  legend: { display: true, position: 'bottom' },
-                  tooltip: {
-                    callbacks: {
-                      label: (context) => `${context.dataset.label}: ${currency(Number(context.parsed.y ?? 0))}`,
-                    },
-                  },
-                },
-                scales: {
-                  x: { grid: { display: false } },
-                  y: {
-                    beginAtZero: true,
-                    ticks: {
-                      callback: (value) => `PHP ${Number(value).toLocaleString('en-PH')}`,
-                    },
-                  },
-                },
-              }}
-            />
-          </div>
-          <p className="mt-3 text-xs text-slate-500">{forecastSeries.note}</p>
-        </AnalyticsCard>
-
-        <section className="space-y-3">
-          <div className="flex flex-wrap items-end justify-between gap-2">
-            <div>
-              <h2 className="text-lg font-semibold text-slate-900">Predictive Analytics</h2>
-              <p className="text-xs text-slate-500">Based on sales trends</p>
-            </div>
-            <AnalyticsBadge variant="neutral">{predictiveSummary.forecastWindow}</AnalyticsBadge>
+            ) : null}
           </div>
 
-          <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-            <AnalyticsCard
-              title="Predicted Fast-Moving Category"
-              subtitle={predictiveSummary.forecastWindow}
-              actions={
-                <p className="text-lg font-semibold text-slate-900">
-                  {predictiveSummary.projectedFastMovingCategory}
-                </p>
-              }
-            >
-              <div className="rounded-xl bg-slate-50 px-3 py-2.5">
-                <p className="text-sm text-slate-700">
-                  Projected revenue: <span className="font-semibold text-slate-900">{currency(predictiveSummary.projectedCategoryRevenue)}</span>
-                </p>
-                <p className="mt-1 text-sm text-slate-700">
-                  Projected items sold: <span className="font-semibold text-slate-900">{compactNumber.format(Math.round(predictiveSummary.projectedCategoryItems))}</span>
+          {/* Items Sold */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+            <div className="rounded-xl bg-green-50 p-2.5 w-fit">
+              <svg className="h-5 w-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+              </svg>
+            </div>
+            <p className="mt-2 text-xs font-medium text-slate-500">Items Sold</p>
+            <p className="mt-0.5 text-lg font-bold text-slate-900 sm:text-2xl">{compactNumber.format(currentSummary.itemsSold)}</p>
+            {comparisonMetrics.itemsSold[0] ? (
+              <p className={`mt-1.5 text-xs font-medium ${comparisonMetrics.itemsSold[0].change === null ? 'text-slate-400' : comparisonMetrics.itemsSold[0].change >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                {comparisonMetrics.itemsSold[0].change === null ? '—' : comparisonMetrics.itemsSold[0].change >= 0 ? '↑' : '↓'}{' '}
+                {comparisonMetrics.itemsSold[0].change === null ? 'No prior data' : `${percentFormatter.format(Math.abs(comparisonMetrics.itemsSold[0].change))}%`}
+                <span className="ml-1 font-normal text-slate-400">{previousPeriodLabel}</span>
+              </p>
+            ) : null}
+          </div>
+
+          {/* Average Order Value */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+            <div className="rounded-xl bg-orange-50 p-2.5 w-fit">
+              <svg className="h-5 w-5 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+              </svg>
+            </div>
+            <p className="mt-2 text-xs font-medium text-slate-500">Average Order Value</p>
+            <p className="mt-0.5 text-lg font-bold text-slate-900 sm:text-2xl">{currency(averageOrderValue)}</p>
+            <p className={`mt-1.5 text-xs font-medium ${avgOrderValueChange === null ? 'text-slate-400' : avgOrderValueChange >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+              {avgOrderValueChange === null ? '—' : avgOrderValueChange >= 0 ? '↑' : '↓'}{' '}
+              {avgOrderValueChange === null ? 'No prior data' : `${percentFormatter.format(Math.abs(avgOrderValueChange))}%`}
+              <span className="ml-1 font-normal text-slate-400">{previousPeriodLabel}</span>
+            </p>
+          </div>
+
+          {/* Transactions */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+            <div className="rounded-xl bg-purple-50 p-2.5 w-fit">
+              <svg className="h-5 w-5 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+              </svg>
+            </div>
+            <p className="mt-2 text-xs font-medium text-slate-500">Transactions</p>
+            <p className="mt-0.5 text-lg font-bold text-slate-900 sm:text-2xl">{compactNumber.format(transactionCount)}</p>
+            <p className={`mt-1.5 text-xs font-medium ${transactionCountChange === null ? 'text-slate-400' : transactionCountChange >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+              {transactionCountChange === null ? '—' : transactionCountChange >= 0 ? '↑' : '↓'}{' '}
+              {transactionCountChange === null ? 'No prior data' : `${percentFormatter.format(Math.abs(transactionCountChange))}%`}
+              <span className="ml-1 font-normal text-slate-400">{previousPeriodLabel}</span>
+            </p>
+          </div>
+
+          {/* Projected Demand */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+            <div className="rounded-xl bg-pink-50 p-2.5 w-fit">
+              <svg className="h-5 w-5 text-pink-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+              </svg>
+            </div>
+            <p className="mt-2 text-xs font-medium text-slate-500">Projected Demand</p>
+            <p className="mt-0.5 text-xs text-slate-400">
+              Next {forecastSeries.steps} {trendSeries.granularity === 'day' ? 'days' : 'periods'}
+            </p>
+            <p className={`mt-0.5 text-lg font-bold sm:text-2xl ${projectedDemandLevel === 'High' ? 'text-pink-500' : projectedDemandLevel === 'Medium' ? 'text-amber-500' : 'text-slate-500'}`}>
+              {projectedDemandLevel}
+            </p>
+            {categoryForecast.topCategory ? (
+              <p className="mt-0.5 text-xs text-slate-400">
+                for {categoryForecast.topCategory.categoryName} category
+              </p>
+            ) : null}
+          </div>
+        </div>
+
+        {/* ── Sales Trend + Category Demand ── */}
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+
+          {/* Sales Trend chart */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <p className="font-semibold text-slate-900">Sales Trend</p>
+                <p className="text-xs text-slate-400">
+                  {trendSeries.granularity === 'day' ? 'Daily' : 'Monthly'} sales from{' '}
+                  {formatDayLabel(activeRange.start)} – {formatDayLabel(activeRange.end)}
                 </p>
               </div>
-            </AnalyticsCard>
-
-            <AnalyticsCard
-              title="Projected Demand"
-              subtitle={trendSeries.granularity === 'day' ? '7-day forecast' : 'Next-period forecast'}
-              actions={<p className="text-lg font-semibold text-slate-900">{currency(predictiveSummary.projectedSales)}</p>}
-            >
-              <div className="rounded-xl bg-slate-50 px-3 py-2.5">
-                <p className="text-sm text-slate-700">
-                  Forecast window: <span className="font-semibold text-slate-900">{forecastSeries.trailingWindow} {trendSeries.granularity === 'day' ? 'periods' : 'periods'}</span>
-                </p>
-                <p className="mt-1 text-sm text-slate-700">
-                  Source: <span className="font-semibold text-slate-900">sales transactions</span>
-                </p>
+              <div className="flex gap-4 text-xs text-slate-500">
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block h-px w-5 border-t-2 border-[#0f4c81]" /> Actual Sales
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block h-px w-5 border-t-2 border-dashed border-amber-400" /> Forecast Sales
+                </span>
               </div>
-            </AnalyticsCard>
+            </div>
+            <div className="mt-4 h-64">
+              <Line
+                data={{
+                  labels: forecastSeries.labels,
+                  datasets: [
+                    {
+                      label: 'Actual Sales',
+                      data: forecastSeries.actualValues,
+                      fill: true,
+                      borderColor: '#0f4c81',
+                      backgroundColor: 'rgba(15,76,129,0.07)',
+                      borderWidth: 2,
+                      pointRadius: trendSeries.hasSinglePoint ? 5 : 3,
+                      pointHoverRadius: 5,
+                      tension: 0.35,
+                    },
+                    {
+                      label: 'Forecast',
+                      data: forecastSeries.forecastValues,
+                      borderColor: '#f59e0b',
+                      backgroundColor: 'transparent',
+                      borderWidth: 2,
+                      borderDash: [6, 5],
+                      pointRadius: 0,
+                      pointHoverRadius: 4,
+                      tension: 0.35,
+                      spanGaps: true,
+                    },
+                  ],
+                }}
+                options={{
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                      callbacks: {
+                        label: (ctx) => `${ctx.dataset.label}: ${currency(Number(ctx.parsed.y ?? 0))}`,
+                      },
+                    },
+                  },
+                  scales: {
+                    x: { grid: { display: false }, ticks: { font: { size: 11 } } },
+                    y: {
+                      beginAtZero: true,
+                      ticks: {
+                        font: { size: 11 },
+                        callback: (value) => `₱${Number(value).toLocaleString('en-PH')}`,
+                      },
+                    },
+                  },
+                }}
+              />
+            </div>
+            <p className="mt-2 text-xs text-slate-400">{forecastSeries.note}</p>
           </div>
-        </section>
 
-        <AnalyticsCard
-          title="Summary"
-          className="border-blue-100/80 bg-white/70"
-          contentClassName="pt-2"
-        >
-          <p className="text-sm leading-6 text-slate-700">{analyticsSummary}</p>
-        </AnalyticsCard>
+          {/* Category Demand donut */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+            <p className="font-semibold text-slate-900">Category Demand Analysis</p>
+            <p className="text-xs text-slate-400">Sales distribution by category</p>
+            <div className="mt-4 flex items-center gap-5">
+              <div className="relative h-48 w-48 shrink-0">
+                <Doughnut
+                  data={{
+                    labels: categoryDemandData.items.map((item) => item.label),
+                    datasets: [{
+                      data: categoryDemandData.items.map((item) => item.revenue),
+                      backgroundColor: categoryDemandData.items.map((item) => item.color),
+                      borderWidth: 0,
+                      hoverOffset: 4,
+                    }],
+                  }}
+                  options={{
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    cutout: '70%',
+                    plugins: {
+                      legend: { display: false },
+                      tooltip: { callbacks: { label: (ctx) => ` ${ctx.label}: ${currency(Number(ctx.raw ?? 0))}` } },
+                    },
+                  }}
+                />
+                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-xs text-slate-400">Total</span>
+                  <span className="text-sm font-bold text-slate-900">{currency(categoryDemandData.total)}</span>
+                </div>
+              </div>
+              <div className="min-w-0 flex-1 space-y-2.5">
+                {categoryDemandData.items.length === 0 ? (
+                  <p className="text-sm text-slate-400">No sales for this period.</p>
+                ) : (
+                  categoryDemandData.items.map((item, idx) => (
+                    <div key={`${item.label}-${idx}`} className="flex items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
+                        <span className="truncate text-sm text-slate-700">{item.label}</span>
+                      </div>
+                      <div className="shrink-0 text-right text-sm">
+                        <span className="font-medium text-slate-900">{currency(item.revenue)}</span>
+                        <span className="ml-1 text-xs text-slate-400">({item.pct}%)</span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
 
-        <div className="grid grid-cols-1 gap-3.5 xl:grid-cols-[2fr_1fr]">
-          <AnalyticsCard
-            title="Top Categories"
-            subtitle={`Ranked for ${getRangeLabel(timeRangePreset)}`}
-            actions={
+        {/* ── Sales by Condition | Top Categories | Top Products ── */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+
+          {/* Sales by Condition donut */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+            <p className="font-semibold text-slate-900">Sales by Condition</p>
+            <p className="text-xs text-slate-400">Breakdown of sales by item condition</p>
+            <div className="mt-4 flex items-center gap-4">
+              <div className="relative h-40 w-40 shrink-0">
+                <Doughnut
+                  data={{
+                    labels: ['New', 'Refurbished'],
+                    datasets: [{
+                      data: [salesByCondition.New || 0.001, salesByCondition.Refurbished || 0],
+                      backgroundColor: ['#2563eb', '#16a34a'],
+                      borderWidth: 0,
+                      hoverOffset: 4,
+                    }],
+                  }}
+                  options={{
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    cutout: '70%',
+                    plugins: {
+                      legend: { display: false },
+                      tooltip: { callbacks: { label: (ctx) => ` ${ctx.label}: ${currency(Number(ctx.raw ?? 0))}` } },
+                    },
+                  }}
+                />
+                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
+                  <span className="text-base font-bold text-slate-900">{salesByCondition.newPct}%</span>
+                  <span className="text-xs text-slate-400">New</span>
+                </div>
+              </div>
+              <div className="space-y-3">
+                <div className="flex items-start gap-2">
+                  <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-blue-600" />
+                  <div>
+                    <p className="text-sm font-medium text-slate-700">New</p>
+                    <p className="text-xs text-slate-500">{currency(salesByCondition.New)} ({salesByCondition.newPct}%)</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-green-600" />
+                  <div>
+                    <p className="text-sm font-medium text-slate-700">Refurbished</p>
+                    <p className="text-xs text-slate-500">{currency(salesByCondition.Refurbished)} ({salesByCondition.refurbishedPct}%)</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Top Categories table */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+            <div className="mb-3 flex items-start justify-between">
+              <div>
+                <p className="font-semibold text-slate-900">Top Categories</p>
+                <p className="text-xs text-slate-400">Ranked by sales amount</p>
+              </div>
+            </div>
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-slate-100">
+                  <th className="pb-2 text-left text-xs font-medium text-slate-400">#</th>
+                  <th className="pb-2 text-left text-xs font-medium text-slate-400">Category</th>
+                  <th className="pb-2 text-right text-xs font-medium text-slate-400">Qty Sold</th>
+                  <th className="pb-2 text-right text-xs font-medium text-slate-400">Sales Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {currentSummary.categories.length === 0 ? (
+                  <tr><td colSpan={4} className="py-5 text-center text-xs text-slate-400">No category sales for this period.</td></tr>
+                ) : (
+                  currentSummary.categories.slice(0, 5).map((row, i) => (
+                    <tr key={row.categoryId} className="border-b border-slate-50 hover:bg-slate-50">
+                      <td className="py-2 text-xs text-slate-400">{i + 1}</td>
+                      <td className="py-2 text-sm font-medium text-slate-800">{row.categoryName}</td>
+                      <td className="py-2 text-right text-sm text-slate-600">{compactNumber.format(row.itemsSold)}</td>
+                      <td className="py-2 text-right text-sm font-semibold text-slate-900">{currency(row.revenue)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+            {currentSummary.categories.length > 5 ? (
               <button
                 type="button"
                 onClick={() => setOpenModal('top')}
-                className="text-sm font-medium text-blue-600 transition hover:text-blue-500"
+                className="mt-3 flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-500"
               >
-                View All
+                View all categories
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
               </button>
-            }
-          >
-            <AnalyticsTable
-              columns={[
-                { header: '#' },
-                { header: 'Category' },
-                { header: 'Items Sold', className: 'text-right' },
-                { header: 'Sales', className: 'text-right' },
-              ]}
-              rows={topCategoryRows}
-              emptyMessage="No category sales found for the selected period."
-            />
-          </AnalyticsCard>
+            ) : null}
+          </div>
 
-          <AnalyticsCard title="Inventory by Category" subtitle="Current stock snapshot">
-            <AnalyticsTable
-              columns={[
-                { header: 'Category' },
-                { header: 'Stock', className: 'text-right' },
-              ]}
-              rows={stockRows}
-              emptyMessage="No inventory categories found."
-            />
-          </AnalyticsCard>
+          {/* Top Products table */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+            <div className="mb-3">
+              <p className="font-semibold text-slate-900">Top Products</p>
+              <p className="text-xs text-slate-400">Best performing products</p>
+            </div>
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-slate-100">
+                  <th className="pb-2 text-left text-xs font-medium text-slate-400">#</th>
+                  <th className="pb-2 text-left text-xs font-medium text-slate-400">Product</th>
+                  <th className="pb-2 text-right text-xs font-medium text-slate-400">Qty Sold</th>
+                  <th className="pb-2 text-right text-xs font-medium text-slate-400">Sales</th>
+                </tr>
+              </thead>
+              <tbody>
+                {topProducts.length === 0 ? (
+                  <tr><td colSpan={4} className="py-5 text-center text-xs text-slate-400">No products for this period.</td></tr>
+                ) : (
+                  topProducts.slice(0, 5).map((row, i) => (
+                    <tr key={row.name} className="border-b border-slate-50 hover:bg-slate-50">
+                      <td className="py-2 text-xs text-slate-400">{i + 1}</td>
+                      <td className="py-2 text-sm font-medium text-slate-800">{row.name}</td>
+                      <td className="py-2 text-right text-sm text-slate-600">{compactNumber.format(row.itemsSold)}</td>
+                      <td className="py-2 text-right text-sm font-semibold text-slate-900">{currency(row.revenue)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+            {topProducts.length > 5 ? (
+              <button
+                type="button"
+                onClick={() => setOpenModal('products')}
+                className="mt-3 flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-500"
+              >
+                View all products
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+              </button>
+            ) : null}
+          </div>
         </div>
+
+        {/* ── Predictive Analytics | Summary ── */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+
+          {/* Predictive Analytics */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+            <p className="text-sm font-semibold text-blue-700">Predictive Analytics</p>
+            <p className="text-xs text-slate-400">Category demand forecast</p>
+            <div className="mt-4 flex items-center gap-3">
+              <span className="text-4xl" role="img" aria-label="crystal ball">🔮</span>
+              <div>
+                <p className="text-xs text-slate-400">Fast-Moving Category</p>
+                <p className="text-lg font-bold text-slate-900">
+                  {categoryForecast.topCategory?.categoryName ?? 'No data'}
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 space-y-2 rounded-xl bg-slate-50 p-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-slate-500">Forecast Window</span>
+                <span className="font-medium text-slate-900">
+                  Next {forecastSeries.steps} {trendSeries.granularity === 'day' ? 'Days' : 'Periods'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-slate-500">Projected Revenue</span>
+                <span className="font-medium text-slate-900">{currency(predictiveSummary.projectedCategoryRevenue)}</span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-slate-500">Projected Items Sold</span>
+                <span className="font-medium text-slate-900">
+                  {Math.round(predictiveSummary.projectedCategoryItems)} items
+                </span>
+              </div>
+            </div>
+            <p className="mt-3 text-xs text-slate-400">
+              Prediction is based on past sales transactions and category movement.
+            </p>
+          </div>
+
+          {/* Summary */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+            <div className="flex items-center gap-2">
+              <svg className="h-4 w-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+              </svg>
+              <p className="text-sm font-semibold text-slate-900">Summary</p>
+            </div>
+            <div className="mt-4 space-y-3">
+              <div className="flex items-start gap-2">
+                <svg className="mt-0.5 h-4 w-4 shrink-0 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                <p className="text-sm text-slate-700">
+                  Total sales for this period:{' '}
+                  <span className="font-semibold text-slate-900">{currency(currentSummary.totalSales)}</span>
+                </p>
+              </div>
+              <div className="flex items-start gap-2">
+                <svg className="mt-0.5 h-4 w-4 shrink-0 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                <p className="text-sm text-slate-700">
+                  Items sold: <span className="font-semibold text-slate-900">{compactNumber.format(currentSummary.itemsSold)}</span>
+                  {comparisonMetrics.itemsSold[0]?.change !== null && comparisonMetrics.itemsSold[0]?.change !== undefined ? (
+                    <span className={`ml-1 text-xs font-medium ${comparisonMetrics.itemsSold[0].change >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                      ({comparisonMetrics.itemsSold[0].change >= 0 ? '↑' : '↓'} {percentFormatter.format(Math.abs(comparisonMetrics.itemsSold[0].change))}%)
+                    </span>
+                  ) : null}
+                </p>
+              </div>
+              <div className="flex items-start gap-2">
+                <svg className="mt-0.5 h-4 w-4 shrink-0 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                <p className="text-sm text-slate-700">
+                  Average order value:{' '}
+                  <span className="font-semibold text-slate-900">{currency(averageOrderValue)}</span>
+                  {avgOrderValueChange !== null ? (
+                    <span className={`ml-1 text-xs font-medium ${avgOrderValueChange >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                      ({avgOrderValueChange >= 0 ? '↑' : '↓'} {percentFormatter.format(Math.abs(avgOrderValueChange))}%)
+                    </span>
+                  ) : null}
+                </p>
+              </div>
+              <div className="flex items-start gap-2">
+                <svg className="mt-0.5 h-4 w-4 shrink-0 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                <p className="text-sm text-slate-700">
+                  Top category:{' '}
+                  <span className="font-semibold text-slate-900">
+                    {currentSummary.topCategory?.categoryName ?? 'None'}
+                  </span>
+                  {currentSummary.topCategory && categoryDemandData.total > 0 ? (
+                    <span className="ml-1 text-xs text-slate-400">
+                      ({Math.round((currentSummary.topCategory.revenue / categoryDemandData.total) * 100)}% of sales)
+                    </span>
+                  ) : null}
+                </p>
+              </div>
+              <div className="flex items-start gap-2">
+                <svg className="mt-0.5 h-4 w-4 shrink-0 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                <p className="text-sm text-slate-700">
+                  Forecast:{' '}
+                  <span className="font-semibold text-slate-900">
+                    {categoryForecast.topCategory?.categoryName ?? 'No data'}
+                  </span>
+                  {categoryForecast.topCategory ? (
+                    <span className="ml-1 text-xs text-slate-400">
+                      category will have higher demand in the next {forecastSeries.steps}{' '}
+                      {trendSeries.granularity === 'day' ? 'days' : 'periods'}.
+                    </span>
+                  ) : null}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Footer ── */}
+        <div className="flex items-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-4 py-2.5 text-xs text-blue-700">
+          <svg className="h-4 w-4 shrink-0 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <circle cx="12" cy="12" r="10" /><path strokeLinecap="round" d="M12 8v4m0 4h.01" />
+          </svg>
+          All data is based on the selected date range and filters.
+        </div>
+
       </div>
 
+      {/* ── Modal ── */}
       {modalConfig ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="flex max-h-[85vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-200 p-3.5">
-              <h2 className="text-lg font-semibold text-slate-900">{modalConfig.title}</h2>
+          <div className="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-200 p-4">
+              <h2 className="text-base font-semibold text-slate-900">{modalConfig.title}</h2>
               <button
                 type="button"
                 onClick={() => setOpenModal(null)}
@@ -1300,7 +1771,7 @@ function AnalyticsContent() {
                 Close
               </button>
             </div>
-            <div className="overflow-y-auto p-3.5">
+            <div className="overflow-y-auto p-4">
               <AnalyticsTable columns={modalConfig.columns} rows={modalConfig.rows} />
             </div>
           </div>

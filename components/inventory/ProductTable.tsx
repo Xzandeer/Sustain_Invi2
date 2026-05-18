@@ -17,6 +17,10 @@ export interface Product {
   imageUrl?: string
   stockStatus: 'Available' | 'Low Stock' | 'Out of Stock'
   isDeleted?: boolean
+  isVoided?: boolean
+  voidedAt?: string | null
+  voidedBy?: string | null
+  voidReason?: string | null
 }
 
 interface ProductTableProps {

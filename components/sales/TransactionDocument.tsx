@@ -5,7 +5,7 @@ import {
   CompletedTransactionDocument,
   formatCurrency,
   formatTransactionDateTime,
-} from '@/lib/transactionDocuments'
+} from '@/lib/transactions/transactionDocuments'
 
 interface TransactionDocumentProps {
   document: CompletedTransactionDocument

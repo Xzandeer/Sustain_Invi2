@@ -12,7 +12,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { CANCELLATION_REASONS, type CancellationReasonOption } from '@/lib/cancellationReasons'
+import { CANCELLATION_REASONS, type CancellationReasonOption } from '@/lib/reservations/cancellationReasons'
 
 interface CancellationReasonModalProps {
   isOpen: boolean

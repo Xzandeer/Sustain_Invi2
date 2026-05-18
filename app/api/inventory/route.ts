@@ -1,3 +1,4 @@
+// Inventory API endpoint - GET to list items, POST to create items
 import { NextRequest, NextResponse } from 'next/server'
 import {
   collection,
@@ -25,19 +26,25 @@ interface InventoryPayload {
   stock?: unknown
   minStock?: unknown
   status?: unknown
+  condition?: unknown
   processedBy?: unknown
   remarks?: unknown
 }
 
+// GET /api/inventory - List inventory items (optionally filtered to show trash)
 export async function GET(req: NextRequest) {
   try {
+    // Step 1: Parse view parameter (default: active items, 'trash': deleted items)
     const view = new URL(req.url).searchParams.get('view')
     const inventoryQuery = query(collection(db, 'inventory'), orderBy('createdAt', 'desc'))
+
+    // Step 2: Fetch inventory and categories in parallel
     const [inventorySnapshot, categoriesSnapshot] = await Promise.all([
       getDocs(inventoryQuery),
       getDocs(collection(db, 'categories')),
     ])
 
+    // Step 3: Build category lookup map (categoryId -> categoryName)
     const categoriesById = new Map(
       categoriesSnapshot.docs.map((categoryDoc) => {
         const data = categoryDoc.data() as Record<string, unknown>
@@ -46,11 +53,13 @@ export async function GET(req: NextRequest) {
       })
     )
 
+    // Step 4: Format inventory items with all required fields
     const items = inventorySnapshot.docs
       .map((itemDoc) => {
       const data = itemDoc.data() as Record<string, unknown>
       const categoryId = typeof data.categoryId === 'string' ? data.categoryId : ''
       const categoryNameFromLookup = categoryId ? categoriesById.get(categoryId) : ''
+      // Try multiple fields for category name
       const categoryName =
         (typeof data.categoryName === 'string' && data.categoryName.trim()) ||
         categoryNameFromLookup ||
@@ -72,6 +81,7 @@ export async function GET(req: NextRequest) {
         isDeleted: data.isDeleted === true,
       }
       })
+      // Step 5: Filter by view (show trash or active items)
       .filter((item) => (view === 'trash' ? item.isDeleted === true : item.isDeleted !== true))
 
     return NextResponse.json({ data: items }, { status: 200 })
@@ -81,8 +91,10 @@ export async function GET(req: NextRequest) {
   }
 }
 
+// POST /api/inventory - Create new item or increment existing variant
 export async function POST(req: NextRequest) {
   try {
+    // Step 1: Parse and validate request body
     const body = (await req.json()) as InventoryPayload
     const name = typeof body.name === 'string' ? body.name.trim() : ''
     const categoryIdInput = typeof body.categoryId === 'string' ? body.categoryId.trim() : ''
@@ -101,6 +113,7 @@ export async function POST(req: NextRequest) {
     const processedBy = await getProcessedByInfo(body.processedBy)
     const remarks = typeof body.remarks === 'string' ? body.remarks.trim() : ''
 
+    // Step 2: Validate required fields
     if (!name) {
       return NextResponse.json({ error: 'Item name is required.' }, { status: 400 })
     }
@@ -234,6 +247,7 @@ export async function POST(req: NextRequest) {
       user: processedBy,
       remarks: remarks || 'New inventory variant created.',
     })
+
 
     return NextResponse.json(
       {

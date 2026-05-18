@@ -1,6 +1,6 @@
 import 'server-only'
 import { Resend } from 'resend'
-import { STORE_NAME } from '@/lib/transactionDocuments'
+import { STORE_NAME } from '@/lib/transactions/transactionDocuments'
 
 export interface EmailLineItem {
   name: string

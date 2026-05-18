@@ -1,16 +1,17 @@
+// Reservation detail API - PATCH to update reservation status (complete/cancel/expire)
 import { NextResponse } from 'next/server'
 import { addDoc, collection, doc, getDoc, runTransaction, serverTimestamp } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { createStockLog, getProcessedByInfo } from '@/lib/server/inventory'
 import { toNumber } from '@/lib/server/salesInventoryMetrics'
-import { isCancellationReasonValid, SYSTEM_CANCELLATION_REASON, type CancellationReasonType } from '@/lib/cancellationReasons'
+import { isCancellationReasonValid, SYSTEM_CANCELLATION_REASON, type CancellationReasonType } from '@/lib/reservations/cancellationReasons'
 
 interface RouteContext {
   params: Promise<{ id: string }>
 }
 
 interface ReservationActionPayload {
-  action?: unknown
+  action?: unknown // 'complete', 'cancel', 'expire'
   processedBy?: unknown
   cancellationReason?: unknown
   cancellationReasonType?: unknown
@@ -60,24 +61,27 @@ const parseReservationItems = (items: unknown): ReservationItemRecord[] => {
     .filter((item): item is ReservationItemRecord => item !== null)
 }
 
+// PATCH /api/reservations/[id] - Update reservation status (complete/cancel/expire)
 export async function PATCH(req: Request, context: RouteContext) {
   try {
+    // Step 1: Parse request
     const { id } = await context.params
     const body = (await req.json()) as ReservationActionPayload
     const action = typeof body.action === 'string' ? body.action.trim().toLowerCase() : ''
     const processedBy = await getProcessedByInfo(body.processedBy)
 
-    // Parse and validate cancellation reason if provided
+    // Step 2: Validate cancellation reason if cancelling
     const selectedReason = isCancellationReasonValid(body.cancellationReason)
       ? (body.cancellationReason as string)
       : null
     const cancellationReasonType = body.cancellationReasonType === 'manual' ? 'manual' : 'system'
 
+    // Step 3: Validate action and ID
     if (!id || !['complete', 'cancel', 'expire'].includes(action)) {
       return NextResponse.json({ error: 'Invalid reservation action.' }, { status: 400 })
     }
 
-    // For manual cancellation, require a reason
+    // Step 4: For manual cancellation, require a reason
     if (action === 'cancel' && !selectedReason) {
       return NextResponse.json(
         { error: 'Cancellation reason is required for manual cancellation.' },
@@ -339,12 +343,12 @@ export async function PATCH(req: Request, context: RouteContext) {
         return NextResponse.json({ error: 'One or more inventory items no longer exist.' }, { status: 404 })
       }
 
-      if (error.message === 'INVALID_RESERVED_STOCK') {
-        return NextResponse.json({ error: 'Reserved stock is no longer valid for this reservation.' }, { status: 400 })
+      if (error.message === 'INSUFFICIENT_STOCK') {
+        return NextResponse.json({ error: 'Insufficient stock to complete reservation.' }, { status: 400 })
       }
     }
 
-    console.error('PATCH /api/reservations/[id] error:', error)
-    return NextResponse.json({ error: 'Server error' }, { status: 500 })
+    console.error('[PATCH /api/reservations/[id]]', error)
+    return NextResponse.json({ error: 'Internal server error.' }, { status: 500 })
   }
 }

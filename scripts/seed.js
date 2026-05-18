@@ -256,13 +256,35 @@ async function seedCategories() {
   return categoryMap
 }
 
+const CATEGORY_CODES = {
+  'Bags': 'BAG',
+  'Clothing': 'CLO',
+  'Footwear': 'FTW',
+  'Accessories': 'ACC',
+  'Kitchenware': 'KIT',
+  'Appliances': 'APP',
+  'Electronics': 'ELC',
+  'Furniture': 'FUR',
+  'Toys': 'TOY',
+  'Home Decor': 'HMD',
+  'School Supplies': 'SCH',
+  'Collectibles': 'COL',
+}
+
 async function seedInventory(categoryMap) {
   const inventorySeed = buildInventorySeed()
   const inventoryDocs = []
+  const skuCounters = {}
 
   for (const item of inventorySeed) {
     const ref = db.collection('inventory').doc()
     const now = Timestamp.now()
+
+    const catCode = CATEGORY_CODES[item.category] || item.category.slice(0, 3).toUpperCase()
+    const condCode = item.condition === 'New' ? 'N' : 'R'
+    const key = `${catCode}-${condCode}`
+    skuCounters[key] = (skuCounters[key] || 0) + 1
+    const sku = `${catCode}-${condCode}-${String(skuCounters[key]).padStart(3, '0')}`
 
     const data = {
       name: item.name,
@@ -273,7 +295,7 @@ async function seedInventory(categoryMap) {
       stock: item.stock,
       minStock: item.minStock,
       stockStatus: stockStatus(item.stock, item.minStock),
-      sku: `SKU-${ref.id.slice(0, 8).toUpperCase()}`,
+      sku,
       supplier: 'Japan Surplus Supplier',
       source: 'Japan Surplus',
       isActive: true,
