@@ -22,6 +22,7 @@ interface InventoryUpdatePayload {
   minStock?: unknown
   status?: unknown
   condition?: unknown
+  containerId?: unknown
   processedBy?: unknown
   remarks?: unknown
 }
@@ -99,6 +100,16 @@ export async function PUT(req: Request, context: RouteContext) {
         ? toNumber(current.minStock)
         : Number.NaN
     )
+
+    // containerId: explicit null clears it, string sets it, undefined preserves existing
+    const containerId =
+      body.containerId === null
+        ? null
+        : typeof body.containerId === 'string' && body.containerId.trim()
+          ? body.containerId.trim()
+          : typeof current.containerId === 'string' && current.containerId.trim()
+            ? current.containerId.trim()
+            : null
 
     const currentCondition = normalizeInventoryCondition(current.condition)
     const requestedCondition =
@@ -178,6 +189,7 @@ export async function PUT(req: Request, context: RouteContext) {
       condition: currentCondition,
       description,
       imageUrl,
+      containerId,
       isDeleted: false,
       deletedAt: null,
       updatedAt,
@@ -488,15 +500,4 @@ export async function PATCH(req: Request, context: RouteContext) {
         user: processedBy,
         remarks: 'Item deleted permanently from trash.',
       })
-      return NextResponse.json({ success: true }, { status: 200 })
-    }
-
-    return NextResponse.json({ error: 'Invalid action' }, { status: 400 })
-  } catch (error) {
-    if (error instanceof Error && error.message === 'ADMIN_REQUIRED') {
-      return NextResponse.json({ error: 'Admin access is required.' }, { status: 403 })
-    }
-    console.error(`PATCH /api/inventory/[id] error:`, error)
-    return NextResponse.json({ error: 'Server error' }, { status: 500 })
-  }
-}
+      return NextR

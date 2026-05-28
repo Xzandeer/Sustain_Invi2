@@ -224,9 +224,14 @@ export async function POST(req: Request) {
     }
 
     const genAI = new GoogleGenerativeAI(apiKey)
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash', systemInstruction: SYSTEM_PROMPT })
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-8b', systemInstruction: SYSTEM_PROMPT })
+    // Gemini requires history to start with 'user' and alternate user/model.
+    // Drop any leading assistant messages (e.g. the greeting) and trim to valid pairs.
+    const firstUserIdx = history.findIndex((m) => m.role === 'user')
+    const validHistory = firstUserIdx === -1 ? [] : history.slice(firstUserIdx)
+
     const chat = model.startChat({
-      history: history.map((msg) => ({ role: msg.role === 'assistant' ? 'model' : 'user', parts: [{ text: msg.content }] })),
+      history: validHistory.map((msg) => ({ role: msg.role === 'assistant' ? 'model' : 'user', parts: [{ text: msg.content }] })),
     })
 
     const result = await chat.sendMessage((liveData || contextBlock) + message.trim())

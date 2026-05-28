@@ -27,6 +27,7 @@ interface InventoryPayload {
   minStock?: unknown
   status?: unknown
   condition?: unknown
+  containerId?: unknown
   processedBy?: unknown
   remarks?: unknown
 }
@@ -110,6 +111,7 @@ export async function POST(req: NextRequest) {
     const condition = normalizeInventoryCondition(body.condition)
     const description = typeof body.description === 'string' ? body.description.trim() : ''
     const imageUrl = typeof body.imageUrl === 'string' ? body.imageUrl.trim() : ''
+    const containerId = typeof body.containerId === 'string' && body.containerId.trim() ? body.containerId.trim() : null
     const processedBy = await getProcessedByInfo(body.processedBy)
     const remarks = typeof body.remarks === 'string' ? body.remarks.trim() : ''
 
@@ -234,6 +236,7 @@ export async function POST(req: NextRequest) {
       condition,
       description,
       imageUrl,
+      containerId: containerId ?? undefined,
     })
 
     await createStockLog({
@@ -271,11 +274,4 @@ export async function POST(req: NextRequest) {
           createdAt: created.now,
           updatedAt: created.now,
         },
-      },
-      { status: 201 }
-    )
-  } catch (error) {
-    console.error('POST /api/inventory error:', error)
-    return NextResponse.json({ error: 'Server error' }, { status: 500 })
-  }
-}
+ 

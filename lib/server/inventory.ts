@@ -300,6 +300,7 @@ export const createInventoryVariant = async (input: {
   condition: InventoryCondition
   description?: string
   imageUrl?: string
+  containerId?: string
 }) => {
   const now = new Date().toISOString()
   const stockStatus = getStockStatus({ stock: input.quantity, minStock: input.minStock })
@@ -321,6 +322,7 @@ export const createInventoryVariant = async (input: {
     sku,
     description: input.description ?? '',
     imageUrl: input.imageUrl ?? '',
+    containerId: input.containerId ?? null,
     stockStatus,
     isDeleted: false,
     deletedAt: null,
@@ -331,11 +333,4 @@ export const createInventoryVariant = async (input: {
   // Step 2: Update document to add its own ID (for cross-references)
   await runTransaction(db, async (transaction) => {
     transaction.update(docRef, { id: docRef.id })
-  })
-
-  return {
-    id: docRef.id,
-    stockStatus,
-    now,
-  }
-}
+ 

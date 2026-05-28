@@ -12,9 +12,15 @@ export interface ProductFormValues {
   condition: 'New' | 'Refurbished'
   reservedStock?: number
   availableStock?: number
+  containerId?: string
 }
 
 interface CategoryOption {
+  id: string
+  name: string
+}
+
+interface ContainerOption {
   id: string
   name: string
 }
@@ -24,6 +30,7 @@ interface ProductModalProps {
   onClose: () => void
   onSubmit: (values: ProductFormValues) => Promise<void> | void
   categories: CategoryOption[]
+  containers?: ContainerOption[]
   initialValues?: ProductFormValues
   submitting?: boolean
 }
@@ -33,6 +40,7 @@ export default function ProductModal({
   onClose,
   onSubmit,
   categories,
+  containers = [],
   initialValues,
   submitting = false,
 }: ProductModalProps) {
@@ -44,6 +52,7 @@ export default function ProductModal({
   const [quantity, setQuantity] = useState('')
   const [minStock, setMinStock] = useState('')
   const [condition, setCondition] = useState<'New' | 'Refurbished'>('New')
+  const [containerId, setContainerId] = useState('')
 
   useEffect(() => {
     if (!isOpen) return
@@ -55,6 +64,7 @@ export default function ProductModal({
       setQuantity(String(initialValues.quantity))
       setMinStock(String(initialValues.minStock))
       setCondition(initialValues.condition)
+      setContainerId(initialValues.containerId ?? '')
       return
     }
 
@@ -64,6 +74,7 @@ export default function ProductModal({
     setQuantity('')
     setMinStock('')
     setCondition('New')
+    setContainerId('')
   }, [isOpen, initialValues, defaultCategory])
 
   if (!isOpen) return null
@@ -95,6 +106,7 @@ export default function ProductModal({
       condition,
       reservedStock: initialValues?.reservedStock,
       availableStock: initialValues?.availableStock,
+      containerId: containerId || undefined,
     })
   }
 
@@ -196,26 +208,17 @@ export default function ProductModal({
                 </select>
               )}
             </div>
-          </div>
 
-          <div className="flex items-center justify-end gap-3 pt-1">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="rounded-lg bg-sky-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {submitting ? 'Saving...' : initialValues ? 'Update Item' : 'Create Item'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  )
-}
+            {/* Container linking — shown only when containers exist */}
+            {containers.length > 0 && (
+              <div className="space-y-2 sm:col-span-2">
+                <label className="text-sm font-medium text-slate-900">
+                  Container Batch{' '}
+                  <span className="font-normal text-slate-500">(optional)</span>
+                </label>
+                <select
+                  value={containerId}
+                  onChange={(event) => setContainerId(event.target.value)}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
+                >
+                  <optio

@@ -7,12 +7,14 @@ import {
   BarChart3,
   ShoppingCart,
   Package,
+  Package2,
   Trash2,
   Users,
   LogOut,
   Calendar,
   ClipboardList,
   ChevronRight,
+  UserCheck,
 } from 'lucide-react'
 import { useUserRole } from '@/hooks/useUserRole'
 import { signOut } from 'firebase/auth'
@@ -24,6 +26,8 @@ const navItems = [
   { name: 'Inventory',   href: '/inventory',        icon: Package },
   { name: 'Sales',       href: '/sales',            icon: ShoppingCart },
   { name: 'Reservations',href: '/reservations',     icon: Calendar },
+  { name: 'Customers',    href: '/customers',        icon: UserCheck },
+  { name: 'Containers',   href: '/containers',       icon: Package2 },
 ]
 
 const adminItems = [

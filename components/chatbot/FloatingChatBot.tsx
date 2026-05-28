@@ -149,7 +149,7 @@ function Bubble({ msg }: { msg: Message }) {
             : <div className="space-y-1">{renderMarkdown(msg.content)}</div>
           }
         </div>
-        <span className="px-1 text-[10px] text-slate-400">{fmtTime(msg.ts)}</span>
+        <span suppressHydrationWarning className="px-1 text-[10px] text-slate-400">{fmtTime(msg.ts)}</span>
       </div>
     </div>
   )
@@ -159,16 +159,16 @@ function Bubble({ msg }: { msg: Message }) {
 
 export default function FloatingChatBot() {
   const [open, setOpen] = useState(false)
-  const [messages] = useState<Message[]>([GREETING])
-  const [input] = useState('')
-  const [loading] = useState(false)
-  const [error] = useState('')
-  const [unread] = useState(0)
+  const [messages, setMessages] = useState<Message[]>([GREETING])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [unread, setUnread] = useState(0)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
-  // Placeholder — chatbot is under development
-  const COMING_SOON = true
+  // Set to true to show placeholder while under development
+  const COMING_SOON = false
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, loading])
   useEffect(() => { if (open) { setTimeout(() => inputRef.current?.focus(), 100) } }, [open])

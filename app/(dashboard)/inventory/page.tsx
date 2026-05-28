@@ -19,6 +19,11 @@ interface Category {
   name: string
 }
 
+interface ContainerOption {
+  id: string
+  name: string
+}
+
 const toNumber = (value: unknown, fallback = 0) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string') {
@@ -40,6 +45,7 @@ function InventoryContent() {
   const { isAdmin } = useUserRole()
   const [inventory, setInventory] = useState<Product[]>([])
   const [categories, setCategories] = useState<Category[]>([])
+  const [containers, setContainers] = useState<ContainerOption[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -131,9 +137,24 @@ function InventoryContent() {
       }
     )
 
+    const unsubscribeContainers = onSnapshot(
+      collection(db, 'containers'),
+      (snapshot) => {
+        const list: ContainerOption[] = snapshot.docs
+          .map((d) => {
+            const data = d.data() as Record<string, unknown>
+            return { id: d.id, name: typeof data.name === 'string' ? data.name.trim() : '' }
+          })
+          .filter((c) => c.name)
+        list.sort((a, b) => a.name.localeCompare(b.name))
+        setContainers(list)
+      }
+    )
+
     return () => {
       unsubscribeCategories()
       unsubscribeInventory()
+      unsubscribeContainers()
     }
   }, [])
 
@@ -188,6 +209,7 @@ function InventoryContent() {
           quantity: values.quantity,
           minStock: values.minStock,
           condition: values.condition,
+          containerId: values.containerId ?? null,
           processedBy: {
             uid: auth.currentUser?.uid ?? '',
             email: auth.currentUser?.email ?? '',
@@ -915,6 +937,7 @@ function InventoryContent() {
         onClose={() => { setIsProductModalOpen(false); setEditingProduct(null) }}
         onSubmit={handleSaveProduct}
         categories={categoryOptions}
+        containers={containers}
         initialValues={
           editingProduct
             ? {
@@ -926,6 +949,7 @@ function InventoryContent() {
                 condition: editingProduct.condition,
                 reservedStock: editingProduct.reservedStock,
                 availableStock: editingProduct.availableStock,
+                containerId: (editingProduct as Product & { containerId?: string }).containerId,
               }
             : undefined
         }
@@ -1121,17 +1145,4 @@ function VoidModal({
           <button
             onClick={handleSubmit}
             disabled={submitting}
-            className="flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700 disabled:opacity-50"
-          >
-            {submitting ? (
-              <svg className="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
-            ) : (
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
-            )}
-            Void Item
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
+            className="fle
