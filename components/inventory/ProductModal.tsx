@@ -221,4 +221,35 @@ export default function ProductModal({
                   onChange={(event) => setContainerId(event.target.value)}
                   className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
                 >
-                  <optio
+                  <option value="">— Not linked to a container —</option>
+                  {containers.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="rounded-lg bg-sky-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {submitting ? 'Saving...' : initialValues ? 'Update Item' : 'Create Item'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}

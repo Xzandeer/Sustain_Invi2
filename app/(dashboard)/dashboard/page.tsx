@@ -6,13 +6,21 @@ import { collection, onSnapshot, orderBy, query, limit } from 'firebase/firestor
 import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
 import {
-  AlertTriangle, BarChart3, Boxes, Calendar, ChevronDown,
-  ChevronRight, ChevronUp, Package, PlusCircle, ShoppingCart,
-  Sparkles, XCircle,
+  ChevronRight, TrendingUp, TrendingDown,
+  AlertTriangle, Package, Bookmark, LayoutGrid, ShoppingCart, Calendar,
+  BarChart3, ClipboardList, UserCheck, PackagePlus,
 } from 'lucide-react'
+import {
+  Chart as ChartJS,
+  CategoryScale, LinearScale, PointElement,
+  LineElement, Filler, Tooltip,
+} from 'chart.js'
+import { Line } from 'react-chartjs-2'
 import { auth, db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import type { LowStockItem } from '@/lib/server/salesInventoryMetrics'
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip)
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -20,9 +28,11 @@ interface SaleDoc {
   id: string; receiptNumber?: string; customerName?: string
   items?: Array<Record<string, unknown>>
   totalAmount?: number; quantity?: number; createdAt?: unknown
+  status?: string
 }
 interface InventoryDoc {
   id: string; name?: string; quantity?: number; minStock?: number
+  price?: number; reservedStock?: number
   category?: string; categoryName?: string; isDeleted?: boolean
 }
 interface ReservationDoc {
@@ -58,16 +68,113 @@ const toDate = (v: unknown): Date | null => {
   return null
 }
 
-const formatCurrency = (n: number) =>
-  `PHP ${n.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+const fmt = (n: number) =>
+  `₱${n.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+const fmtK = (n: number): string => {
+  if (n >= 1_000_000) return `₱${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `₱${(n / 1_000).toFixed(0)}K`
+  return `₱${n.toFixed(0)}`
+}
+
+// Axis-safe formatter — never rounds 1,200 to "₱1K" or 1,600 to "₱2K"
+const fmtAxis = (n: number): string => {
+  if (n === 0) return '₱0'
+  if (n >= 1_000_000) { const v = n / 1_000_000; return `₱${v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)}M` }
+  if (n >= 1_000)     { const v = n / 1_000;     return `₱${v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)}K` }
+  return `₱${n.toFixed(0)}`
+}
 
 const timeAgo = (d: Date | null): string => {
   if (!d) return ''
   const s = Math.floor((Date.now() - d.getTime()) / 1000)
   if (s < 60) return `${s}s ago`
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`
-  if (s < 86400) return `${Math.floor(s / 3600)} hr ago`
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
   return `${Math.floor(s / 86400)}d ago`
+}
+
+// ── Sparkline ─────────────────────────────────────────────────────────────────
+
+function Sparkline({ values, stroke, fill }: { values: number[]; stroke: string; fill: string }) {
+  if (values.length < 2) {
+    return <svg width="100" height="40" viewBox="0 0 100 40"><line x1="0" y1="20" x2="100" y2="20" stroke={stroke} strokeWidth="1.5" strokeOpacity="0.4" /></svg>
+  }
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const range = max - min || 1
+  const W = 100, H = 40, pad = 2
+  const pts = values.map((v, i) => [
+    pad + (i / (values.length - 1)) * (W - pad * 2),
+    H - pad - ((v - min) / range) * (H - pad * 2 - 6),
+  ])
+  const line = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ')
+  const area = `${line} L${pts[pts.length - 1][0].toFixed(1)},${H} L${pts[0][0].toFixed(1)},${H} Z`
+  return (
+    <svg width="100" height="40" viewBox="0 0 100 40">
+      <path d={area} fill={fill} />
+      <path d={line} fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+// ── Sales Chart (Chart.js — matches Analytics page style) ────────────────────
+
+function SalesChart({ data }: { data: { date: Date; revenue: number }[] }) {
+  const labels = data.map(d =>
+    d.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  )
+  const values = data.map(d => d.revenue)
+
+  return (
+    <div className="h-48">
+      <Line
+        data={{
+          labels,
+          datasets: [
+            {
+              label: 'Revenue',
+              data: values,
+              fill: true,
+              borderColor: '#0f4c81',
+              backgroundColor: 'rgba(15,76,129,0.07)',
+              borderWidth: 2,
+              pointRadius: 3,
+              pointHoverRadius: 5,
+              tension: 0.35,
+            },
+          ],
+        }}
+        options={{
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => `Revenue: ${fmt(Number(ctx.parsed.y ?? 0))}`,
+              },
+            },
+          },
+          scales: {
+            x: {
+              grid: { display: false },
+              ticks: { font: { size: 11 }, color: '#94a3b8' },
+            },
+            y: {
+              beginAtZero: true,
+              grid: { color: '#f1f5f9' },
+              ticks: {
+                font: { size: 11 },
+                color: '#94a3b8',
+                callback: (value) => fmtAxis(Number(value)),
+              },
+            },
+          },
+        }}
+      />
+    </div>
+  )
 }
 
 // ── Page entry ────────────────────────────────────────────────────────────────
@@ -79,21 +186,22 @@ export default function DashboardPage() {
 // ── Main content ──────────────────────────────────────────────────────────────
 
 function DashboardContent() {
-  const [sales, setSales] = useState<SaleDoc[]>([])
-  const [inventory, setInventory] = useState<InventoryDoc[]>([])
+  const [sales, setSales]               = useState<SaleDoc[]>([])
+  const [inventory, setInventory]       = useState<InventoryDoc[]>([])
   const [reservations, setReservations] = useState<ReservationDoc[]>([])
-  const [stockLogs, setStockLogs] = useState<StockLogDoc[]>([])
-  const [loading, setLoading] = useState(true)
-  const [userName, setUserName] = useState('User')
-  const [now, setNow] = useState(new Date())
+  const [stockLogs, setStockLogs]       = useState<StockLogDoc[]>([])
+  const [loading, setLoading]           = useState(true)
+  const [userName, setUserName]         = useState('User')
+  const [userInitials, setUserInitials] = useState('U')
+  const [now, setNow]                   = useState(new Date())
+  const [chartPeriod, setChartPeriod]   = useState<7 | 14 | 30 | 90>(30)
+  const [showPeriodMenu, setShowPeriodMenu] = useState(false)
 
-  // Live clock — ticks every minute
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 60_000)
     return () => clearInterval(t)
   }, [])
 
-  // Resolve logged-in user's display name from Firestore
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (!user) return
@@ -101,461 +209,595 @@ function DashboardContent() {
         const snap = await getDoc(doc(db, 'users', user.uid))
         if (snap.exists()) {
           const d = snap.data() as Record<string, unknown>
-          setUserName(
-            typeof d.name === 'string' && d.name.trim() ? d.name.trim()
-              : typeof d.email === 'string' ? (d.email as string).split('@')[0]
-              : 'User'
-          )
+          const name = typeof d.name === 'string' && d.name.trim() ? d.name.trim()
+            : typeof d.email === 'string' ? (d.email as string).split('@')[0] : 'User'
+          setUserName(name)
+          setUserInitials(name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase())
         }
       } catch (_) {}
     })
     return () => unsub()
   }, [])
 
-  // Subscribe to all required Firestore collections in real time
   useEffect(() => {
     const unsubs = [
-      onSnapshot(collection(db, 'inventory'), (snap) => {
-        setInventory(snap.docs
-          .map((d) => ({ id: d.id, ...(d.data() as Omit<InventoryDoc, 'id'>), quantity: toNum((d.data() as Record<string,unknown>).stock ?? (d.data() as Record<string,unknown>).quantity) }))
-          .filter((i) => i.isDeleted !== true))
+      onSnapshot(collection(db, 'inventory'), snap => {
+        setInventory(snap.docs.map(d => {
+          const data = d.data() as Record<string, unknown>
+          return {
+            id: d.id,
+            name: String(data.name ?? ''),
+            quantity: toNum(data.stock ?? data.quantity),
+            minStock: toNum(data.minStock),
+            price: toNum(data.price),
+            reservedStock: toNum(data.reservedStock),
+            categoryName: String(data.categoryName ?? data.category ?? ''),
+            isDeleted: data.isDeleted === true,
+          }
+        }).filter(i => !i.isDeleted))
         setLoading(false)
       }),
-      onSnapshot(collection(db, 'sales'), (snap) => {
-        setSales(snap.docs.map((d) => {
+      onSnapshot(collection(db, 'sales'), snap => {
+        setSales(snap.docs.map(d => {
           const data = d.data() as Record<string, unknown>
           return {
             id: d.id,
             receiptNumber: typeof data.receiptNumber === 'string' ? data.receiptNumber : undefined,
-            customerName: typeof data.customerName === 'string' ? data.customerName : typeof data.customer === 'string' ? data.customer : undefined,
+            customerName: typeof data.customer === 'string' ? data.customer : typeof data.customerName === 'string' ? data.customerName : undefined,
             items: Array.isArray(data.items) ? data.items : [],
-            totalAmount: toNum(data.totalAmount, toNum(data.total, toNum(data.amount))),
-            quantity: toNum(data.quantity),
+            totalAmount: toNum(data.totalAmount),
+            status: String(data.status ?? 'completed'),
             createdAt: toDate(data.createdAt),
           }
         }))
       }),
-      onSnapshot(query(collection(db, 'reservations'), orderBy('createdAt', 'desc')), (snap) => {
-        setReservations(snap.docs.map((d) => {
+      onSnapshot(query(collection(db, 'reservations'), orderBy('createdAt', 'desc')), snap => {
+        setReservations(snap.docs.map(d => {
           const data = d.data() as Record<string, unknown>
           return {
             id: d.id,
-            reservationNumber: typeof data.reservationNumber === 'string' ? data.reservationNumber : undefined,
-            customerName: typeof data.customerName === 'string' ? data.customerName : typeof data.customer === 'string' ? data.customer : undefined,
+            customerName: typeof data.customer === 'string' ? data.customer : typeof data.customerName === 'string' ? data.customerName : undefined,
             items: Array.isArray(data.items) ? data.items : [],
-            status: typeof data.status === 'string' ? data.status : 'Active',
+            status: String(data.status ?? 'Active'),
             expiresAt: toDate(data.expiresAt),
             createdAt: toDate(data.createdAt),
           }
         }))
       }),
-      onSnapshot(query(collection(db, 'stockLogs'), orderBy('createdAt', 'desc'), limit(20)), (snap) => {
-        setStockLogs(snap.docs.map((d) => {
+      onSnapshot(query(collection(db, 'stockLogs'), orderBy('createdAt', 'desc'), limit(20)), snap => {
+        setStockLogs(snap.docs.map(d => {
           const data = d.data() as Record<string, unknown>
           return {
             id: d.id,
-            actionType: typeof data.actionType === 'string' ? data.actionType : '',
-            itemName: typeof data.itemName === 'string' ? data.itemName : '',
+            actionType: String(data.actionType ?? ''),
+            itemName: String(data.itemName ?? ''),
             quantityChanged: toNum(data.quantityChanged),
             createdAt: toDate(data.createdAt),
           }
         }))
       }),
     ]
-    return () => unsubs.forEach((u) => u())
+    return () => unsubs.forEach(u => u())
   }, [])
 
-  // ── KPI calculations ──────────────────────────────────────────────────────
+  // ── KPI computations ──────────────────────────────────────────────────────
 
   const thirtyDaysAgo = useMemo(() => { const d = new Date(); d.setDate(d.getDate() - 30); return d }, [])
   const sixtyDaysAgo  = useMemo(() => { const d = new Date(); d.setDate(d.getDate() - 60); return d }, [])
 
-  const recentSales   = useMemo(() => sales.filter((s) => s.createdAt instanceof Date && (s.createdAt as Date) >= thirtyDaysAgo), [sales, thirtyDaysAgo])
-  const previousSales = useMemo(() => sales.filter((s) => s.createdAt instanceof Date && (s.createdAt as Date) >= sixtyDaysAgo && (s.createdAt as Date) < thirtyDaysAgo), [sales, sixtyDaysAgo, thirtyDaysAgo])
+  const completedSales = useMemo(() => sales.filter(s => s.status !== 'voided'), [sales])
+  const recentSales    = useMemo(() => completedSales.filter(s => {
+    const d = toDate(s.createdAt); return d && d >= thirtyDaysAgo
+  }), [completedSales, thirtyDaysAgo])
+  const previousSales  = useMemo(() => completedSales.filter(s => {
+    const d = toDate(s.createdAt); return d && d >= sixtyDaysAgo && d < thirtyDaysAgo
+  }), [completedSales, sixtyDaysAgo, thirtyDaysAgo])
 
-  const totalSales      = useMemo(() => sales.reduce((s, x) => s + toNum(x.totalAmount), 0), [sales])
-  const recentRevenue   = useMemo(() => recentSales.reduce((s, x) => s + toNum(x.totalAmount), 0), [recentSales])
-  const previousRevenue = useMemo(() => previousSales.reduce((s, x) => s + toNum(x.totalAmount), 0), [previousSales])
-  const revenueChange   = previousRevenue > 0 ? ((recentRevenue - previousRevenue) / previousRevenue) * 100 : null
+  const totalRevenue   = useMemo(() => completedSales.reduce((s, x) => s + toNum(x.totalAmount), 0), [completedSales])
+  const recentRevenue  = useMemo(() => recentSales.reduce((s, x) => s + toNum(x.totalAmount), 0), [recentSales])
+  const prevRevenue    = useMemo(() => previousSales.reduce((s, x) => s + toNum(x.totalAmount), 0), [previousSales])
+  const revenueChange  = prevRevenue > 0 ? ((recentRevenue - prevRevenue) / prevRevenue) * 100 : null
 
-  const countItems = (arr: SaleDoc[]) => arr.reduce((s, x) => {
-    const c = Array.isArray(x.items) ? x.items.reduce((n, i) => n + Math.max(0, toNum(i.quantity)), 0) : Math.max(0, toNum(x.quantity))
-    return s + c
-  }, 0)
+  const recentSaleCount  = recentSales.length
+  const prevSaleCount    = previousSales.length
+  const saleCountChange  = prevSaleCount > 0 ? ((recentSaleCount - prevSaleCount) / prevSaleCount) * 100 : null
 
-  const recentItemsSold   = useMemo(() => countItems(recentSales),   [recentSales])
-  const previousItemsSold = useMemo(() => countItems(previousSales), [previousSales])
-  const itemsSoldChange   = previousItemsSold > 0 ? ((recentItemsSold - previousItemsSold) / previousItemsSold) * 100 : null
-
-  const productsInStock = useMemo(() => inventory.reduce((s, i) => s + Math.max(0, toNum(i.quantity)), 0), [inventory])
-
-  const lowStockItems = useMemo<LowStockItem[]>(() =>
-    inventory
-      .filter((i) => toNum(i.quantity) <= toNum(i.minStock))
-      .map((i) => ({ id: i.id, name: i.name?.trim() || i.id, categoryName: i.categoryName?.trim() || i.category?.trim() || 'Uncategorized', stock: toNum(i.quantity) })),
+  const inventoryValue   = useMemo(() => inventory.reduce((s, i) => s + toNum(i.price) * Math.max(0, toNum(i.quantity)), 0), [inventory])
+  const lowStockItems    = useMemo<LowStockItem[]>(() =>
+    inventory.filter(i => toNum(i.quantity) > 0 && toNum(i.quantity) <= toNum(i.minStock))
+      .map(i => ({ id: i.id, name: i.name?.trim() || i.id, categoryName: i.categoryName?.trim() || 'Uncategorized', stock: toNum(i.quantity) })),
     [inventory])
+  const outOfStockItems  = useMemo(() => inventory.filter(i => toNum(i.quantity) === 0), [inventory])
+  const reservedCount    = useMemo(() => inventory.reduce((s, i) => s + toNum(i.reservedStock), 0), [inventory])
+  const totalStock       = useMemo(() => inventory.reduce((s, i) => s + Math.max(0, toNum(i.quantity)), 0), [inventory])
 
-  const outOfStockItems = useMemo(() => inventory.filter((i) => toNum(i.quantity) === 0), [inventory])
+  const alertCount = lowStockItems.length + outOfStockItems.length
 
-  // ── Top category for AI insight ───────────────────────────────────────────
+  // ── Sparkline data (14 days) ──────────────────────────────────────────────
+
+  const buildDailyBuckets = (n: number) => Array.from({ length: n }, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - (n - 1 - i)); d.setHours(0, 0, 0, 0); return d
+  })
+
+  const revenueSparkline = useMemo(() => {
+    const buckets = buildDailyBuckets(14).map(() => 0)
+    for (const s of completedSales) {
+      const d = toDate(s.createdAt); if (!d) continue
+      const daysAgo = Math.floor((Date.now() - d.getTime()) / 86400000)
+      if (daysAgo >= 0 && daysAgo < 14) buckets[13 - daysAgo] += toNum(s.totalAmount)
+    }
+    return buckets
+  }, [completedSales])
+
+  const salesSparkline = useMemo(() => {
+    const buckets = buildDailyBuckets(14).map(() => 0)
+    for (const s of completedSales) {
+      const d = toDate(s.createdAt); if (!d) continue
+      const daysAgo = Math.floor((Date.now() - d.getTime()) / 86400000)
+      if (daysAgo >= 0 && daysAgo < 14) buckets[13 - daysAgo]++
+    }
+    return buckets
+  }, [completedSales])
+
+  const inventorySparkline = useMemo(() =>
+    buildDailyBuckets(14).map(() => inventoryValue),
+  [inventoryValue])
+
+  // ── Sales chart (30 days) ─────────────────────────────────────────────────
+
+  const salesChartData = useMemo(() => {
+    const days = buildDailyBuckets(chartPeriod)
+    const buckets = days.map(date => ({ date, revenue: 0 }))
+    for (const s of completedSales) {
+      const d = toDate(s.createdAt); if (!d) continue
+      const daysAgo = Math.floor((Date.now() - d.getTime()) / 86400000)
+      if (daysAgo >= 0 && daysAgo < chartPeriod) buckets[chartPeriod - 1 - daysAgo].revenue += toNum(s.totalAmount)
+    }
+    return buckets
+  }, [completedSales, chartPeriod])
+
+  // ── Average order value ───────────────────────────────────────────────────
+
+  const avgOrderValue    = recentSaleCount > 0 ? recentRevenue / recentSaleCount : 0
+  const prevAvgOrder     = prevSaleCount   > 0 ? prevRevenue   / prevSaleCount   : 0
+  const avgOrderChange   = prevAvgOrder    > 0 ? ((avgOrderValue - prevAvgOrder) / prevAvgOrder) * 100 : null
+
+  // ── Top selling products ──────────────────────────────────────────────────
+
+  const topProducts = useMemo(() => {
+    const map: Record<string, { name: string; sold: number; revenue: number }> = {}
+    for (const s of completedSales) {
+      for (const item of (s.items ?? [])) {
+        const name = String(item.name ?? '').trim(); if (!name) continue
+        if (!map[name]) map[name] = { name, sold: 0, revenue: 0 }
+        map[name].sold    += toNum(item.quantity)
+        map[name].revenue += toNum(item.quantity) * toNum(item.price)
+      }
+    }
+    return Object.values(map).sort((a, b) => b.sold - a.sold).slice(0, 5)
+  }, [completedSales])
+
+  // ── Top category ─────────────────────────────────────────────────────────
 
   const topCategory = useMemo(() => {
     const rev: Record<string, number> = {}
-    for (const s of sales) {
+    for (const s of completedSales) {
       for (const item of (s.items ?? [])) {
-        const cat = typeof item.categoryName === 'string' ? item.categoryName : 'Uncategorized'
+        const cat = String(item.categoryName ?? 'Uncategorized')
         rev[cat] = (rev[cat] ?? 0) + toNum(item.price) * toNum(item.quantity)
       }
     }
-    const sorted = Object.entries(rev).sort((a, b) => b[1] - a[1])
-    return sorted[0]?.[0] ?? null
-  }, [sales])
+    return Object.entries(rev).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+  }, [completedSales])
 
-  // ── Recent activity feed ──────────────────────────────────────────────────
+  // ── Recent activity ───────────────────────────────────────────────────────
 
   const recentActivity = useMemo(() => {
-    type ActivityItem = { key: string; type: 'sale' | 'reservation' | 'stock'; label: string; sub: string; amount?: string; date: Date | null }
-    const items: ActivityItem[] = []
-
-    for (const s of [...sales].sort((a, b) => ((b.createdAt as Date)?.getTime() ?? 0) - ((a.createdAt as Date)?.getTime() ?? 0)).slice(0, 3)) {
-      items.push({ key: `sale-${s.id}`, type: 'sale', label: 'Sale completed', sub: s.receiptNumber ? `Receipt #${s.receiptNumber}` : 'Sale record', amount: formatCurrency(toNum(s.totalAmount)), date: s.createdAt instanceof Date ? s.createdAt as Date : null })
+    type Activity = { key: string; type: 'sale' | 'reservation' | 'stock'; label: string; sub: string; amount?: string; date: Date | null }
+    const items: Activity[] = []
+    for (const s of [...completedSales].sort((a, b) => ((toDate(b.createdAt)?.getTime() ?? 0) - (toDate(a.createdAt)?.getTime() ?? 0))).slice(0, 4))
+      items.push({ key: `s-${s.id}`, type: 'sale', label: 'Sale completed', sub: s.receiptNumber ? `#${s.receiptNumber}` : 'Receipt', amount: fmt(toNum(s.totalAmount)), date: toDate(s.createdAt) })
+    for (const r of reservations.slice(0, 2))
+      items.push({ key: `r-${r.id}`, type: 'reservation', label: 'Reservation created', sub: r.items?.[0] ? String(r.items[0].name ?? 'Item') : 'Item', date: toDate(r.createdAt) })
+    for (const l of stockLogs.slice(0, 3)) {
+      if (!l.itemName) continue
+      items.push({ key: `l-${l.id}`, type: 'stock', label: 'Stock updated', sub: l.itemName, amount: (l.quantityChanged ?? 0) >= 0 ? `+${l.quantityChanged}` : String(l.quantityChanged), date: toDate(l.createdAt) })
     }
-    for (const r of reservations.slice(0, 2)) {
-      items.push({ key: `rsv-${r.id}`, type: 'reservation', label: 'Reservation created', sub: r.items?.[0] ? `Item: ${String(r.items[0].name ?? 'Unknown')}` : 'Reservation', date: r.createdAt instanceof Date ? r.createdAt as Date : null })
-    }
-    for (const log of stockLogs.slice(0, 2)) {
-      if (!log.itemName) continue
-      items.push({ key: `log-${log.id}`, type: 'stock', label: 'Stock updated', sub: log.itemName, amount: (log.quantityChanged ?? 0) > 0 ? `+${log.quantityChanged} pcs` : `${log.quantityChanged} pcs`, date: log.createdAt instanceof Date ? log.createdAt as Date : null })
-    }
+    return items.filter(i => i.date).sort((a, b) => (b.date!.getTime() - a.date!.getTime())).slice(0, 4)
+  }, [completedSales, reservations, stockLogs])
 
-    return items.filter((i) => i.date !== null).sort((a, b) => (b.date?.getTime() ?? 0) - (a.date?.getTime() ?? 0)).slice(0, 5)
-  }, [sales, reservations, stockLogs])
+  // ── Date range display ────────────────────────────────────────────────────
 
-  const upcomingReservations = useMemo(
-    () => reservations.filter((r) => r.status === 'Active').slice(0, 3),
-    [reservations]
-  )
-
-  // ── Formatted date / time ─────────────────────────────────────────────────
-
-  const formattedDate = now.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
-  const formattedTime = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+  const greeting = useMemo(() => {
+    const h = now.getHours()
+    return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'
+  }, [now])
 
   // ── Render ────────────────────────────────────────────────────────────────
 
-
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-slate-50 px-3 py-3 sm:px-5 sm:py-5 space-y-3 sm:space-y-4">
+    <div className="flex min-h-screen flex-col bg-[#f5f6fa]">
 
-      {/* ── Header ── */}
-      <header className="flex flex-wrap items-start justify-between gap-2">
-        <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-            </svg>
+      {/* ── Top Bar ── */}
+      <header className="flex items-center justify-between gap-4 bg-white px-5 py-2.5 border-b border-gray-100">
+        <div>
+          <div className="flex items-center gap-1.5">
+            <h1 className="text-base font-bold text-gray-900">{greeting}, {userName}</h1>
+            <span>👋</span>
           </div>
-          <div>
-          <h1 className="text-lg font-bold text-slate-900 sm:text-2xl">Dashboard</h1>
-          <p className="mt-0.5 text-xs text-slate-500 sm:text-sm">
-            Welcome back,{' '}
-            <span className="font-semibold text-blue-600">{userName}</span>!{' '}
-            Here&apos;s what&apos;s happening with your store today.
+          <p className="text-[11px] text-gray-400">
+            {now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
           </p>
-          </div>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5 text-sm text-slate-500">
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
-            </svg>
-            <span>{formattedDate}</span>
-            <span className="text-slate-300">·</span>
-            <span className="font-medium text-slate-700">{formattedTime}</span>
-          </div>
-          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#1e3a5f] text-xs font-bold text-white ring-2 ring-white">
-            {userName.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}
+        <div className="flex items-center gap-2.5">
+          {/* User avatar */}
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-blue-600 to-indigo-600 text-xs font-bold text-white">
+            {userInitials}
           </div>
         </div>
       </header>
 
-      {/* ── KPI cards ── */}
-      <section className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
-        <KpiCard title="TOTAL SALES"           value={formatCurrency(totalSales)}       change={revenueChange}   icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>} iconBg="bg-blue-100 text-blue-500"      loading={loading} />
-        <KpiCard title="ITEMS SOLD"            value={recentItemsSold.toLocaleString()} change={itemsSoldChange} icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>} iconBg="bg-emerald-100 text-emerald-500" loading={loading} />
-        <KpiCard title="PRODUCTS IN STOCK"     value={productsInStock.toLocaleString()} change={null}            icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" /></svg>} iconBg="bg-violet-100 text-violet-500"  loading={loading} subtitle="All items available" />
-        <KpiCard title="LOW STOCK"  value={String(lowStockItems.length)}     change={null}
-          icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>}
-          iconBg={lowStockItems.length > 0 ? 'bg-red-100 text-red-500' : 'bg-slate-100 text-slate-400'}
-          danger={lowStockItems.length > 0}
-          subtitle={lowStockItems.length > 0 ? 'Need attention' : 'All healthy'}
-          loading={loading} />
-      </section>
+      {/* ── Page body ── */}
+      <div className="flex-1 p-3 space-y-2">
 
-      {/* ── Middle row ── */}
-      <section className="grid grid-cols-1 gap-2 sm:gap-3 lg:grid-cols-3">
+        {/* ── KPI Cards ── */}
+        <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
+          <KpiCard
+            title="Total Revenue"
+            value={fmt(totalRevenue)}
+            change={revenueChange}
+            subtitle="vs last 30 days"
+            spark={<Sparkline values={revenueSparkline} stroke="#3b82f6" fill="rgba(59,130,246,0.1)" />}
+            loading={loading}
+            iconBg="bg-blue-100"
+            icon={<svg className="h-4 w-4 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
+          />
+          <KpiCard
+            title="Total Sales"
+            value={String(recentSaleCount)}
+            change={saleCountChange}
+            subtitle="vs last 30 days"
+            spark={<Sparkline values={salesSparkline} stroke="#10b981" fill="rgba(16,185,129,0.1)" />}
+            loading={loading}
+            iconBg="bg-emerald-100"
+            icon={<svg className="h-4 w-4 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" /></svg>}
+          />
+          <KpiCard
+            title="Inventory Value"
+            value={fmt(inventoryValue)}
+            subtitle={`${inventory.length} product lines`}
+            spark={<Sparkline values={inventorySparkline} stroke="#8b5cf6" fill="rgba(139,92,246,0.1)" />}
+            loading={loading}
+            iconBg="bg-violet-100"
+            icon={<svg className="h-4 w-4 text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>}
+          />
+          <KpiCard
+            title="Low Stock Alerts"
+            value={String(alertCount)}
+            subtitle={`${outOfStockItems.length} out of stock`}
+            loading={loading}
+            iconBg={alertCount > 0 ? 'bg-red-100' : 'bg-gray-100'}
+            icon={<svg className={`h-4 w-4 ${alertCount > 0 ? 'text-red-500' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>}
+          />
+        </div>
 
-        {/* Alerts & Warnings */}
-        <div className="flex flex-col rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
-          <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-50">
-              <svg className="h-4 w-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
-            </span>
-            Alerts &amp; Warnings
-          </h2>
-          <div className="flex-1">
-          {loading ? <Skeleton rows={2} /> : (
-            <div className="space-y-2.5">
-              {lowStockItems.length > 0 && <AlertRow type="warning" label={`Low Stock (${lowStockItems.length})`} desc="Some categories are running low." items={lowStockItems.map((i) => ({ name: i.categoryName, note: `${i.stock} left` }))} />}
-              {outOfStockItems.length > 0 && <AlertRow type="danger" label={`Out of Stock (${outOfStockItems.length})`} desc="Some items are out of stock." items={outOfStockItems.map((i) => ({ name: i.name ?? i.id, note: 'Out of stock' }))} />}
-              {lowStockItems.length === 0 && outOfStockItems.length === 0 && (
-                <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5">
-                  <p className="text-sm font-medium text-emerald-700">✓ All inventory levels are healthy</p>
-                </div>
-              )}
+        {/* ── Middle row ── */}
+        <div className="grid grid-cols-1 gap-2 xl:grid-cols-3">
+
+          {/* Sales Overview */}
+          <div className="xl:col-span-2 rounded-2xl bg-white p-3 shadow-sm border border-gray-100">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-bold text-gray-800">Sales Overview</h2>
+              <div className="relative flex items-center gap-2">
+                <span className="flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-500 bg-gray-50">
+                  Revenue
+                </span>
+                <button
+                  onClick={() => setShowPeriodMenu(v => !v)}
+                  className="flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-600 hover:bg-blue-100 transition-colors"
+                >
+                  Last {chartPeriod} days <ChevronRight className={`h-3 w-3 transition-transform ${showPeriodMenu ? 'rotate-[270deg]' : 'rotate-90'}`} />
+                </button>
+                {showPeriodMenu && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowPeriodMenu(false)} />
+                    <div className="absolute right-0 top-full z-50 mt-1.5 w-40 overflow-hidden rounded-xl border border-gray-100 bg-white shadow-lg">
+                      {([7, 14, 30, 90] as const).map(p => (
+                        <button key={p} onClick={() => { setChartPeriod(p); setShowPeriodMenu(false) }}
+                          className={`flex w-full items-center justify-between px-3.5 py-2 text-sm transition-colors ${
+                            chartPeriod === p ? 'bg-blue-50 font-semibold text-blue-600' : 'text-gray-700 hover:bg-gray-50'
+                          }`}>
+                          Last {p} days
+                          {chartPeriod === p && <span className="text-blue-500 text-xs">✓</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
-          )}
+            {loading
+              ? <div className="h-48 w-full animate-pulse rounded-xl bg-gray-50" />
+              : <SalesChart data={salesChartData} />
+            }
+            {/* Summary row */}
+            <div className="mt-2 grid grid-cols-3 gap-2 border-t border-gray-100 pt-2">
+              <div>
+                <p className="text-[11px] text-gray-400">Revenue</p>
+                <p className="mt-0.5 text-sm font-bold text-gray-900">{fmt(recentRevenue)}</p>
+                {revenueChange != null && <ChangeBadge v={revenueChange} />}
+              </div>
+              <div>
+                <p className="text-[11px] text-gray-400">Orders</p>
+                <p className="mt-0.5 text-sm font-bold text-gray-900">{recentSaleCount}</p>
+                {saleCountChange != null && <ChangeBadge v={saleCountChange} />}
+              </div>
+              <div>
+                <p className="text-[11px] text-gray-400">Avg Order Value</p>
+                <p className="mt-0.5 text-sm font-bold text-gray-900">{fmt(avgOrderValue)}</p>
+                {avgOrderChange != null && <ChangeBadge v={avgOrderChange} />}
+              </div>
+            </div>
           </div>
-          <div className="mt-auto border-t border-slate-100 pt-2">
-            <Link href="/inventory" className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-500">
-              View all alerts
-              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" /></svg>
-            </Link>
+
+          {/* Inventory Status */}
+          <div className="flex flex-col rounded-2xl bg-white p-3 shadow-sm border border-gray-100">
+            <div className="mb-1 flex items-center justify-between">
+              <h2 className="text-sm font-bold text-gray-800">Inventory Status</h2>
+              <Link href="/inventory" className="text-xs font-medium text-blue-600 hover:underline">View all</Link>
+            </div>
+            <div className="flex flex-col flex-1 divide-y divide-gray-50">
+              <InventoryStatusRow
+                iconEl={<AlertTriangle className="h-4 w-4 text-amber-600" />}
+                iconBg="bg-amber-100"
+                label="Low Stock"
+                desc="Items running below minimum"
+                count={lowStockItems.length}
+                href="/inventory"
+              />
+              <InventoryStatusRow
+                iconEl={<Package className="h-4 w-4 text-red-500" />}
+                iconBg="bg-red-100"
+                label="Out of Stock"
+                desc="Items need restocking"
+                count={outOfStockItems.length}
+                href="/inventory"
+              />
+              <InventoryStatusRow
+                iconEl={<Bookmark className="h-4 w-4 text-blue-500" />}
+                iconBg="bg-blue-100"
+                label="Reserved Items"
+                desc="Items in active reservations"
+                count={reservedCount}
+                href="/reservations"
+              />
+              <InventoryStatusRow
+                iconEl={<LayoutGrid className="h-4 w-4 text-purple-500" />}
+                iconBg="bg-purple-100"
+                label="Total Products"
+                desc={`Across ${inventory.length} product lines`}
+                count={totalStock}
+                href="/inventory"
+              />
+            </div>
           </div>
         </div>
 
-        {/* Quick Actions */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
-          <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-50">
-              <svg className="h-4 w-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-            </span>
-            Quick Actions
-          </h2>
-          <div className="grid grid-cols-2 gap-2">
-            <QuickAction href="/sales"        label="New Sale"          color="bg-blue-50 text-blue-600 hover:bg-blue-100"       icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>} />
-            <QuickAction href="/inventory"    label="View Inventory"    color="bg-emerald-50 text-emerald-600 hover:bg-emerald-100" icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>} />
-            <QuickAction href="/analytics"    label="View Analytics"    color="bg-violet-50 text-violet-600 hover:bg-violet-100"  icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>} />
-            <QuickAction href="/reservations" label="View Reservations" color="bg-amber-50 text-amber-600 hover:bg-amber-100"    icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>} />
-          </div>
-        </div>
+        {/* ── Bottom row ── */}
+        <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
 
-        {/* Insight (not AI) */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
-          <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-50">
-              <svg className="h-4 w-4 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
-            </span>
-            Insight
-          </h2>
-          <div className="rounded-xl border border-violet-100 bg-violet-50 p-3 space-y-1">
-            {topCategory ? (
-              <>
-                <p className="text-sm font-semibold text-violet-900 leading-snug">
-                  {topCategory} is currently the strongest category based on recent sales.
-                </p>
-                <p className="text-xs text-violet-600">
-                  Consider increasing display and stock allocation for this category.
-                </p>
-              </>
+          {/* Recent Activity */}
+          <div className="rounded-2xl bg-white p-3 shadow-sm border border-gray-100">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-bold text-gray-800">Recent Activity</h2>
+              <Link href="/sales" className="text-xs font-medium text-blue-600 hover:underline">View all</Link>
+            </div>
+            {loading ? <PulseRows n={5} /> : recentActivity.length === 0 ? (
+              <div className="flex flex-col items-center gap-2 py-10 text-center">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gray-100">
+                  <Package className="h-5 w-5 text-gray-300" />
+                </div>
+                <p className="text-sm text-gray-400">No recent activity yet.</p>
+              </div>
             ) : (
-              <p className="text-sm text-violet-700">Not enough sales data to generate insights yet.</p>
+              <div className="divide-y divide-gray-50">
+                {recentActivity.map(item => {
+                  const iconMap = {
+                    sale:        { el: <ShoppingCart className="h-4 w-4 text-emerald-600" />, bg: 'bg-emerald-100' },
+                    reservation: { el: <Calendar className="h-4 w-4 text-amber-600" />,      bg: 'bg-amber-100' },
+                    stock:       { el: <Package className="h-4 w-4 text-blue-500" />,         bg: 'bg-blue-100' },
+                  }
+                  const { el, bg } = iconMap[item.type]
+                  return (
+                    <div key={item.key} className="flex items-center gap-2.5 py-2">
+                      <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${bg}`}>
+                        {el}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-semibold text-gray-800">{item.label}</p>
+                        <p className="truncate text-[11px] text-gray-400">{item.sub}</p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        {item.amount && (
+                          <p className={`text-xs font-bold ${
+                            item.type === 'sale' ? 'text-emerald-600'
+                            : item.type === 'stock' ? 'text-blue-600'
+                            : 'text-gray-700'
+                          }`}>
+                            {item.type === 'stock' ? `${item.amount} pcs` : item.amount}
+                          </p>
+                        )}
+                        <p className="text-[11px] text-gray-400">{timeAgo(item.date)}</p>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
             )}
           </div>
-          <Link href="/analytics" className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-500">
-            View full analytics
-            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" /></svg>
-          </Link>
-        </div>
-      </section>
 
-      {/* ── Bottom row ── */}
-      <section className="grid grid-cols-1 gap-2 sm:gap-3 lg:grid-cols-2">
-
-        {/* Recent Activity */}
-        <div className="flex flex-col rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
-          <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100">
-              <svg className="h-4 w-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
-            </span>
-            Recent Activity
-          </h2>
-          <div className="flex-1">
-          {loading ? <Skeleton rows={3} /> : recentActivity.length === 0 ? (
-            <p className="text-sm text-slate-400">No recent activity yet.</p>
-          ) : (
-            <ul className="divide-y divide-slate-50">
-              {recentActivity.map((item) => (
-                <li key={item.key} className="flex items-center gap-3 py-2">
-                  <span className={`flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full text-white ${
-                    item.type === 'sale' ? 'bg-emerald-500' : item.type === 'reservation' ? 'bg-amber-500' : 'bg-blue-500'
-                  }`}>
-                    {item.type === 'sale'
-                      ? <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
-                      : item.type === 'reservation'
-                      ? <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                      : <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>
-                    }
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-slate-800">{item.label}</p>
-                    <p className="truncate text-xs text-slate-400">{item.sub}</p>
-                  </div>
-                  <div className="shrink-0 text-right">
-                    {item.amount && (
-                      <p className={`text-sm font-semibold ${item.type === 'sale' ? 'text-emerald-600' : 'text-slate-700'}`}>
-                        {item.amount}
-                      </p>
-                    )}
-                    <p className="text-xs text-slate-400">{timeAgo(item.date)}</p>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-          </div>
-          <div className="mt-auto border-t border-slate-100 pt-2">
-            <Link href="/sales" className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-500">
-              View all activity
-              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" /></svg>
-            </Link>
-          </div>
-        </div>
-
-        {/* Upcoming Reservations */}
-        <div className="flex flex-col rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
-          <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-50">
-              <svg className="h-4 w-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-            </span>
-            Upcoming Reservations
-          </h2>
-          <div className="flex-1">
-          {loading ? <Skeleton rows={3} /> : upcomingReservations.length === 0 ? (
-            <p className="text-sm text-slate-400">No active reservations.</p>
-          ) : (
-            <ul className="divide-y divide-slate-50">
-              {upcomingReservations.map((r) => {
-                const exp = r.expiresAt instanceof Date ? r.expiresAt as Date : null
-                const firstItem = r.items?.[0]
-                return (
-                  <li key={r.id} className="flex items-center gap-3 py-2">
-                    <span className="flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-600">
-                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-slate-800 truncate">{r.customerName ?? 'Unknown Customer'}</p>
-                      <p className="text-xs text-slate-400 truncate">
-                        {firstItem ? String(firstItem.name ?? 'Item') : 'Item'}
-                        {r.items && r.items.length > 1 ? ` +${r.items.length - 1} more` : ''}
-                      </p>
-                    </div>
-                    <div className="shrink-0 text-right">
-                      <span className="inline-block rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-700">Active</span>
-                      {exp && (
-                        <p className="mt-0.5 text-xs text-slate-400">
-                          Expires {exp.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                        </p>
-                      )}
-                    </div>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
-          </div>
-          <div className="mt-auto border-t border-slate-100 pt-2">
-            <Link href="/reservations" className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-500">
-              View all reservations
-              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" /></svg>
-            </Link>
+          {/* Quick Actions */}
+          <div className="rounded-2xl bg-white p-3 shadow-sm border border-gray-100">
+            <h2 className="mb-2 text-sm font-bold text-gray-800">Quick Actions</h2>
+            <div className="grid grid-cols-2 gap-2">
+              <QuickAction
+                href="/sales"
+                icon={<ShoppingCart className="h-4 w-4" />}
+                label="New Sale"
+                desc="Process a transaction"
+                iconBg="bg-blue-100"
+                iconColor="text-blue-600"
+                hoverBg="hover:bg-blue-50"
+              />
+              <QuickAction
+                href="/inventory"
+                icon={<PackagePlus className="h-5 w-5" />}
+                label="Add Item"
+                desc="Add to inventory"
+                iconBg="bg-emerald-100"
+                iconColor="text-emerald-600"
+                hoverBg="hover:bg-emerald-50"
+              />
+              <QuickAction
+                href="/reservations"
+                icon={<Calendar className="h-5 w-5" />}
+                label="Reserve"
+                desc="New reservation"
+                iconBg="bg-amber-100"
+                iconColor="text-amber-600"
+                hoverBg="hover:bg-amber-50"
+              />
+              <QuickAction
+                href="/customers"
+                icon={<UserCheck className="h-5 w-5" />}
+                label="Customers"
+                desc="View customers"
+                iconBg="bg-pink-100"
+                iconColor="text-pink-600"
+                hoverBg="hover:bg-pink-50"
+              />
+              <QuickAction
+                href="/analytics"
+                icon={<BarChart3 className="h-5 w-5" />}
+                label="Analytics"
+                desc="Sales & trends"
+                iconBg="bg-violet-100"
+                iconColor="text-violet-600"
+                hoverBg="hover:bg-violet-50"
+              />
+              <QuickAction
+                href="/inventory/logs"
+                icon={<ClipboardList className="h-5 w-5" />}
+                label="Stock Logs"
+                desc="Audit trail"
+                iconBg="bg-gray-100"
+                iconColor="text-gray-500"
+                hoverBg="hover:bg-gray-50"
+              />
+            </div>
           </div>
         </div>
-      </section>
-    </main>
-  )
-}
-
-// ── Sub-components ─────────────────────────────────────────────────────────────
-
-function KpiCard({ title, value, change, icon, iconBg, danger = false, subtitle, loading = false }:
-  { title: string; value: string; change: number | null; icon: React.ReactNode; iconBg: string; danger?: boolean; subtitle?: string; loading?: boolean }) {
-  return (
-    <article className={`rounded-2xl border p-3 sm:p-4 shadow-sm ${danger ? 'border-red-200 bg-red-50' : 'border-slate-200 bg-white'}`}>
-      {/* Icon */}
-      <div className={`flex h-9 w-9 items-center justify-center rounded-xl ${iconBg} mb-2`}>
-        {icon}
       </div>
-      {/* Label */}
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 leading-tight">{title}</p>
-      {/* Value */}
-      {loading
-        ? <div className="mt-1 h-6 w-16 animate-pulse rounded bg-slate-200" />
-        : <p className={`mt-0.5 text-xl font-bold leading-tight sm:text-2xl ${danger ? 'text-red-700' : 'text-slate-900'}`}>{value}</p>
-      }
-      {/* Change badge */}
-      {!loading && change !== null && (
-        <span className={`mt-1 inline-flex items-center gap-0.5 text-[10px] font-medium ${change >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-          {change >= 0
-            ? <svg className="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" /></svg>
-            : <svg className="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
-          }
-          {Math.abs(change).toFixed(1)}% <span className="hidden sm:inline">vs last 30 days</span><span className="sm:hidden">30d</span>
-        </span>
-      )}
-      {!loading && subtitle && change === null && (
-        <p className={`mt-0.5 text-[10px] sm:text-xs ${danger ? 'text-red-500 font-medium' : 'text-slate-400'}`}>{subtitle}</p>
-      )}
-    </article>
-  )
-}
-
-function QuickAction({ href, icon, label, color }: { href: string; icon: React.ReactNode; label: string; color: string }) {
-  return (
-    <Link href={href} className={`flex flex-col items-center justify-center gap-1.5 rounded-xl p-3 sm:p-4 text-center transition ${color}`}>
-      {icon}
-      <span className="text-[11px] font-semibold leading-tight">{label}</span>
-    </Link>
-  )
-}
-
-function AlertRow({ type, label, desc, items }: { type: 'warning' | 'danger'; label: string; desc: string; items: { name: string; note: string }[] }) {
-  const [open, setOpen] = useState(false)
-  const isWarn = type === 'warning'
-  return (
-    <div className={`rounded-xl border px-4 py-3 ${isWarn ? 'border-amber-200 bg-amber-50' : 'border-red-200 bg-red-50'}`}>
-      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-left">
-          {isWarn
-            ? <svg className="h-4 w-4 shrink-0 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
-            : <svg className="h-4 w-4 shrink-0 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-          }
-          <div>
-            <p className={`text-sm font-semibold ${isWarn ? 'text-amber-800' : 'text-red-800'}`}>{label}</p>
-            <p className={`text-xs ${isWarn ? 'text-amber-600' : 'text-red-600'}`}>{desc}</p>
-          </div>
-        </div>
-        <svg className={`h-4 w-4 shrink-0 transition-transform ${open ? 'rotate-180' : ''} ${isWarn ? 'text-amber-500' : 'text-red-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
-      </button>
-      {open && (
-        <ul className="mt-2.5 space-y-1 border-t border-dashed border-current border-opacity-20 pt-2.5">
-          {items.map((item, i) => (
-            <li key={i} className="flex items-center justify-between text-xs">
-              <span className={isWarn ? 'text-amber-800' : 'text-red-800'}>• {item.name}</span>
-              <span className={`font-medium ${isWarn ? 'text-amber-600' : 'text-red-600'}`}>{item.note}</span>
-            </li>
-          ))}
-        </ul>
-      )}
     </div>
   )
 }
 
-function Skeleton({ rows }: { rows: number }) {
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+function KpiCard({ title, value, change, subtitle, spark, icon, iconBg, loading }: {
+  title: string; value: string; change?: number | null; subtitle?: string
+  spark?: React.ReactNode; icon: React.ReactNode; iconBg: string; loading?: boolean
+}) {
   return (
-    <div className="space-y-2.5">
-      {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} className="h-12 animate-pulse rounded-xl bg-slate-100" />
+    <div className="rounded-xl border border-gray-100 bg-white p-3 shadow-sm">
+      {/* Top row: icon + title | change badge */}
+      <div className="flex items-center gap-2">
+        <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${iconBg}`}>
+          {icon}
+        </div>
+        <div className="flex min-w-0 flex-1 items-center justify-between gap-1.5">
+          <p className="truncate text-xs font-medium text-gray-500">{title}</p>
+          {change != null && !loading && <ChangeBadge v={change} />}
+        </div>
+      </div>
+      {/* Bottom row: value | sparkline */}
+      <div className="mt-2 flex items-end justify-between gap-2">
+        <div className="min-w-0">
+          {loading
+            ? <div className="h-6 w-28 animate-pulse rounded-lg bg-gray-100" />
+            : <p className="text-lg font-extrabold tracking-tight text-gray-900">{value}</p>
+          }
+          {!loading && subtitle && (
+            <p className="mt-0.5 text-[11px] text-gray-400">{subtitle}</p>
+          )}
+        </div>
+        {spark && !loading && <div className="shrink-0 opacity-90">{spark}</div>}
+      </div>
+    </div>
+  )
+}
+
+function ChangeBadge({ v }: { v: number | null | undefined }) {
+  if (v == null) return null
+  const up = v >= 0
+  return (
+    <span className={`inline-flex shrink-0 items-center gap-0.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+      up ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-500'
+    }`}>
+      {up ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+      {up ? '+' : ''}{Math.abs(v).toFixed(1)}%
+    </span>
+  )
+}
+
+function InventoryStatusRow({ iconEl, iconBg, label, desc, count, href }: {
+  iconEl: React.ReactNode; iconBg: string; label: string; desc: string; count: number; href: string
+}) {
+  return (
+    <Link href={href} className="flex flex-1 items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors hover:bg-gray-50">
+      <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${iconBg}`}>
+        {iconEl}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-semibold text-gray-800">{label}</p>
+        <p className="text-[11px] text-gray-400">{desc}</p>
+      </div>
+      <span className="text-sm font-bold text-gray-800">{count}</span>
+      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-gray-300" />
+    </Link>
+  )
+}
+
+function QuickAction({ href, icon, label, desc, iconBg, iconColor, hoverBg }: {
+  href: string; icon: React.ReactNode; label: string; desc: string
+  iconBg: string; iconColor: string; hoverBg: string
+}) {
+  return (
+    <Link href={href}
+      className={`flex items-center gap-2.5 rounded-xl border border-gray-100 p-2.5 transition-colors ${hoverBg} group`}>
+      <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${iconBg} ${iconColor}`}>
+        {icon}
+      </div>
+      <div className="min-w-0">
+        <p className="text-xs font-semibold text-gray-800 group-hover:text-gray-900">{label}</p>
+        <p className="text-[10px] text-gray-400">{desc}</p>
+      </div>
+    </Link>
+  )
+}
+
+function PulseRows({ n }: { n: number }) {
+  return (
+    <div className="space-y-3">
+      {Array.from({ length: n }).map((_, i) => (
+        <div key={i} className="flex items-center gap-3">
+          <div className="h-9 w-9 animate-pulse rounded-full bg-gray-100 shrink-0" />
+          <div className="flex-1 space-y-1.5">
+            <div className="h-3 w-3/4 animate-pulse rounded bg-gray-100" />
+            <div className="h-2.5 w-1/2 animate-pulse rounded bg-gray-100" />
+          </div>
+          <div className="h-4 w-16 animate-pulse rounded bg-gray-100 shrink-0" />
+        </div>
       ))}
     </div>
   )

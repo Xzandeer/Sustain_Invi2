@@ -33,6 +33,7 @@ type Intent =
   | 'active_reservations'
   | 'stock_logs'
   | 'dashboard_summary'
+  | 'recommendation'
   | 'unknown'
 
 const INTENT_PATTERNS: Array<{ intent: Intent; patterns: RegExp[] }> = [
@@ -44,6 +45,7 @@ const INTENT_PATTERNS: Array<{ intent: Intent; patterns: RegExp[] }> = [
   { intent: 'stock_logs', patterns: [/stock.?log/i, /audit/i, /who.?changed/i, /activity.?log/i, /stock.*history/i] },
   { intent: 'inventory_summary', patterns: [/inventory/i, /stock.?level/i, /how.?many.?items/i, /total.?stock/i, /product.?list/i, /all.?item/i] },
   { intent: 'dashboard_summary', patterns: [/overview/i, /dashboard/i, /how.?is.?the.?store/i, /business.?doing/i, /insight/i, /store.?performance/i, /summary/i, /status/i, /report/i, /what.*going.?on/i] },
+  { intent: 'recommendation', patterns: [/what.*display/i, /what.*promote/i, /what.*sell/i, /recommend/i, /suggest/i, /should.*feature/i, /what.*put.*(front|store)/i, /best.*sell.*this/i, /promote.*this/i, /display.*this/i, /season/i, /holiday/i, /christmas/i, /month.*suggest/i, /what.*focus/i, /which.*highlight/i] },
 ]
 
 function detectIntent(message: string): Intent {
@@ -159,6 +161,46 @@ async function fetchDashboardSummary(): Promise<string> {
   return `=== Store Overview ===\nInventory: ${active.length} active | ${lowStock.length} low stock | ${outOfStock.length} out of stock\nToday's Revenue: ${fmt(todayRevenue)} (${todaySales.length} transactions)\n${monthLabel} Revenue: ${fmt(monthRevenue)} (${monthSales.length} transactions)\nActive Reservations: ${activeRes.length}\n`
 }
 
+async function fetchRecommendationData(): Promise<string> {
+  const [invSnap, salesSnap] = await Promise.all([getDocs(collection(db, 'inventory')), getDocs(collection(db, 'sales'))])
+  const today = new Date()
+  const monthName = today.toLocaleDateString('en-PH', { month: 'long' })
+  const day = today.toLocaleDateString('en-PH', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
+
+  // Category sales totals
+  const catSales: Record<string, { revenue: number; units: number }> = {}
+  salesSnap.docs.forEach((d) => {
+    const data = d.data() as Record<string, unknown>
+    const items = Array.isArray(data.items) ? (data.items as Array<Record<string, unknown>>) : []
+    items.forEach((item) => {
+      const cat = (typeof item.categoryName === 'string' ? item.categoryName : null) ?? 'Unknown'
+      if (!catSales[cat]) catSales[cat] = { revenue: 0, units: 0 }
+      catSales[cat].revenue += toNumber(item.price) * toNumber(item.quantity, 1)
+      catSales[cat].units += toNumber(item.quantity, 1)
+    })
+  })
+  const topCats = Object.entries(catSales).sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 6)
+    .map(([cat, { revenue, units }]) => `- ${cat}: ${fmt(revenue)} revenue, ${units} units sold`)
+
+  // High stock items (good candidates to promote)
+  const highStock = invSnap.docs
+    .filter((d) => { const data = d.data() as Record<string, unknown>; return !data.isDeleted && toNumber(data.stock) > 10 })
+    .sort((a, b) => toNumber((b.data() as Record<string, unknown>).stock) - toNumber((a.data() as Record<string, unknown>).stock))
+    .slice(0, 10)
+    .map((d) => { const data = d.data() as Record<string, unknown>; return `- ${typeof data.name === 'string' ? data.name : d.id} (${typeof data.categoryName === 'string' ? data.categoryName : 'Unknown'}): ${toNumber(data.stock)} units @ ${fmt(toNumber(data.price))}` })
+
+  return `=== Recommendation Context ===
+Today: ${day}
+Current month: ${monthName}
+
+Top-selling categories (all time):
+${topCats.join('\n') || '(no data)'}
+
+Items with high stock (display candidates):
+${highStock.join('\n') || '(no data)'}
+===========================\n`
+}
+
 async function fetchDataForIntent(intent: Intent): Promise<string> {
   switch (intent) {
     case 'low_stock':           return fetchLowStock()
@@ -169,6 +211,7 @@ async function fetchDataForIntent(intent: Intent): Promise<string> {
     case 'active_reservations': return fetchReservations()
     case 'stock_logs':          return fetchStockLogs()
     case 'dashboard_summary':   return fetchDashboardSummary()
+    case 'recommendation':      return fetchRecommendationData()
     default:                    return ''
   }
 }
@@ -224,7 +267,7 @@ export async function POST(req: Request) {
     }
 
     const genAI = new GoogleGenerativeAI(apiKey)
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-8b', systemInstruction: SYSTEM_PROMPT })
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash', systemInstruction: SYSTEM_PROMPT })
     // Gemini requires history to start with 'user' and alternate user/model.
     // Drop any leading assistant messages (e.g. the greeting) and trim to valid pairs.
     const firstUserIdx = history.findIndex((m) => m.role === 'user')
@@ -240,6 +283,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ reply, usedLiveData, intent }, { status: 200 })
   } catch (error) {
     console.error('POST /api/chat error:', error)
-    return NextResponse.json({ error: `Failed to get AI response: ${error instanceof Error ? error.message : 'Unknown error'}` }, { status: 500 })
+    return NextResponse.json({ error: 'The assistant is not currently available.' }, { status: 500 })
   }
 }

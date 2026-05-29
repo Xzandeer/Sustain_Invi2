@@ -274,4 +274,11 @@ export async function POST(req: NextRequest) {
           createdAt: created.now,
           updatedAt: created.now,
         },
- 
+      },
+      { status: 201 }
+    )
+  } catch (error) {
+    console.error('POST /api/inventory error:', error)
+    return NextResponse.json({ error: 'Server error' }, { status: 500 })
+  }
+}

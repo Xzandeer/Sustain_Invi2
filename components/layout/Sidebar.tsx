@@ -3,202 +3,148 @@
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
-  LayoutDashboard,
-  BarChart3,
-  ShoppingCart,
-  Package,
-  Package2,
-  Trash2,
-  Users,
-  LogOut,
-  Calendar,
-  ClipboardList,
-  ChevronRight,
-  UserCheck,
+  LayoutDashboard, BarChart3, ShoppingCart, Package,
+  Package2, Trash2, Users, LogOut, Calendar,
+  ClipboardList, UserCheck,
 } from 'lucide-react'
 import { useUserRole } from '@/hooks/useUserRole'
 import { signOut } from 'firebase/auth'
 import { auth } from '@/lib/firebase'
+import { useEffect, useState } from 'react'
+import { onAuthStateChanged } from 'firebase/auth'
+import { doc, getDoc } from 'firebase/firestore'
+import { db } from '@/lib/firebase'
 
-const navItems = [
+const mainNav = [
   { name: 'Dashboard',    href: '/dashboard',       icon: LayoutDashboard },
-  { name: 'Analytics',   href: '/analytics',        icon: BarChart3 },
-  { name: 'Inventory',   href: '/inventory',        icon: Package },
-  { name: 'Sales',       href: '/sales',            icon: ShoppingCart },
-  { name: 'Reservations',href: '/reservations',     icon: Calendar },
+  { name: 'Sales',        href: '/sales',            icon: ShoppingCart },
+  { name: 'Inventory',    href: '/inventory',        icon: Package },
+  { name: 'Reservations', href: '/reservations',     icon: Calendar },
   { name: 'Customers',    href: '/customers',        icon: UserCheck },
   { name: 'Containers',   href: '/containers',       icon: Package2 },
 ]
 
-const adminItems = [
-  { name: 'Trash',       href: '/inventory/trash',  icon: Trash2 },
+const managementNav = [
+  { name: 'Analytics',    href: '/analytics',        icon: BarChart3 },
+  { name: 'Users',        href: '/users',            icon: Users },
 ]
 
-const bottomItems = [
-  { name: 'Users',       href: '/users',            icon: Users },
+const systemNav = [
+  { name: 'Stock Logs',   href: '/inventory/logs',   icon: ClipboardList },
+  { name: 'Trash',        href: '/inventory/trash',  icon: Trash2 },
 ]
 
 export default function Sidebar() {
-  const pathname  = usePathname()
-  const router    = useRouter()
+  const pathname = usePathname()
+  const router   = useRouter()
   const { isAdmin, canViewStockLogs } = useUserRole()
+  const [userName, setUserName]   = useState('User')
+  const [userRole, setUserRole]   = useState('Staff')
+  const [initials, setInitials]   = useState('U')
 
-  const stockLogItem = (isAdmin || canViewStockLogs)
-    ? { name: 'Stock Logs', href: '/inventory/logs', icon: ClipboardList }
-    : null
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (!user) return
+      try {
+        const snap = await getDoc(doc(db, 'users', user.uid))
+        if (snap.exists()) {
+          const d = snap.data() as Record<string, unknown>
+          const name = typeof d.name === 'string' && d.name.trim() ? d.name.trim()
+            : typeof d.email === 'string' ? (d.email as string).split('@')[0] : 'User'
+          const role = typeof d.role === 'string' ? d.role : 'Staff'
+          setUserName(name)
+          setUserRole(role.charAt(0).toUpperCase() + role.slice(1))
+          setInitials(name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase())
+        }
+      } catch (_) {}
+    })
+    return () => unsub()
+  }, [])
 
   const handleLogout = async () => {
-    try {
-      await signOut(auth)
-      router.push('/login')
-    } catch (err) {
-      console.error('Logout failed', err)
-    }
+    try { await signOut(auth); router.push('/login') } catch (_) {}
   }
 
-  const isActive = (href: string) => pathname === href
+  const isActive = (href: string) =>
+    href === '/dashboard' ? pathname === href : pathname.startsWith(href)
+
+  const NavItem = ({ item }: { item: { name: string; href: string; icon: React.ElementType } }) => {
+    const Icon = item.icon
+    const active = isActive(item.href)
+    return (
+      <Link href={item.href}
+        className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all ${
+          active
+            ? 'bg-blue-600 text-white'
+            : 'text-gray-400 hover:bg-white/5 hover:text-gray-100'
+        }`}>
+        <Icon className={`h-4 w-4 shrink-0 ${active ? 'text-white' : 'text-gray-500'}`} />
+        <span className="flex-1 truncate">{item.name}</span>
+      </Link>
+    )
+  }
 
   return (
-    <aside className="flex h-screen w-48 flex-col bg-[#1e3a5f] shadow-xl">
+    <aside className="flex h-screen w-56 flex-col bg-[#1a2035]">
 
-      {/* ── Logo / Brand ── */}
-      <div className="flex items-center gap-2.5 border-b border-white/5 px-4 py-4">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-blue-600/30 ring-1 ring-blue-500/30">
-          <Package className="h-4 w-4 text-blue-300" />
+      {/* Logo */}
+      <div className="flex items-center gap-3 border-b border-white/5 px-5 py-4">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-blue-600 shadow-sm">
+          <Package className="h-4 w-4 text-white" />
         </div>
         <div className="min-w-0">
-          <p className="truncate text-[11px] font-bold leading-tight tracking-wide text-white">JMGS JAPON</p>
-          <p className="text-[10px] font-medium tracking-widest text-blue-400/60">SURPLUS</p>
+          <p className="text-[13px] font-bold leading-tight text-white tracking-tight">JMGS JAPON</p>
+          <p className="text-[10px] font-semibold tracking-widest text-blue-400">SURPLUS</p>
         </div>
       </div>
 
-      {/* ── Main Nav ── */}
-      <div className="flex flex-1 flex-col overflow-y-auto px-2.5 py-3">
-        <nav className="space-y-0.5">
-          {navItems.map((item) => {
-            const Icon = item.icon
-            const active = isActive(item.href)
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={
-                  'group flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm font-medium transition-all duration-150 ' +
-                  (active
-                    ? 'bg-white text-blue-700 shadow-md'
-                    : 'text-blue-200/70 hover:bg-white/8 hover:text-white')
-                }
-              >
-                <Icon
-                  className={
-                    'h-4 w-4 shrink-0 transition-transform duration-150 group-hover:scale-110 ' +
-                    (active ? 'text-blue-600' : 'text-blue-300/50 group-hover:text-white')
-                  }
-                />
-                <span className="flex-1">{item.name}</span>
-                {active && <ChevronRight className="h-3 w-3 text-blue-400" />}
-              </Link>
-            )
-          })}
-        </nav>
+      {/* Nav */}
+      <div className="flex flex-1 flex-col gap-5 overflow-y-auto px-3 py-4">
 
-        {/* ── Admin section ── */}
+        {/* MAIN */}
+        <div>
+          <p className="mb-1.5 px-3 text-[10px] font-bold uppercase tracking-widest text-gray-500">Main</p>
+          <nav className="space-y-0.5">
+            {mainNav.map(item => <NavItem key={item.href} item={item} />)}
+          </nav>
+        </div>
+
+        {/* MANAGEMENT */}
+        <div>
+          <p className="mb-1.5 px-3 text-[10px] font-bold uppercase tracking-widest text-gray-500">Management</p>
+          <nav className="space-y-0.5">
+            {managementNav.map(item => (
+              (!isAdmin && item.name === 'Users') ? null : <NavItem key={item.href + item.name} item={item} />
+            ))}
+          </nav>
+        </div>
+
+        {/* SYSTEM */}
         {(isAdmin || canViewStockLogs) && (
-          <div className="mt-4">
-            <p className="mb-1.5 px-3 text-[9px] font-semibold uppercase tracking-widest text-blue-400/40">
-              Admin
-            </p>
+          <div>
+            <p className="mb-1.5 px-3 text-[10px] font-bold uppercase tracking-widest text-gray-500">System</p>
             <nav className="space-y-0.5">
-              {isAdmin && adminItems.map((item) => {
-                const Icon = item.icon
-                const active = isActive(item.href)
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    className={
-                      'group flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm font-medium transition-all duration-150 ' +
-                      (active
-                        ? 'bg-white text-blue-700 shadow-md'
-                        : 'text-blue-200/70 hover:bg-white/8 hover:text-white')
-                    }
-                  >
-                    <Icon
-                      className={
-                        'h-4 w-4 shrink-0 transition-transform duration-150 group-hover:scale-110 ' +
-                        (active ? 'text-blue-600' : 'text-blue-300/50 group-hover:text-white')
-                      }
-                    />
-                    <span className="flex-1">{item.name}</span>
-                    {active && <ChevronRight className="h-3 w-3 text-blue-400" />}
-                  </Link>
-                )
-              })}
-              {stockLogItem && (() => {
-                const Icon = stockLogItem.icon
-                const active = isActive(stockLogItem.href)
-                return (
-                  <Link
-                    href={stockLogItem.href}
-                    className={
-                      'group flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm font-medium transition-all duration-150 ' +
-                      (active
-                        ? 'bg-white text-blue-700 shadow-md'
-                        : 'text-blue-200/70 hover:bg-white/8 hover:text-white')
-                    }
-                  >
-                    <Icon
-                      className={
-                        'h-4 w-4 shrink-0 transition-transform duration-150 group-hover:scale-110 ' +
-                        (active ? 'text-blue-600' : 'text-blue-300/50 group-hover:text-white')
-                      }
-                    />
-                    <span className="flex-1">{stockLogItem.name}</span>
-                    {active && <ChevronRight className="h-3 w-3 text-blue-400" />}
-                  </Link>
-                )
-              })()}
+              {systemNav.map(item => <NavItem key={item.href} item={item} />)}
             </nav>
           </div>
         )}
       </div>
 
-      {/* ── Bottom: Users + Logout ── */}
-      <div className="border-t border-white/5 px-2.5 py-3 space-y-0.5">
-        {isAdmin && bottomItems.map((item) => {
-          const Icon = item.icon
-          const active = isActive(item.href)
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={
-                'group flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm font-medium transition-all duration-150 ' +
-                (active
-                  ? 'bg-white text-blue-700 shadow-md'
-                  : 'text-blue-200/70 hover:bg-white/8 hover:text-white')
-              }
-            >
-              <Icon
-                className={
-                  'h-4 w-4 shrink-0 transition-transform duration-150 group-hover:scale-110 ' +
-                  (active ? 'text-blue-600' : 'text-blue-300/50 group-hover:text-white')
-                }
-              />
-              <span className="flex-1">{item.name}</span>
-              {active && <ChevronRight className="h-3 w-3 text-blue-400" />}
-            </Link>
-          )
-        })}
-
-        <button
-          type="button"
-          onClick={handleLogout}
-          className="group flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-sm font-medium text-blue-100 transition-all duration-150 hover:bg-red-500/20 hover:text-red-200"
-        >
-          <LogOut className="h-4 w-4 shrink-0 transition-transform duration-150 group-hover:scale-110 text-blue-300/50 group-hover:text-red-300" />
-          <span className="flex-1">Logout</span>
-        </button>
+      {/* User profile */}
+      <div className="border-t border-white/5 p-3">
+        <div className="flex items-center gap-3 rounded-xl px-3 py-2.5 hover:bg-white/5 transition-colors cursor-default">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 text-xs font-bold text-white">
+            {initials}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold text-white">{userName}</p>
+            <p className="truncate text-[11px] text-gray-400">{userRole}</p>
+          </div>
+          <button onClick={handleLogout} title="Logout"
+            className="shrink-0 rounded-lg p-1 text-gray-500 hover:bg-white/10 hover:text-white transition-colors">
+            <LogOut className="h-4 w-4" />
+          </button>
+        </div>
       </div>
     </aside>
   )

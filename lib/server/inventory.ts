@@ -333,4 +333,11 @@ export const createInventoryVariant = async (input: {
   // Step 2: Update document to add its own ID (for cross-references)
   await runTransaction(db, async (transaction) => {
     transaction.update(docRef, { id: docRef.id })
- 
+  })
+
+  return {
+    id: docRef.id,
+    stockStatus,
+    now,
+  }
+}

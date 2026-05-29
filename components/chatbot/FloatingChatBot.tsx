@@ -24,11 +24,11 @@ const GREETING: Message = {
 
 const QUICK_QUESTIONS = [
   'Give me a store overview',
+  'What should we display this month?',
   'What items need restocking?',
   "What are today's sales?",
   'Which categories sell the most?',
   'Show active reservations',
-  'Show recent stock logs',
 ]
 
 const INTENT_LABELS: Record<string, string> = {
@@ -40,6 +40,7 @@ const INTENT_LABELS: Record<string, string> = {
   active_reservations: 'Reservations',
   stock_logs: 'Stock Logs',
   dashboard_summary: 'Dashboard',
+  recommendation: 'Recommendation',
 }
 
 // ── Markdown renderer ──────────────────────────────────────────────────────────
@@ -238,11 +239,11 @@ export default function FloatingChatBot() {
         body: JSON.stringify({ message: trimmed, history }),
       })
       const data = (await res.json()) as { reply?: string; error?: string; usedLiveData?: boolean; intent?: string }
-      if (!res.ok || data.error) throw new Error(data.error ?? 'Failed to get response.')
+      if (!res.ok || data.error) throw new Error('unavailable')
       setMessages((prev) => [...prev, { id: uid(), role: 'assistant', content: data.reply ?? '(No response)', ts: new Date(), usedLiveData: data.usedLiveData, intent: data.intent }])
       if (!open) setUnread((n) => n + 1)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Something went wrong.')
+    } catch {
+      setError('The assistant is not currently available. Please try again later.')
     } finally {
       setLoading(false)
       setTimeout(() => inputRef.current?.focus(), 50)

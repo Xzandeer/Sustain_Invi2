@@ -10,7 +10,7 @@ import {
   serverTimestamp,
   Timestamp,
 } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { db, auth } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import {
   Package2,
@@ -26,6 +26,8 @@ import {
   Clock,
   Pencil,
   Search,
+  BoxesIcon,
+  ShoppingBag,
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -45,12 +47,17 @@ interface ContainerDoc {
 interface InventoryItem {
   id: string
   name: string
+  categoryId?: string
   categoryName?: string
   price: number
   quantity: number
-  originalQuantity?: number
   condition: string
   containerId?: string
+}
+
+interface Category {
+  id: string
+  name: string
 }
 
 interface SaleItem {
@@ -63,32 +70,25 @@ interface SaleItem {
 interface SaleDoc {
   id: string
   items?: SaleItem[]
-  totalAmount?: number
   status?: string
-  createdAt?: unknown
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 const toNumber = (v: unknown, fallback = 0): number => {
   if (typeof v === 'number' && Number.isFinite(v)) return v
-  if (typeof v === 'string') {
-    const n = Number(v)
-    if (Number.isFinite(n)) return n
-  }
+  if (typeof v === 'string') { const n = Number(v); if (Number.isFinite(n)) return n }
   return fallback
 }
-
-const formatPeso = (n: number) =>
-  '₱' + n.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const fmt = (n: number) => '₱' + n.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 const statusConfig = {
-  Active: { color: 'bg-blue-100 text-blue-700', icon: Clock },
+  Active:           { color: 'bg-blue-100 text-blue-700',   icon: Clock },
   'Partially Sold': { color: 'bg-amber-100 text-amber-700', icon: Package2 },
-  'Sold Out': { color: 'bg-green-100 text-green-700', icon: CheckCircle2 },
+  'Sold Out':       { color: 'bg-green-100 text-green-700', icon: CheckCircle2 },
 } as const
 
-// ── Modal ──────────────────────────────────────────────────────────────────────
+// ── Container Modal (add / edit container) ─────────────────────────────────────
 
 interface ContainerModalProps {
   isOpen: boolean
@@ -116,12 +116,9 @@ function ContainerModal({ isOpen, onClose, onSubmit, initialValues, submitting }
       setNotes(initialValues.notes ?? '')
       setStatus(initialValues.status ?? 'Active')
     } else {
-      setName('')
-      setSupplier('')
-      setPurchaseCost('')
+      setName(''); setSupplier(''); setPurchaseCost('')
       setPurchaseDate(new Date().toISOString().slice(0, 10))
-      setNotes('')
-      setStatus('Active')
+      setNotes(''); setStatus('Active')
     }
   }, [isOpen, initialValues])
 
@@ -131,87 +128,45 @@ function ContainerModal({ isOpen, onClose, onSubmit, initialValues, submitting }
     e.preventDefault()
     const cost = Number(purchaseCost)
     if (!name.trim() || !supplier.trim() || !purchaseDate || !Number.isFinite(cost) || cost <= 0) {
-      toast.error('Please fill in all required fields.')
-      return
+      toast.error('Please fill in all required fields.'); return
     }
-    await onSubmit({
-      name: name.trim(),
-      supplier: supplier.trim(),
-      purchaseCost: cost,
-      purchaseDate,
-      notes: notes.trim(),
-      status,
-    })
+    await onSubmit({ name: name.trim(), supplier: supplier.trim(), purchaseCost: cost, purchaseDate, notes: notes.trim(), status })
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl">
         <div className="flex items-center justify-between border-b px-6 py-4">
-          <h2 className="text-lg font-semibold text-gray-800">
-            {initialValues?.id ? 'Edit Container' : 'Add Container'}
-          </h2>
-          <button onClick={onClose} className="rounded-lg p-1 hover:bg-gray-100">
-            <X className="h-5 w-5 text-gray-500" />
-          </button>
+          <h2 className="text-lg font-semibold text-gray-800">{initialValues?.id ? 'Edit Container' : 'Add Container'}</h2>
+          <button onClick={onClose} className="rounded-lg p-1 hover:bg-gray-100"><X className="h-5 w-5 text-gray-500" /></button>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4 px-6 py-5">
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
-              Container Name / Number <span className="text-red-500">*</span>
-            </label>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Container #001 – Jan 2025"
-              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
-            />
+            <label className="mb-1 block text-sm font-medium text-gray-700">Container Name / Number <span className="text-red-500">*</span></label>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Container #001 – Jan 2025"
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100" />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
-              Supplier / Source <span className="text-red-500">*</span>
-            </label>
-            <input
-              value={supplier}
-              onChange={(e) => setSupplier(e.target.value)}
-              placeholder="e.g. Japan Surplus Dealer Co."
-              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
-            />
+            <label className="mb-1 block text-sm font-medium text-gray-700">Supplier / Source <span className="text-red-500">*</span></label>
+            <input value={supplier} onChange={e => setSupplier(e.target.value)} placeholder="e.g. Japan Surplus Dealer Co."
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100" />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1 block text-sm font-medium text-gray-700">
-                Purchase Cost (₱) <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={purchaseCost}
-                onChange={(e) => setPurchaseCost(e.target.value)}
-                placeholder="0.00"
-                className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
-              />
+              <label className="mb-1 block text-sm font-medium text-gray-700">Purchase Cost (₱) <span className="text-red-500">*</span></label>
+              <input type="number" min="0" step="0.01" value={purchaseCost} onChange={e => setPurchaseCost(e.target.value)} placeholder="0.00"
+                className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100" />
             </div>
             <div>
-              <label className="mb-1 block text-sm font-medium text-gray-700">
-                Purchase Date <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="date"
-                value={purchaseDate}
-                onChange={(e) => setPurchaseDate(e.target.value)}
-                className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
-              />
+              <label className="mb-1 block text-sm font-medium text-gray-700">Purchase Date <span className="text-red-500">*</span></label>
+              <input type="date" value={purchaseDate} onChange={e => setPurchaseDate(e.target.value)}
+                className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100" />
             </div>
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-700">Status</label>
-            <select
-              value={status}
-              onChange={(e) => setStatus(e.target.value as ContainerDoc['status'])}
-              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
-            >
+            <select value={status} onChange={e => setStatus(e.target.value as ContainerDoc['status'])}
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100">
               <option value="Active">Active</option>
               <option value="Partially Sold">Partially Sold</option>
               <option value="Sold Out">Sold Out</option>
@@ -219,28 +174,122 @@ function ContainerModal({ isOpen, onClose, onSubmit, initialValues, submitting }
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-700">Notes</label>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              rows={2}
-              placeholder="Optional notes about this container…"
-              className="w-full resize-none rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
-            />
+            <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Optional notes…"
+              className="w-full resize-none rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100" />
           </div>
           <div className="flex justify-end gap-2 pt-1">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
-            >
+            <button type="button" onClick={onClose} className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
+            <button type="submit" disabled={submitting} className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60">
               {submitting ? 'Saving…' : initialValues?.id ? 'Save Changes' : 'Add Container'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+// ── Add Item to Container Modal ────────────────────────────────────────────────
+
+interface AddItemModalProps {
+  isOpen: boolean
+  containerName: string
+  categories: Category[]
+  onClose: () => void
+  onSubmit: (values: {
+    name: string; categoryId: string; categoryName: string
+    price: number; quantity: number; minStock: number
+    condition: 'New' | 'Refurbished'
+  }) => Promise<void>
+  submitting?: boolean
+}
+
+function AddItemModal({ isOpen, containerName, categories, onClose, onSubmit, submitting }: AddItemModalProps) {
+  const [name, setName] = useState('')
+  const [categoryId, setCategoryId] = useState('')
+  const [price, setPrice] = useState('')
+  const [quantity, setQuantity] = useState('')
+  const [minStock, setMinStock] = useState('1')
+  const [condition, setCondition] = useState<'New' | 'Refurbished'>('New')
+
+  useEffect(() => {
+    if (!isOpen) return
+    setName(''); setPrice(''); setQuantity(''); setMinStock('1'); setCondition('New')
+    setCategoryId(categories[0]?.id ?? '')
+  }, [isOpen, categories])
+
+  if (!isOpen) return null
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const parsedPrice = Number(price)
+    const parsedQty = Math.floor(Number(quantity))
+    const parsedMin = Math.floor(Number(minStock))
+    const cat = categories.find(c => c.id === categoryId)
+    if (!name.trim() || !cat || !Number.isFinite(parsedPrice) || parsedPrice <= 0 || parsedQty < 1 || parsedMin < 0) {
+      toast.error('Please fill in all required fields correctly.'); return
+    }
+    await onSubmit({ name: name.trim(), categoryId: cat.id, categoryName: cat.name, price: parsedPrice, quantity: parsedQty, minStock: parsedMin, condition })
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b px-6 py-4">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-800">Add Item to Container</h2>
+            <p className="text-xs text-gray-500 mt-0.5">{containerName}</p>
+          </div>
+          <button onClick={onClose} className="rounded-lg p-1 hover:bg-gray-100"><X className="h-5 w-5 text-gray-500" /></button>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-4 px-6 py-5">
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Item Name <span className="text-red-500">*</span></label>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Rice Cooker"
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Category <span className="text-red-500">*</span></label>
+              <select value={categoryId} onChange={e => setCategoryId(e.target.value)}
+                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-blue-400 focus:outline-none">
+                <option value="">Select…</option>
+                {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Condition <span className="text-red-500">*</span></label>
+              <select value={condition} onChange={e => setCondition(e.target.value as 'New' | 'Refurbished')}
+                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-blue-400 focus:outline-none">
+                <option value="New">New</option>
+                <option value="Refurbished">Refurbished</option>
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Price (₱) <span className="text-red-500">*</span></label>
+              <input type="number" min="0.01" step="0.01" value={price} onChange={e => setPrice(e.target.value)} placeholder="0.00"
+                className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100" />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Qty <span className="text-red-500">*</span></label>
+              <input type="number" min="1" value={quantity} onChange={e => setQuantity(e.target.value)} placeholder="0"
+                className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100" />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Min Stock</label>
+              <input type="number" min="0" value={minStock} onChange={e => setMinStock(e.target.value)} placeholder="1"
+                className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100" />
+            </div>
+          </div>
+          <p className="rounded-xl bg-blue-50 px-3 py-2 text-xs text-blue-700">
+            This item will be added to Inventory and linked to this container automatically.
+          </p>
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={onClose} className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
+            <button type="submit" disabled={submitting} className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60">
+              {submitting ? 'Adding…' : 'Add to Inventory'}
             </button>
           </div>
         </form>
@@ -254,56 +303,47 @@ function ContainerModal({ isOpen, onClose, onSubmit, initialValues, submitting }
 interface ContainerCardProps {
   container: ContainerDoc
   inventory: InventoryItem[]
-  sales: SaleDoc[]
+  soldQtyMap: Record<string, number>
   onEdit: () => void
+  onAddItem: () => void
 }
 
-function ContainerCard({ container, inventory, sales, onEdit }: ContainerCardProps) {
+function ContainerCard({ container, inventory, soldQtyMap, onEdit, onAddItem }: ContainerCardProps) {
   const [expanded, setExpanded] = useState(false)
 
-  // Items tagged to this container
   const linkedItems = useMemo(
-    () => inventory.filter((item) => item.containerId === container.id),
+    () => inventory.filter(item => item.containerId === container.id),
     [inventory, container.id]
   )
 
-  // Revenue: sum quantities sold from completed sales × price
-  // Build a map: itemId → total qty sold
-  const soldQtyMap = useMemo(() => {
-    const map: Record<string, number> = {}
-    for (const sale of sales) {
-      if (sale.status === 'voided') continue
-      for (const si of sale.items ?? []) {
-        if (!si.itemId) continue
-        map[si.itemId] = (map[si.itemId] ?? 0) + toNumber(si.quantity)
-      }
-    }
-    return map
-  }, [sales])
-
   const stats = useMemo(() => {
     let revenue = 0
-    let totalItems = 0
-    let soldItems = 0
+    let totalOriginalUnits = 0
+    let soldUnits = 0
+    let availableUnits = 0
 
     for (const item of linkedItems) {
       const soldQty = soldQtyMap[item.id] ?? 0
-      const origQty = toNumber(item.originalQuantity ?? item.quantity) + soldQty // approximate
-      totalItems += origQty
-      soldItems += soldQty
+      const currentStock = toNumber(item.quantity)
+      // original = current stock + qty sold (from actual sales)
+      const originalQty = currentStock + soldQty
+      totalOriginalUnits += originalQty
+      soldUnits += soldQty
+      availableUnits += currentStock
       revenue += soldQty * toNumber(item.price)
     }
 
     const profit = revenue - container.purchaseCost
     const roi = container.purchaseCost > 0 ? (profit / container.purchaseCost) * 100 : 0
+    const sellThrough = totalOriginalUnits > 0 ? (soldUnits / totalOriginalUnits) * 100 : 0
 
-    return { revenue, profit, roi, totalItems, soldItems, linkedCount: linkedItems.length }
+    return { revenue, profit, roi, totalOriginalUnits, soldUnits, availableUnits, sellThrough, linkedCount: linkedItems.length }
   }, [linkedItems, soldQtyMap, container.purchaseCost])
 
   const StatusIcon = statusConfig[container.status]?.icon ?? Clock
 
   return (
-    <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
+    <div className="rounded-2xl border border-gray-100 bg-white shadow-sm overflow-hidden">
       {/* ── Header row ── */}
       <div className="flex items-center justify-between gap-4 p-5">
         <div className="flex min-w-0 items-center gap-3">
@@ -317,103 +357,89 @@ function ContainerCard({ container, inventory, sales, onEdit }: ContainerCardPro
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
-          {/* Status badge */}
-          <span
-            className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${statusConfig[container.status]?.color ?? 'bg-gray-100 text-gray-600'}`}
-          >
+          <span className={`hidden sm:flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${statusConfig[container.status]?.color ?? 'bg-gray-100 text-gray-600'}`}>
             <StatusIcon className="h-3 w-3" />
             {container.status}
           </span>
 
-          {/* Quick stats */}
+          {/* Quick profit badge */}
           <div className="hidden items-center gap-4 rounded-xl bg-gray-50 px-4 py-2 sm:flex">
             <div className="text-center">
               <p className="text-[10px] uppercase tracking-wide text-gray-400">Cost</p>
-              <p className="text-sm font-semibold text-gray-700">{formatPeso(container.purchaseCost)}</p>
+              <p className="text-sm font-semibold text-gray-700">{fmt(container.purchaseCost)}</p>
             </div>
             <div className="h-6 w-px bg-gray-200" />
             <div className="text-center">
               <p className="text-[10px] uppercase tracking-wide text-gray-400">Revenue</p>
-              <p className="text-sm font-semibold text-gray-700">{formatPeso(stats.revenue)}</p>
+              <p className="text-sm font-semibold text-gray-700">{fmt(stats.revenue)}</p>
             </div>
             <div className="h-6 w-px bg-gray-200" />
             <div className="text-center">
               <p className="text-[10px] uppercase tracking-wide text-gray-400">Profit</p>
-              <p
-                className={`text-sm font-bold ${stats.profit > 0 ? 'text-green-600' : stats.profit < 0 ? 'text-red-500' : 'text-gray-500'}`}
-              >
-                {stats.profit >= 0 ? '+' : ''}{formatPeso(stats.profit)}
+              <p className={`text-sm font-bold ${stats.profit > 0 ? 'text-green-600' : stats.profit < 0 ? 'text-red-500' : 'text-gray-500'}`}>
+                {stats.profit >= 0 ? '+' : ''}{fmt(stats.profit)}
               </p>
             </div>
           </div>
 
-          <button
-            onClick={onEdit}
-            className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-            title="Edit container"
-          >
+          <button onClick={onEdit} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600" title="Edit container">
             <Pencil className="h-4 w-4" />
           </button>
-          <button
-            onClick={() => setExpanded((v) => !v)}
-            className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-            title={expanded ? 'Collapse' : 'Expand'}
-          >
+          <button onClick={() => setExpanded(v => !v)} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600">
             {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </button>
         </div>
       </div>
 
+      {/* Sell-through progress bar */}
+      {stats.totalOriginalUnits > 0 && (
+        <div className="px-5 pb-3">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] text-gray-400">Sell-through progress</span>
+            <span className="text-[11px] font-semibold text-gray-600">{stats.sellThrough.toFixed(0)}% sold</span>
+          </div>
+          <div className="h-1.5 w-full rounded-full bg-gray-100">
+            <div
+              className={`h-1.5 rounded-full transition-all ${stats.sellThrough >= 100 ? 'bg-green-500' : stats.sellThrough >= 50 ? 'bg-blue-500' : 'bg-amber-400'}`}
+              style={{ width: `${Math.min(100, stats.sellThrough)}%` }}
+            />
+          </div>
+          <div className="mt-1 flex gap-3 text-[11px] text-gray-400">
+            <span><span className="font-medium text-blue-600">{stats.soldUnits}</span> sold</span>
+            <span className="text-gray-300">·</span>
+            <span><span className={`font-medium ${stats.availableUnits > 0 ? 'text-gray-700' : 'text-red-400'}`}>{stats.availableUnits}</span> still available</span>
+          </div>
+        </div>
+      )}
+
       {/* ── Expanded detail ── */}
       {expanded && (
         <div className="border-t border-gray-100 px-5 pb-5 pt-4">
-          {/* Mobile stats */}
+          {/* Mobile quick stats */}
           <div className="mb-4 grid grid-cols-3 gap-3 sm:hidden">
-            <div className="rounded-xl bg-gray-50 p-3 text-center">
-              <p className="text-[10px] uppercase tracking-wide text-gray-400">Cost</p>
-              <p className="text-sm font-semibold text-gray-700">{formatPeso(container.purchaseCost)}</p>
-            </div>
-            <div className="rounded-xl bg-gray-50 p-3 text-center">
-              <p className="text-[10px] uppercase tracking-wide text-gray-400">Revenue</p>
-              <p className="text-sm font-semibold text-gray-700">{formatPeso(stats.revenue)}</p>
-            </div>
-            <div className="rounded-xl bg-gray-50 p-3 text-center">
-              <p className="text-[10px] uppercase tracking-wide text-gray-400">Profit</p>
-              <p className={`text-sm font-bold ${stats.profit > 0 ? 'text-green-600' : stats.profit < 0 ? 'text-red-500' : 'text-gray-500'}`}>
-                {stats.profit >= 0 ? '+' : ''}{formatPeso(stats.profit)}
-              </p>
-            </div>
+            {[
+              { label: 'Cost', value: fmt(container.purchaseCost), color: 'text-gray-700' },
+              { label: 'Revenue', value: fmt(stats.revenue), color: 'text-gray-700' },
+              { label: 'Profit', value: (stats.profit >= 0 ? '+' : '') + fmt(stats.profit), color: stats.profit > 0 ? 'text-green-600' : stats.profit < 0 ? 'text-red-500' : 'text-gray-500' },
+            ].map(s => (
+              <div key={s.label} className="rounded-xl bg-gray-50 p-3 text-center">
+                <p className="text-[10px] uppercase tracking-wide text-gray-400">{s.label}</p>
+                <p className={`text-sm font-bold ${s.color}`}>{s.value}</p>
+              </div>
+            ))}
           </div>
 
           {/* Profit summary row */}
           <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl bg-gradient-to-r from-blue-50 to-indigo-50 p-4">
             <div className="flex items-center gap-2">
-              {stats.profit > 0 ? (
-                <TrendingUp className="h-5 w-5 text-green-500" />
-              ) : stats.profit < 0 ? (
-                <TrendingDown className="h-5 w-5 text-red-400" />
-              ) : (
-                <Minus className="h-5 w-5 text-gray-400" />
-              )}
+              {stats.profit > 0 ? <TrendingUp className="h-5 w-5 text-green-500" /> : stats.profit < 0 ? <TrendingDown className="h-5 w-5 text-red-400" /> : <Minus className="h-5 w-5 text-gray-400" />}
               <span className="text-sm text-gray-600">
-                ROI:{' '}
-                <span className={`font-bold ${stats.roi > 0 ? 'text-green-600' : stats.roi < 0 ? 'text-red-500' : 'text-gray-500'}`}>
-                  {stats.roi >= 0 ? '+' : ''}{stats.roi.toFixed(1)}%
-                </span>
+                ROI: <span className={`font-bold ${stats.roi > 0 ? 'text-green-600' : stats.roi < 0 ? 'text-red-500' : 'text-gray-500'}`}>{stats.roi >= 0 ? '+' : ''}{stats.roi.toFixed(1)}%</span>
               </span>
             </div>
             <span className="text-gray-300">|</span>
             <span className="text-sm text-gray-600">
-              Items sold:{' '}
-              <span className="font-semibold text-gray-800">{stats.soldItems}</span>
-              {stats.totalItems > 0 && (
-                <span className="text-gray-400"> / {stats.totalItems}</span>
-              )}
-            </span>
-            <span className="text-gray-300">|</span>
-            <span className="text-sm text-gray-600">
-              Inventory lines:{' '}
-              <span className="font-semibold text-gray-800">{stats.linkedCount}</span>
+              <span className="font-semibold text-gray-800">{stats.linkedCount}</span> item line{stats.linkedCount !== 1 ? 's' : ''}
             </span>
             {container.notes && (
               <>
@@ -423,59 +449,96 @@ function ContainerCard({ container, inventory, sales, onEdit }: ContainerCardPro
             )}
           </div>
 
-          {/* Inventory items table */}
+          {/* Add item button */}
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-700">Items in this Container</h3>
+            <button
+              onClick={onAddItem}
+              className="flex items-center gap-1.5 rounded-xl bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add Item
+            </button>
+          </div>
+
           {linkedItems.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-gray-200 py-8 text-center">
-              <AlertCircle className="h-8 w-8 text-gray-300" />
-              <p className="text-sm text-gray-400">No inventory items linked to this container yet.</p>
-              <p className="text-xs text-gray-400">
-                When adding or editing an item in Inventory, select this container.
-              </p>
+            <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-gray-200 py-10 text-center">
+              <BoxesIcon className="h-8 w-8 text-gray-200" />
+              <p className="text-sm text-gray-400 font-medium">No items added to this container yet.</p>
+              <p className="text-xs text-gray-400 max-w-xs">Click <span className="font-semibold">Add Item</span> above to log items from this container into Inventory.</p>
+              <button
+                onClick={onAddItem}
+                className="mt-1 flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              >
+                <Plus className="h-4 w-4" />
+                Add First Item
+              </button>
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto rounded-xl border border-gray-100">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-gray-100 text-left text-xs font-medium uppercase tracking-wide text-gray-400">
-                    <th className="pb-2 pr-4">Item</th>
-                    <th className="pb-2 pr-4">Condition</th>
-                    <th className="pb-2 pr-4 text-right">Price</th>
-                    <th className="pb-2 pr-4 text-right">In Stock</th>
-                    <th className="pb-2 pr-4 text-right">Qty Sold</th>
-                    <th className="pb-2 text-right">Revenue</th>
+                  <tr className="bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-400">
+                    <th className="px-4 py-2.5">Item</th>
+                    <th className="px-4 py-2.5">Condition</th>
+                    <th className="px-4 py-2.5 text-right">Price</th>
+                    <th className="px-4 py-2.5 text-center">Sold</th>
+                    <th className="px-4 py-2.5 text-center">Available</th>
+                    <th className="px-4 py-2.5 text-right">Revenue</th>
+                    <th className="px-4 py-2.5 text-center">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
-                  {linkedItems.map((item) => {
+                  {linkedItems.map(item => {
                     const soldQty = soldQtyMap[item.id] ?? 0
+                    const available = toNumber(item.quantity)
                     const itemRevenue = soldQty * item.price
+                    const isClear = available === 0
                     return (
-                      <tr key={item.id} className="hover:bg-gray-50/50">
-                        <td className="py-2 pr-4 font-medium text-gray-700">{item.name}</td>
-                        <td className="py-2 pr-4">
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                              item.condition === 'New'
-                                ? 'bg-green-50 text-green-700'
-                                : 'bg-amber-50 text-amber-700'
-                            }`}
-                          >
+                      <tr key={item.id} className={`hover:bg-gray-50/50 ${isClear ? 'opacity-60' : ''}`}>
+                        <td className="px-4 py-3">
+                          <p className="font-medium text-gray-700">{item.name}</p>
+                          <p className="text-xs text-gray-400">{item.categoryName ?? '—'}</p>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${item.condition === 'New' ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
                             {item.condition}
                           </span>
                         </td>
-                        <td className="py-2 pr-4 text-right text-gray-600">{formatPeso(item.price)}</td>
-                        <td className="py-2 pr-4 text-right text-gray-600">{item.quantity}</td>
-                        <td className="py-2 pr-4 text-right font-medium text-blue-600">{soldQty}</td>
-                        <td className="py-2 text-right font-semibold text-gray-800">{formatPeso(itemRevenue)}</td>
+                        <td className="px-4 py-3 text-right text-gray-600">{fmt(item.price)}</td>
+                        <td className="px-4 py-3 text-center">
+                          <span className="font-semibold text-blue-600">{soldQty}</span>
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <span className={`font-semibold ${available > 0 ? 'text-gray-800' : 'text-red-400'}`}>{available}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right font-semibold text-gray-800">{fmt(itemRevenue)}</td>
+                        <td className="px-4 py-3 text-center">
+                          {isClear ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700">
+                              <CheckCircle2 className="h-3 w-3" /> Cleared
+                            </span>
+                          ) : available <= 2 ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">
+                              <AlertCircle className="h-3 w-3" /> Low
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-600">
+                              <ShoppingBag className="h-3 w-3" /> Available
+                            </span>
+                          )}
+                        </td>
                       </tr>
                     )
                   })}
                 </tbody>
                 <tfoot>
-                  <tr className="border-t-2 border-gray-200">
-                    <td colSpan={4} className="pt-2 text-xs font-semibold uppercase tracking-wide text-gray-400">Total</td>
-                    <td className="pt-2 text-right font-bold text-blue-600">{linkedItems.reduce((a, item) => a + (soldQtyMap[item.id] ?? 0), 0)}</td>
-                    <td className="pt-2 text-right font-bold text-gray-800">{formatPeso(stats.revenue)}</td>
+                  <tr className="border-t-2 border-gray-200 bg-gray-50/50">
+                    <td colSpan={3} className="px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-400">Total</td>
+                    <td className="px-4 py-2.5 text-center font-bold text-blue-600">{stats.soldUnits}</td>
+                    <td className="px-4 py-2.5 text-center font-bold text-gray-800">{stats.availableUnits}</td>
+                    <td className="px-4 py-2.5 text-right font-bold text-gray-800">{fmt(stats.revenue)}</td>
+                    <td />
                   </tr>
                 </tfoot>
               </table>
@@ -490,31 +553,32 @@ function ContainerCard({ container, inventory, sales, onEdit }: ContainerCardPro
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 export default function ContainersPage() {
-  return (
-    <ProtectedRoute>
-      <ContainersContent />
-    </ProtectedRoute>
-  )
+  return <ProtectedRoute><ContainersContent /></ProtectedRoute>
 }
 
 function ContainersContent() {
-  const [containers, setContainers] = useState<ContainerDoc[]>([])
-  const [inventory, setInventory] = useState<InventoryItem[]>([])
-  const [sales, setSales] = useState<SaleDoc[]>([])
-  const [loading, setLoading] = useState(true)
+  const [containers, setContainers]   = useState<ContainerDoc[]>([])
+  const [inventory, setInventory]     = useState<InventoryItem[]>([])
+  const [sales, setSales]             = useState<SaleDoc[]>([])
+  const [categories, setCategories]   = useState<Category[]>([])
+  const [loading, setLoading]         = useState(true)
 
-  const [search, setSearch] = useState('')
+  const [search, setSearch]           = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
 
-  const [modalOpen, setModalOpen] = useState(false)
+  const [containerModal, setContainerModal] = useState(false)
   const [editingContainer, setEditingContainer] = useState<ContainerDoc | null>(null)
-  const [saving, setSaving] = useState(false)
+  const [savingContainer, setSavingContainer] = useState(false)
+
+  const [addItemModal, setAddItemModal]         = useState(false)
+  const [addItemTarget, setAddItemTarget]       = useState<ContainerDoc | null>(null)
+  const [savingItem, setSavingItem]             = useState(false)
 
   // Firestore listeners
   useEffect(() => {
     const unsubs = [
-      onSnapshot(collection(db, 'containers'), (snap) => {
-        const docs: ContainerDoc[] = snap.docs.map((d) => {
+      onSnapshot(collection(db, 'containers'), snap => {
+        const docs: ContainerDoc[] = snap.docs.map(d => {
           const data = d.data() as Record<string, unknown>
           return {
             id: d.id,
@@ -535,82 +599,83 @@ function ContainersContent() {
         setLoading(false)
       }),
 
-      onSnapshot(collection(db, 'inventory'), (snap) => {
-        const docs: InventoryItem[] = snap.docs.map((d) => {
+      onSnapshot(collection(db, 'inventory'), snap => {
+        setInventory(snap.docs.map(d => {
           const data = d.data() as Record<string, unknown>
           return {
             id: d.id,
             name: String(data.name ?? ''),
+            categoryId: String(data.categoryId ?? ''),
             categoryName: String(data.categoryName ?? data.category ?? ''),
             price: toNumber(data.price),
-            quantity: toNumber(data.quantity),
-            originalQuantity: data.originalQuantity != null ? toNumber(data.originalQuantity) : undefined,
+            quantity: toNumber(data.stock ?? data.quantity),
             condition: String(data.condition ?? 'New'),
             containerId: data.containerId ? String(data.containerId) : undefined,
           }
-        })
-        setInventory(docs)
+        }))
       }),
 
-      onSnapshot(collection(db, 'sales'), (snap) => {
-        const docs: SaleDoc[] = snap.docs.map((d) => {
+      onSnapshot(collection(db, 'sales'), snap => {
+        setSales(snap.docs.map(d => {
           const data = d.data() as Record<string, unknown>
           return {
             id: d.id,
             items: Array.isArray(data.items) ? (data.items as SaleItem[]) : [],
-            totalAmount: toNumber(data.totalAmount),
             status: String(data.status ?? 'completed'),
-            createdAt: data.createdAt,
           }
-        })
-        setSales(docs)
+        }))
+      }),
+
+      onSnapshot(collection(db, 'categories'), snap => {
+        const list: Category[] = snap.docs
+          .map(d => { const data = d.data() as Record<string, unknown>; return { id: d.id, name: String(data.name ?? '').trim() } })
+          .filter(c => c.name)
+        list.sort((a, b) => a.name.localeCompare(b.name))
+        setCategories(list)
       }),
     ]
-
-    return () => unsubs.forEach((u) => u())
+    return () => unsubs.forEach(u => u())
   }, [])
 
-  const filtered = useMemo(() => {
-    let list = containers
-    if (statusFilter !== 'all') list = list.filter((c) => c.status === statusFilter)
-    if (search.trim()) {
-      const q = search.toLowerCase()
-      list = list.filter(
-        (c) =>
-          c.name.toLowerCase().includes(q) ||
-          c.supplier.toLowerCase().includes(q) ||
-          c.notes.toLowerCase().includes(q)
-      )
-    }
-    return list
-  }, [containers, statusFilter, search])
-
-  // Summary stats
-  const summary = useMemo(() => {
-    const soldQtyMap: Record<string, number> = {}
+  // Precompute sold qty map across all sales
+  const soldQtyMap = useMemo(() => {
+    const map: Record<string, number> = {}
     for (const sale of sales) {
       if (sale.status === 'voided') continue
       for (const si of sale.items ?? []) {
         if (!si.itemId) continue
-        soldQtyMap[si.itemId] = (soldQtyMap[si.itemId] ?? 0) + toNumber(si.quantity)
+        map[si.itemId] = (map[si.itemId] ?? 0) + toNumber(si.quantity)
       }
     }
+    return map
+  }, [sales])
 
-    let totalCost = 0
-    let totalRevenue = 0
+  const filtered = useMemo(() => {
+    let list = containers
+    if (statusFilter !== 'all') list = list.filter(c => c.status === statusFilter)
+    if (search.trim()) {
+      const q = search.toLowerCase()
+      list = list.filter(c => c.name.toLowerCase().includes(q) || c.supplier.toLowerCase().includes(q))
+    }
+    return list
+  }, [containers, statusFilter, search])
+
+  // Summary across all containers
+  const summary = useMemo(() => {
+    let totalCost = 0, totalRevenue = 0
     for (const c of containers) {
       totalCost += c.purchaseCost
-      const linked = inventory.filter((item) => item.containerId === c.id)
+      const linked = inventory.filter(item => item.containerId === c.id)
       for (const item of linked) {
-        const soldQty = soldQtyMap[item.id] ?? 0
-        totalRevenue += soldQty * item.price
+        totalRevenue += (soldQtyMap[item.id] ?? 0) * item.price
       }
     }
     return { totalCost, totalRevenue, totalProfit: totalRevenue - totalCost }
-  }, [containers, inventory, sales])
+  }, [containers, inventory, soldQtyMap])
 
-  const handleSave = async (values: Omit<ContainerDoc, 'id' | 'createdAt'>) => {
-    setSaving(true)
+  // Handlers
+  const handleSaveContainer = async (values: Omit<ContainerDoc, 'id' | 'createdAt'>) => {
+    setSavingContainer(true)
     try {
       if (editingContainer) {
         await updateDoc(doc(db, 'containers', editingContainer.id), { ...values })
@@ -619,86 +684,88 @@ function ContainersContent() {
         await addDoc(collection(db, 'containers'), { ...values, createdAt: serverTimestamp() })
         toast.success('Container added.')
       }
-      setModalOpen(false)
-      setEditingContainer(null)
+      setContainerModal(false); setEditingContainer(null)
     } catch (err) {
-      console.error(err)
-      toast.error('Failed to save container.')
+      console.error(err); toast.error('Failed to save container.')
     } finally {
-      setSaving(false)
+      setSavingContainer(false)
     }
   }
 
-  const openAdd = () => {
-    setEditingContainer(null)
-    setModalOpen(true)
+  const handleAddItem = async (values: {
+    name: string; categoryId: string; categoryName: string
+    price: number; quantity: number; minStock: number
+    condition: 'New' | 'Refurbished'
+  }) => {
+    if (!addItemTarget) return
+    setSavingItem(true)
+    try {
+      const response = await fetch('/api/inventory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...values,
+          containerId: addItemTarget.id,
+          processedBy: {
+            uid: auth.currentUser?.uid ?? '',
+            email: auth.currentUser?.email ?? '',
+            name: auth.currentUser?.displayName ?? auth.currentUser?.email ?? '',
+          },
+        }),
+      })
+      const payload = (await response.json()) as { error?: string }
+      if (!response.ok) throw new Error(payload.error || 'Failed to add item.')
+      toast.success(`"${values.name}" added to inventory and linked to ${addItemTarget.name}.`)
+      setAddItemModal(false); setAddItemTarget(null)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to add item.'
+      toast.error(msg)
+    } finally {
+      setSavingItem(false)
+    }
   }
-  const openEdit = (c: ContainerDoc) => {
-    setEditingContainer(c)
-    setModalOpen(true)
-  }
+
+  const openAddItem = (c: ContainerDoc) => { setAddItemTarget(c); setAddItemModal(true) }
+  const openEdit    = (c: ContainerDoc) => { setEditingContainer(c); setContainerModal(true) }
+  const openAdd     = () => { setEditingContainer(null); setContainerModal(true) }
 
   return (
     <div className="min-h-screen bg-gray-50/50 p-6">
-      {/* ── Page header ── */}
+      {/* Header */}
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Containers</h1>
-          <p className="mt-0.5 text-sm text-gray-500">
-            Track container batches purchased from Japan and monitor profit per container.
-          </p>
+          <p className="mt-0.5 text-sm text-gray-500">Track Japan container batches, add items directly, and monitor profit per container.</p>
         </div>
-        <button
-          onClick={openAdd}
-          className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-blue-700"
-        >
-          <Plus className="h-4 w-4" />
-          Add Container
+        <button onClick={openAdd} className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-blue-700">
+          <Plus className="h-4 w-4" /> Add Container
         </button>
       </div>
 
-      {/* ── Summary cards ── */}
+      {/* Summary cards */}
       <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <div className="rounded-2xl bg-white p-4 shadow-sm">
-          <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Containers</p>
-          <p className="mt-1 text-2xl font-bold text-gray-800">{containers.length}</p>
-        </div>
-        <div className="rounded-2xl bg-white p-4 shadow-sm">
-          <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Total Invested</p>
-          <p className="mt-1 text-2xl font-bold text-gray-800">{formatPeso(summary.totalCost)}</p>
-        </div>
-        <div className="rounded-2xl bg-white p-4 shadow-sm">
-          <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Total Revenue</p>
-          <p className="mt-1 text-2xl font-bold text-blue-600">{formatPeso(summary.totalRevenue)}</p>
-        </div>
-        <div className="rounded-2xl bg-white p-4 shadow-sm">
-          <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Net Profit</p>
-          <p
-            className={`mt-1 text-2xl font-bold ${
-              summary.totalProfit > 0 ? 'text-green-600' : summary.totalProfit < 0 ? 'text-red-500' : 'text-gray-500'
-            }`}
-          >
-            {summary.totalProfit >= 0 ? '+' : ''}{formatPeso(summary.totalProfit)}
-          </p>
-        </div>
+        {[
+          { label: 'Containers', value: String(containers.length), color: 'text-gray-800' },
+          { label: 'Total Invested', value: fmt(summary.totalCost), color: 'text-gray-800' },
+          { label: 'Total Revenue', value: fmt(summary.totalRevenue), color: 'text-blue-600' },
+          { label: 'Net Profit', value: (summary.totalProfit >= 0 ? '+' : '') + fmt(summary.totalProfit), color: summary.totalProfit > 0 ? 'text-green-600' : summary.totalProfit < 0 ? 'text-red-500' : 'text-gray-500' },
+        ].map(s => (
+          <div key={s.label} className="rounded-2xl bg-white p-4 shadow-sm">
+            <p className="text-xs font-medium uppercase tracking-wide text-gray-400">{s.label}</p>
+            <p className={`mt-1 text-2xl font-bold ${s.color}`}>{s.value}</p>
+          </div>
+        ))}
       </div>
 
-      {/* ── Filters ── */}
+      {/* Filters */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search containers…"
-            className="w-full rounded-xl border border-gray-200 bg-white py-2 pl-9 pr-3 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
-          />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search containers…"
+            className="w-full rounded-xl border border-gray-200 bg-white py-2 pl-9 pr-3 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100" />
         </div>
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-blue-400 focus:outline-none"
-        >
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-blue-400 focus:outline-none">
           <option value="all">All Statuses</option>
           <option value="Active">Active</option>
           <option value="Partially Sold">Partially Sold</option>
@@ -706,7 +773,7 @@ function ContainersContent() {
         </select>
       </div>
 
-      {/* ── Content ── */}
+      {/* Content */}
       {loading ? (
         <div className="flex items-center justify-center py-20">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
@@ -714,39 +781,44 @@ function ContainersContent() {
       ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-gray-200 bg-white py-16 text-center">
           <Package2 className="h-12 w-12 text-gray-200" />
-          <p className="font-medium text-gray-400">
-            {containers.length === 0 ? 'No containers yet.' : 'No containers match your search.'}
-          </p>
+          <p className="font-medium text-gray-400">{containers.length === 0 ? 'No containers yet.' : 'No containers match your search.'}</p>
           {containers.length === 0 && (
-            <button
-              onClick={openAdd}
-              className="mt-1 flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
-            >
-              <Plus className="h-4 w-4" />
-              Add your first container
+            <button onClick={openAdd} className="mt-1 flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">
+              <Plus className="h-4 w-4" /> Add your first container
             </button>
           )}
         </div>
       ) : (
         <div className="space-y-3">
-          {filtered.map((c) => (
+          {filtered.map(c => (
             <ContainerCard
               key={c.id}
               container={c}
               inventory={inventory}
-              sales={sales}
+              soldQtyMap={soldQtyMap}
               onEdit={() => openEdit(c)}
+              onAddItem={() => openAddItem(c)}
             />
           ))}
         </div>
       )}
 
+      {/* Modals */}
       <ContainerModal
-        isOpen={modalOpen}
-        onClose={() => { setModalOpen(false); setEditingContainer(null) }}
-        onSubmit={handleSave}
+        isOpen={containerModal}
+        onClose={() => { setContainerModal(false); setEditingContainer(null) }}
+        onSubmit={handleSaveContainer}
         initialValues={editingContainer ?? undefined}
-        submitting={saving}
+        submitting={savingContainer}
+      />
+
+      <AddItemModal
+        isOpen={addItemModal}
+        containerName={addItemTarget?.name ?? ''}
+        categories={categories}
+        onClose={() => { setAddItemModal(false); setAddItemTarget(null) }}
+        onSubmit={handleAddItem}
+        submitting={savingItem}
       />
     </div>
   )

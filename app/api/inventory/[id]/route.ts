@@ -500,4 +500,15 @@ export async function PATCH(req: Request, context: RouteContext) {
         user: processedBy,
         remarks: 'Item deleted permanently from trash.',
       })
-      return NextR
+      return NextResponse.json({ success: true }, { status: 200 })
+    }
+
+    return NextResponse.json({ error: 'Invalid action' }, { status: 400 })
+  } catch (error) {
+    if (error instanceof Error && error.message === 'ADMIN_REQUIRED') {
+      return NextResponse.json({ error: 'Admin access is required.' }, { status: 403 })
+    }
+    console.error(`PATCH /api/inventory/[id] error:`, error)
+    return NextResponse.json({ error: 'Server error' }, { status: 500 })
+  }
+}
