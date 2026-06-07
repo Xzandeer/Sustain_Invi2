@@ -13,7 +13,6 @@ import SalesViewModal from '@/components/sales/SalesViewModal'
 import TransactionDocument from '@/components/sales/TransactionDocument'
 import {
   buildGmailComposeLink,
-  buildMailtoLink,
   CompletedTransactionDocument,
   ReceiptRecord,
 } from '@/lib/transactions/transactionDocuments'
@@ -122,6 +121,10 @@ function SalesContent() {
   const [activeReceipt, setActiveReceipt] = useState<ReceiptRecord | null>(null)
 
   const [selectedTransaction, setSelectedTransaction] = useState<SaleTransaction | null>(null)
+  const [showEmailModal, setShowEmailModal] = useState(false)
+  const [emailModalInput, setEmailModalInput] = useState('')
+  const [emailSending, setEmailSending] = useState(false)
+  const [emailModalError, setEmailModalError] = useState('')
   // Pagination for products table and discount for cart
   const [inventoryPage, setInventoryPage] = useState(1)
   const [discount, setDiscount] = useState(0)
@@ -453,19 +456,27 @@ function SalesContent() {
     }
   }
 
-  const openManualEmailLink = (target: 'gmail' | 'mailto') => {
+  const openManualEmailLink = () => {
     if (!completedDocument) return
     if (!completedDocumentEmail) {
-      toast.error('No customer email is available for this transaction.')
+      // No email on record — open modal to enter one first
+      setEmailModalInput('')
+      setEmailModalError('')
+      setShowEmailModal(true)
       return
     }
+    openGmailCompose(completedDocumentEmail)
+  }
 
-    if (target === 'gmail') {
-      window.open(buildGmailComposeLink(completedDocument), '_blank', 'noopener,noreferrer')
-      return
+  const openGmailCompose = (email: string) => {
+    if (!completedDocument) return
+    // Override the customer email in the document so the Gmail link uses the entered email
+    const docWithEmail = {
+      ...completedDocument,
+      customer: { ...completedDocument.customer, email },
     }
-
-    window.location.href = buildMailtoLink(completedDocument)
+    window.open(buildGmailComposeLink(docWithEmail), '_blank', 'noopener,noreferrer')
+    setShowEmailModal(false)
   }
 
   const startNewTransaction = () => {
@@ -1051,9 +1062,8 @@ function SalesContent() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => openManualEmailLink('gmail')}
-                    disabled={!completedDocumentEmail}
-                    className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    onClick={() => openManualEmailLink()}
+                    className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors"
                   >
                     <svg className="h-3.5 w-3.5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
@@ -1321,6 +1331,54 @@ function SalesContent() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ── Email Modal ── */}
+      {showEmailModal ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl">
+            <div className="border-b border-slate-200 px-5 py-4">
+              <h2 className="font-semibold text-slate-900">Send Receipt</h2>
+              <p className="mt-0.5 text-xs text-slate-500">Enter the customer&apos;s email to send the receipt from JMGS Japon Surplus.</p>
+            </div>
+            <div className="px-5 py-4 space-y-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Customer Email Address</label>
+                <input
+                  type="email"
+                  value={emailModalInput}
+                  onChange={(e) => { setEmailModalInput(e.target.value); setEmailModalError('') }}
+                  placeholder="customer@email.com"
+                  autoFocus
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none"
+                  onKeyDown={(e) => { if (e.key === 'Enter' && emailModalInput.trim()) openGmailCompose(emailModalInput.trim()) }}
+                />
+                {emailModalError && <p className="mt-1.5 text-xs text-red-600">{emailModalError}</p>}
+                <p className="mt-1.5 text-[11px] text-slate-400">This will open Gmail with the receipt pre-filled.</p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setShowEmailModal(false)}
+                className="rounded-lg border border-slate-200 px-3.5 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => { if (emailModalInput.trim()) openGmailCompose(emailModalInput.trim()) }}
+                disabled={!emailModalInput.trim()}
+                className="flex items-center gap-2 rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                </svg>
+                Open Gmail
+              </button>
             </div>
           </div>
         </div>

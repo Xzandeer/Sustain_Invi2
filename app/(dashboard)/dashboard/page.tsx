@@ -438,7 +438,7 @@ function DashboardContent() {
       </header>
 
       {/* ── Page body ── */}
-      <div className="flex-1 p-3 space-y-2">
+      <div className="flex-1 p-3 space-y-2 overflow-y-auto">
 
         {/* ── KPI Cards ── */}
         <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
@@ -481,64 +481,8 @@ function DashboardContent() {
           />
         </div>
 
-        {/* ── Middle row ── */}
-        <div className="grid grid-cols-1 gap-2 xl:grid-cols-3">
-
-          {/* Sales Overview */}
-          <div className="xl:col-span-2 rounded-2xl bg-white p-3 shadow-sm border border-gray-100">
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-sm font-bold text-gray-800">Sales Overview</h2>
-              <div className="relative flex items-center gap-2">
-                <span className="flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-500 bg-gray-50">
-                  Revenue
-                </span>
-                <button
-                  onClick={() => setShowPeriodMenu(v => !v)}
-                  className="flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-600 hover:bg-blue-100 transition-colors"
-                >
-                  Last {chartPeriod} days <ChevronRight className={`h-3 w-3 transition-transform ${showPeriodMenu ? 'rotate-[270deg]' : 'rotate-90'}`} />
-                </button>
-                {showPeriodMenu && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setShowPeriodMenu(false)} />
-                    <div className="absolute right-0 top-full z-50 mt-1.5 w-40 overflow-hidden rounded-xl border border-gray-100 bg-white shadow-lg">
-                      {([7, 14, 30, 90] as const).map(p => (
-                        <button key={p} onClick={() => { setChartPeriod(p); setShowPeriodMenu(false) }}
-                          className={`flex w-full items-center justify-between px-3.5 py-2 text-sm transition-colors ${
-                            chartPeriod === p ? 'bg-blue-50 font-semibold text-blue-600' : 'text-gray-700 hover:bg-gray-50'
-                          }`}>
-                          Last {p} days
-                          {chartPeriod === p && <span className="text-blue-500 text-xs">✓</span>}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-            {loading
-              ? <div className="h-48 w-full animate-pulse rounded-xl bg-gray-50" />
-              : <SalesChart data={salesChartData} />
-            }
-            {/* Summary row */}
-            <div className="mt-2 grid grid-cols-3 gap-2 border-t border-gray-100 pt-2">
-              <div>
-                <p className="text-[11px] text-gray-400">Revenue</p>
-                <p className="mt-0.5 text-sm font-bold text-gray-900">{fmt(recentRevenue)}</p>
-                {revenueChange != null && <ChangeBadge v={revenueChange} />}
-              </div>
-              <div>
-                <p className="text-[11px] text-gray-400">Orders</p>
-                <p className="mt-0.5 text-sm font-bold text-gray-900">{recentSaleCount}</p>
-                {saleCountChange != null && <ChangeBadge v={saleCountChange} />}
-              </div>
-              <div>
-                <p className="text-[11px] text-gray-400">Avg Order Value</p>
-                <p className="mt-0.5 text-sm font-bold text-gray-900">{fmt(avgOrderValue)}</p>
-                {avgOrderChange != null && <ChangeBadge v={avgOrderChange} />}
-              </div>
-            </div>
-          </div>
+        {/* ── Middle row: Inventory Status + Recent Activity ── */}
+        <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
 
           {/* Inventory Status */}
           <div className="flex flex-col rounded-2xl bg-white p-3 shadow-sm border border-gray-100">
@@ -547,83 +491,43 @@ function DashboardContent() {
               <Link href="/inventory" className="text-xs font-medium text-blue-600 hover:underline">View all</Link>
             </div>
             <div className="flex flex-col flex-1 divide-y divide-gray-50">
-              <InventoryStatusRow
-                iconEl={<AlertTriangle className="h-4 w-4 text-amber-600" />}
-                iconBg="bg-amber-100"
-                label="Low Stock"
-                desc="Items running below minimum"
-                count={lowStockItems.length}
-                href="/inventory"
-              />
-              <InventoryStatusRow
-                iconEl={<Package className="h-4 w-4 text-red-500" />}
-                iconBg="bg-red-100"
-                label="Out of Stock"
-                desc="Items need restocking"
-                count={outOfStockItems.length}
-                href="/inventory"
-              />
-              <InventoryStatusRow
-                iconEl={<Bookmark className="h-4 w-4 text-blue-500" />}
-                iconBg="bg-blue-100"
-                label="Reserved Items"
-                desc="Items in active reservations"
-                count={reservedCount}
-                href="/reservations"
-              />
-              <InventoryStatusRow
-                iconEl={<LayoutGrid className="h-4 w-4 text-purple-500" />}
-                iconBg="bg-purple-100"
-                label="Total Products"
-                desc={`Across ${inventory.length} product lines`}
-                count={totalStock}
-                href="/inventory"
-              />
+              <InventoryStatusRow iconEl={<AlertTriangle className="h-4 w-4 text-amber-600" />} iconBg="bg-amber-100" label="Low Stock" desc="Items running below minimum" count={lowStockItems.length} href="/inventory" />
+              <InventoryStatusRow iconEl={<Package className="h-4 w-4 text-red-500" />} iconBg="bg-red-100" label="Out of Stock" desc="Items need restocking" count={outOfStockItems.length} href="/inventory" />
+              <InventoryStatusRow iconEl={<Bookmark className="h-4 w-4 text-blue-500" />} iconBg="bg-blue-100" label="Reserved Items" desc="Items in active reservations" count={reservedCount} href="/reservations" />
+              <InventoryStatusRow iconEl={<LayoutGrid className="h-4 w-4 text-purple-500" />} iconBg="bg-purple-100" label="Total Products" desc={`Across ${inventory.length} product lines`} count={totalStock} href="/inventory" />
             </div>
           </div>
-        </div>
-
-        {/* ── Bottom row ── */}
-        <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
 
           {/* Recent Activity */}
           <div className="rounded-2xl bg-white p-3 shadow-sm border border-gray-100">
-            <div className="mb-2 flex items-center justify-between">
+            <div className="mb-1 flex items-center justify-between">
               <h2 className="text-sm font-bold text-gray-800">Recent Activity</h2>
               <Link href="/sales" className="text-xs font-medium text-blue-600 hover:underline">View all</Link>
             </div>
-            {loading ? <PulseRows n={5} /> : recentActivity.length === 0 ? (
-              <div className="flex flex-col items-center gap-2 py-10 text-center">
-                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gray-100">
-                  <Package className="h-5 w-5 text-gray-300" />
-                </div>
-                <p className="text-sm text-gray-400">No recent activity yet.</p>
+            {loading ? <PulseRows n={4} /> : recentActivity.length === 0 ? (
+              <div className="flex flex-col items-center gap-2 py-6 text-center">
+                <Package className="h-8 w-8 text-gray-200" />
+                <p className="text-xs text-gray-400">No recent activity yet.</p>
               </div>
             ) : (
               <div className="divide-y divide-gray-50">
                 {recentActivity.map(item => {
                   const iconMap = {
-                    sale:        { el: <ShoppingCart className="h-4 w-4 text-emerald-600" />, bg: 'bg-emerald-100' },
-                    reservation: { el: <Calendar className="h-4 w-4 text-amber-600" />,      bg: 'bg-amber-100' },
-                    stock:       { el: <Package className="h-4 w-4 text-blue-500" />,         bg: 'bg-blue-100' },
+                    sale:        { el: <ShoppingCart className="h-3.5 w-3.5 text-emerald-600" />, bg: 'bg-emerald-100' },
+                    reservation: { el: <Calendar className="h-3.5 w-3.5 text-amber-600" />,       bg: 'bg-amber-100' },
+                    stock:       { el: <Package className="h-3.5 w-3.5 text-blue-500" />,          bg: 'bg-blue-100' },
                   }
                   const { el, bg } = iconMap[item.type]
                   return (
                     <div key={item.key} className="flex items-center gap-2.5 py-2">
-                      <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${bg}`}>
-                        {el}
-                      </div>
+                      <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${bg}`}>{el}</div>
                       <div className="min-w-0 flex-1">
                         <p className="text-xs font-semibold text-gray-800">{item.label}</p>
                         <p className="truncate text-[11px] text-gray-400">{item.sub}</p>
                       </div>
                       <div className="shrink-0 text-right">
                         {item.amount && (
-                          <p className={`text-xs font-bold ${
-                            item.type === 'sale' ? 'text-emerald-600'
-                            : item.type === 'stock' ? 'text-blue-600'
-                            : 'text-gray-700'
-                          }`}>
+                          <p className={`text-xs font-bold ${item.type === 'sale' ? 'text-emerald-600' : item.type === 'stock' ? 'text-blue-600' : 'text-gray-700'}`}>
                             {item.type === 'stock' ? `${item.amount} pcs` : item.amount}
                           </p>
                         )}
@@ -635,66 +539,18 @@ function DashboardContent() {
               </div>
             )}
           </div>
+        </div>
 
-          {/* Quick Actions */}
-          <div className="rounded-2xl bg-white p-3 shadow-sm border border-gray-100">
-            <h2 className="mb-2 text-sm font-bold text-gray-800">Quick Actions</h2>
-            <div className="grid grid-cols-2 gap-2">
-              <QuickAction
-                href="/sales"
-                icon={<ShoppingCart className="h-4 w-4" />}
-                label="New Sale"
-                desc="Process a transaction"
-                iconBg="bg-blue-100"
-                iconColor="text-blue-600"
-                hoverBg="hover:bg-blue-50"
-              />
-              <QuickAction
-                href="/inventory"
-                icon={<PackagePlus className="h-5 w-5" />}
-                label="Add Item"
-                desc="Add to inventory"
-                iconBg="bg-emerald-100"
-                iconColor="text-emerald-600"
-                hoverBg="hover:bg-emerald-50"
-              />
-              <QuickAction
-                href="/reservations"
-                icon={<Calendar className="h-5 w-5" />}
-                label="Reserve"
-                desc="New reservation"
-                iconBg="bg-amber-100"
-                iconColor="text-amber-600"
-                hoverBg="hover:bg-amber-50"
-              />
-              <QuickAction
-                href="/customers"
-                icon={<UserCheck className="h-5 w-5" />}
-                label="Customers"
-                desc="View customers"
-                iconBg="bg-pink-100"
-                iconColor="text-pink-600"
-                hoverBg="hover:bg-pink-50"
-              />
-              <QuickAction
-                href="/analytics"
-                icon={<BarChart3 className="h-5 w-5" />}
-                label="Analytics"
-                desc="Sales & trends"
-                iconBg="bg-violet-100"
-                iconColor="text-violet-600"
-                hoverBg="hover:bg-violet-50"
-              />
-              <QuickAction
-                href="/inventory/logs"
-                icon={<ClipboardList className="h-5 w-5" />}
-                label="Stock Logs"
-                desc="Audit trail"
-                iconBg="bg-gray-100"
-                iconColor="text-gray-500"
-                hoverBg="hover:bg-gray-50"
-              />
-            </div>
+        {/* ── Quick Actions ── */}
+        <div className="rounded-2xl bg-white p-3 shadow-sm border border-gray-100">
+          <h2 className="mb-2 text-sm font-bold text-gray-800">Quick Actions</h2>
+          <div className="grid grid-cols-2 gap-2 xl:grid-cols-3">
+            <QuickAction href="/sales"          icon={<ShoppingCart className="h-4 w-4" />} label="New Sale"    desc="Process a transaction" iconBg="bg-blue-100"    iconColor="text-blue-600"    hoverBg="hover:bg-blue-50" />
+            <QuickAction href="/inventory"      icon={<PackagePlus className="h-4 w-4" />}  label="Add Item"    desc="Add to inventory"      iconBg="bg-emerald-100" iconColor="text-emerald-600" hoverBg="hover:bg-emerald-50" />
+            <QuickAction href="/reservations"   icon={<Calendar className="h-4 w-4" />}     label="Reserve"     desc="New reservation"       iconBg="bg-amber-100"   iconColor="text-amber-600"   hoverBg="hover:bg-amber-50" />
+            <QuickAction href="/customers"      icon={<UserCheck className="h-4 w-4" />}    label="Customers"   desc="View customers"        iconBg="bg-pink-100"    iconColor="text-pink-600"    hoverBg="hover:bg-pink-50" />
+            <QuickAction href="/analytics"      icon={<BarChart3 className="h-4 w-4" />}    label="Analytics"   desc="Sales & trends"        iconBg="bg-violet-100"  iconColor="text-violet-600"  hoverBg="hover:bg-violet-50" />
+            <QuickAction href="/inventory/logs" icon={<ClipboardList className="h-4 w-4" />} label="Stock Logs" desc="Audit trail"            iconBg="bg-gray-100"    iconColor="text-gray-500"    hoverBg="hover:bg-gray-50" />
           </div>
         </div>
       </div>
@@ -774,13 +630,13 @@ function QuickAction({ href, icon, label, desc, iconBg, iconColor, hoverBg }: {
 }) {
   return (
     <Link href={href}
-      className={`flex items-center gap-2.5 rounded-xl border border-gray-100 p-2.5 transition-colors ${hoverBg} group`}>
-      <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${iconBg} ${iconColor}`}>
+      className={`flex items-center gap-2 rounded-xl border border-gray-100 p-2.5 transition-colors ${hoverBg} group`}>
+      <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${iconBg} ${iconColor}`}>
         {icon}
       </div>
       <div className="min-w-0">
-        <p className="text-xs font-semibold text-gray-800 group-hover:text-gray-900">{label}</p>
-        <p className="text-[10px] text-gray-400">{desc}</p>
+        <p className="text-xs font-semibold text-gray-800 group-hover:text-gray-900 leading-tight">{label}</p>
+        <p className="text-[10px] text-gray-400 leading-tight">{desc}</p>
       </div>
     </Link>
   )

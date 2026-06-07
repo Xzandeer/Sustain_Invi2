@@ -24,11 +24,11 @@ const GREETING: Message = {
 
 const QUICK_QUESTIONS = [
   'Give me a store overview',
+  "What's the trend for this month?",
   'What should we display this month?',
   'What items need restocking?',
   "What are today's sales?",
   'Which categories sell the most?',
-  'Show active reservations',
 ]
 
 const INTENT_LABELS: Record<string, string> = {
@@ -41,6 +41,7 @@ const INTENT_LABELS: Record<string, string> = {
   stock_logs: 'Stock Logs',
   dashboard_summary: 'Dashboard',
   recommendation: 'Recommendation',
+  trend: 'Trends',
 }
 
 // ── Markdown renderer ──────────────────────────────────────────────────────────
@@ -232,18 +233,26 @@ export default function FloatingChatBot() {
     setError('')
     setLoading(true)
     try {
-      const history = messages.map((m) => ({ role: m.role, content: m.content }))
+      const history = messages.slice(-6).map((m) => ({ role: m.role, content: m.content }))
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: trimmed, history }),
       })
-      const data = (await res.json()) as { reply?: string; error?: string; usedLiveData?: boolean; intent?: string }
-      if (!res.ok || data.error) throw new Error('unavailable')
-      setMessages((prev) => [...prev, { id: uid(), role: 'assistant', content: data.reply ?? '(No response)', ts: new Date(), usedLiveData: data.usedLiveData, intent: data.intent }])
+      const data = (await res.json()) as { reply?: string; error?: string; usedLiveData?: boolean; usedTool?: string }
+      if (!res.ok || data.error) {
+        const isBusy = res.status === 429 || (data.error ?? '').toLowerCase().includes('busy')
+        throw new Error(isBusy ? 'busy' : 'unavailable')
+      }
+      setMessages((prev) => [...prev, { id: uid(), role: 'assistant', content: data.reply ?? '(No response)', ts: new Date(), usedLiveData: data.usedLiveData, intent: data.usedTool ?? undefined }])
       if (!open) setUnread((n) => n + 1)
-    } catch {
-      setError('The assistant is not currently available. Please try again later.')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : ''
+      setError(
+        msg === 'busy'
+          ? 'The assistant is a bit busy right now. Please wait a moment and try again.'
+          : 'The assistant is not currently available. Please try again later.'
+      )
     } finally {
       setLoading(false)
       setTimeout(() => inputRef.current?.focus(), 50)
