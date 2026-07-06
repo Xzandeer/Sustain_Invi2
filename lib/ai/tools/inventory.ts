@@ -120,6 +120,25 @@ export async function searchInventory(query: string): Promise<string> {
     : `Found ${matches.length} item(s) matching "${query}":\n${matches.join('\n')}`
 }
 
+export async function getOutOfStockItems(): Promise<string> {
+  const cacheKey = 'out_of_stock'
+  const cached = aiCache.get<string>(cacheKey)
+  if (cached) return cached
+
+  const snap = await db().collection('inventory').get()
+  const items = snap.docs
+    .map(d => ({ id: d.id, ...d.data() } as Record<string, unknown>))
+    .filter(d => !d.isDeleted && !d.isVoided && toNum(d.stock) === 0)
+    .map(d => `• ${d.name} (${d.categoryName ?? 'Unknown'}) — last price: ${fmt(toNum(d.price))}`)
+
+  const result = items.length === 0
+    ? 'Great news — no items are completely out of stock.'
+    : `${items.length} item(s) are out of stock:\n${items.join('\n')}`
+
+  aiCache.set(cacheKey, result)
+  return result
+}
+
 export async function getInventoryByCategory(category: string): Promise<string> {
   const snap = await db().collection('inventory').get()
   const q = category.trim().toLowerCase()

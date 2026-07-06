@@ -2,25 +2,16 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { collection, onSnapshot, orderBy, query, limit } from 'firebase/firestore'
+import { collection, doc, getDoc, onSnapshot, orderBy, query, limit } from 'firebase/firestore'
 import { onAuthStateChanged } from 'firebase/auth'
-import { doc, getDoc } from 'firebase/firestore'
 import {
   ChevronRight, TrendingUp, TrendingDown,
   AlertTriangle, Package, Bookmark, LayoutGrid, ShoppingCart, Calendar,
   BarChart3, ClipboardList, UserCheck, PackagePlus,
 } from 'lucide-react'
-import {
-  Chart as ChartJS,
-  CategoryScale, LinearScale, PointElement,
-  LineElement, Filler, Tooltip,
-} from 'chart.js'
-import { Line } from 'react-chartjs-2'
 import { auth, db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import type { LowStockItem } from '@/lib/server/salesInventoryMetrics'
-
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip)
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -71,20 +62,6 @@ const toDate = (v: unknown): Date | null => {
 const fmt = (n: number) =>
   `₱${n.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
-const fmtK = (n: number): string => {
-  if (n >= 1_000_000) return `₱${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `₱${(n / 1_000).toFixed(0)}K`
-  return `₱${n.toFixed(0)}`
-}
-
-// Axis-safe formatter — never rounds 1,200 to "₱1K" or 1,600 to "₱2K"
-const fmtAxis = (n: number): string => {
-  if (n === 0) return '₱0'
-  if (n >= 1_000_000) { const v = n / 1_000_000; return `₱${v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)}M` }
-  if (n >= 1_000)     { const v = n / 1_000;     return `₱${v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)}K` }
-  return `₱${n.toFixed(0)}`
-}
-
 const timeAgo = (d: Date | null): string => {
   if (!d) return ''
   const s = Math.floor((Date.now() - d.getTime()) / 1000)
@@ -118,65 +95,6 @@ function Sparkline({ values, stroke, fill }: { values: number[]; stroke: string;
   )
 }
 
-// ── Sales Chart (Chart.js — matches Analytics page style) ────────────────────
-
-function SalesChart({ data }: { data: { date: Date; revenue: number }[] }) {
-  const labels = data.map(d =>
-    d.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-  )
-  const values = data.map(d => d.revenue)
-
-  return (
-    <div className="h-48">
-      <Line
-        data={{
-          labels,
-          datasets: [
-            {
-              label: 'Revenue',
-              data: values,
-              fill: true,
-              borderColor: '#0f4c81',
-              backgroundColor: 'rgba(15,76,129,0.07)',
-              borderWidth: 2,
-              pointRadius: 3,
-              pointHoverRadius: 5,
-              tension: 0.35,
-            },
-          ],
-        }}
-        options={{
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              callbacks: {
-                label: (ctx) => `Revenue: ${fmt(Number(ctx.parsed.y ?? 0))}`,
-              },
-            },
-          },
-          scales: {
-            x: {
-              grid: { display: false },
-              ticks: { font: { size: 11 }, color: '#94a3b8' },
-            },
-            y: {
-              beginAtZero: true,
-              grid: { color: '#f1f5f9' },
-              ticks: {
-                font: { size: 11 },
-                color: '#94a3b8',
-                callback: (value) => fmtAxis(Number(value)),
-              },
-            },
-          },
-        }}
-      />
-    </div>
-  )
-}
-
 // ── Page entry ────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
@@ -194,8 +112,6 @@ function DashboardContent() {
   const [userName, setUserName]         = useState('User')
   const [userInitials, setUserInitials] = useState('U')
   const [now, setNow]                   = useState(new Date())
-  const [chartPeriod, setChartPeriod]   = useState<7 | 14 | 30 | 90>(30)
-  const [showPeriodMenu, setShowPeriodMenu] = useState(false)
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 60_000)
@@ -343,53 +259,6 @@ function DashboardContent() {
     buildDailyBuckets(14).map(() => inventoryValue),
   [inventoryValue])
 
-  // ── Sales chart (30 days) ─────────────────────────────────────────────────
-
-  const salesChartData = useMemo(() => {
-    const days = buildDailyBuckets(chartPeriod)
-    const buckets = days.map(date => ({ date, revenue: 0 }))
-    for (const s of completedSales) {
-      const d = toDate(s.createdAt); if (!d) continue
-      const daysAgo = Math.floor((Date.now() - d.getTime()) / 86400000)
-      if (daysAgo >= 0 && daysAgo < chartPeriod) buckets[chartPeriod - 1 - daysAgo].revenue += toNum(s.totalAmount)
-    }
-    return buckets
-  }, [completedSales, chartPeriod])
-
-  // ── Average order value ───────────────────────────────────────────────────
-
-  const avgOrderValue    = recentSaleCount > 0 ? recentRevenue / recentSaleCount : 0
-  const prevAvgOrder     = prevSaleCount   > 0 ? prevRevenue   / prevSaleCount   : 0
-  const avgOrderChange   = prevAvgOrder    > 0 ? ((avgOrderValue - prevAvgOrder) / prevAvgOrder) * 100 : null
-
-  // ── Top selling products ──────────────────────────────────────────────────
-
-  const topProducts = useMemo(() => {
-    const map: Record<string, { name: string; sold: number; revenue: number }> = {}
-    for (const s of completedSales) {
-      for (const item of (s.items ?? [])) {
-        const name = String(item.name ?? '').trim(); if (!name) continue
-        if (!map[name]) map[name] = { name, sold: 0, revenue: 0 }
-        map[name].sold    += toNum(item.quantity)
-        map[name].revenue += toNum(item.quantity) * toNum(item.price)
-      }
-    }
-    return Object.values(map).sort((a, b) => b.sold - a.sold).slice(0, 5)
-  }, [completedSales])
-
-  // ── Top category ─────────────────────────────────────────────────────────
-
-  const topCategory = useMemo(() => {
-    const rev: Record<string, number> = {}
-    for (const s of completedSales) {
-      for (const item of (s.items ?? [])) {
-        const cat = String(item.categoryName ?? 'Uncategorized')
-        rev[cat] = (rev[cat] ?? 0) + toNum(item.price) * toNum(item.quantity)
-      }
-    }
-    return Object.entries(rev).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
-  }, [completedSales])
-
   // ── Recent activity ───────────────────────────────────────────────────────
 
   const recentActivity = useMemo(() => {
@@ -416,32 +285,28 @@ function DashboardContent() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex min-h-screen flex-col bg-[#f5f6fa]">
+    <div className="flex h-screen flex-col bg-[#f5f6fa] overflow-hidden">
 
-      {/* ── Top Bar ── */}
-      <header className="flex items-center justify-between gap-4 bg-white px-5 py-2.5 border-b border-gray-100">
+      <header className="flex items-center justify-between gap-4 bg-white px-6 py-3.5 border-b border-gray-100 shrink-0">
         <div>
-          <div className="flex items-center gap-1.5">
-            <h1 className="text-base font-bold text-gray-900">{greeting}, {userName}</h1>
-            <span>👋</span>
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg font-bold text-gray-900">{greeting}, {userName}</h1>
+            <span className="text-lg">👋</span>
           </div>
-          <p className="text-[11px] text-gray-400">
+          <p className="text-xs text-gray-400">
             {now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
           </p>
         </div>
         <div className="flex items-center gap-2.5">
-          {/* User avatar */}
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-blue-600 to-indigo-600 text-xs font-bold text-white">
+          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-linear-to-br from-blue-600 to-indigo-600 text-sm font-bold text-white">
             {userInitials}
           </div>
         </div>
       </header>
 
-      {/* ── Page body ── */}
-      <div className="flex-1 p-3 space-y-2 overflow-y-auto">
+      <div className="flex flex-1 flex-col gap-3 p-5 overflow-y-auto min-h-0">
 
-        {/* ── KPI Cards ── */}
-        <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4 shrink-0">
           <KpiCard
             title="Total Revenue"
             value={fmt(totalRevenue)}
@@ -450,7 +315,7 @@ function DashboardContent() {
             spark={<Sparkline values={revenueSparkline} stroke="#3b82f6" fill="rgba(59,130,246,0.1)" />}
             loading={loading}
             iconBg="bg-blue-100"
-            icon={<svg className="h-4 w-4 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
+            icon={<svg className="h-5 w-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
           />
           <KpiCard
             title="Total Sales"
@@ -460,7 +325,7 @@ function DashboardContent() {
             spark={<Sparkline values={salesSparkline} stroke="#10b981" fill="rgba(16,185,129,0.1)" />}
             loading={loading}
             iconBg="bg-emerald-100"
-            icon={<svg className="h-4 w-4 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" /></svg>}
+            icon={<svg className="h-5 w-5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" /></svg>}
           />
           <KpiCard
             title="Inventory Value"
@@ -469,7 +334,7 @@ function DashboardContent() {
             spark={<Sparkline values={inventorySparkline} stroke="#8b5cf6" fill="rgba(139,92,246,0.1)" />}
             loading={loading}
             iconBg="bg-violet-100"
-            icon={<svg className="h-4 w-4 text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>}
+            icon={<svg className="h-5 w-5 text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>}
           />
           <KpiCard
             title="Low Stock Alerts"
@@ -477,61 +342,58 @@ function DashboardContent() {
             subtitle={`${outOfStockItems.length} out of stock`}
             loading={loading}
             iconBg={alertCount > 0 ? 'bg-red-100' : 'bg-gray-100'}
-            icon={<svg className={`h-4 w-4 ${alertCount > 0 ? 'text-red-500' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>}
+            icon={<svg className={`h-5 w-5 ${alertCount > 0 ? 'text-red-500' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>}
           />
         </div>
 
-        {/* ── Middle row: Inventory Status + Recent Activity ── */}
-        <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+        <div className="grid flex-1 min-h-0 grid-cols-1 gap-3 xl:grid-cols-2">
 
-          {/* Inventory Status */}
-          <div className="flex flex-col rounded-2xl bg-white p-3 shadow-sm border border-gray-100">
-            <div className="mb-1 flex items-center justify-between">
-              <h2 className="text-sm font-bold text-gray-800">Inventory Status</h2>
+          <div className="flex flex-col rounded-2xl bg-white p-5 shadow-sm border border-gray-100 overflow-hidden">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-base font-bold text-gray-800">Inventory Status</h2>
               <Link href="/inventory" className="text-xs font-medium text-blue-600 hover:underline">View all</Link>
             </div>
             <div className="flex flex-col flex-1 divide-y divide-gray-50">
-              <InventoryStatusRow iconEl={<AlertTriangle className="h-4 w-4 text-amber-600" />} iconBg="bg-amber-100" label="Low Stock" desc="Items running below minimum" count={lowStockItems.length} href="/inventory" />
-              <InventoryStatusRow iconEl={<Package className="h-4 w-4 text-red-500" />} iconBg="bg-red-100" label="Out of Stock" desc="Items need restocking" count={outOfStockItems.length} href="/inventory" />
-              <InventoryStatusRow iconEl={<Bookmark className="h-4 w-4 text-blue-500" />} iconBg="bg-blue-100" label="Reserved Items" desc="Items in active reservations" count={reservedCount} href="/reservations" />
-              <InventoryStatusRow iconEl={<LayoutGrid className="h-4 w-4 text-purple-500" />} iconBg="bg-purple-100" label="Total Products" desc={`Across ${inventory.length} product lines`} count={totalStock} href="/inventory" />
+              <InventoryStatusRow iconEl={<AlertTriangle className="h-5 w-5 text-amber-600" />} iconBg="bg-amber-100" label="Low Stock" desc="Items running below minimum" count={lowStockItems.length} href="/inventory" />
+              <InventoryStatusRow iconEl={<Package className="h-5 w-5 text-red-500" />} iconBg="bg-red-100" label="Out of Stock" desc="Items need restocking" count={outOfStockItems.length} href="/inventory" />
+              <InventoryStatusRow iconEl={<Bookmark className="h-5 w-5 text-blue-500" />} iconBg="bg-blue-100" label="Reserved Items" desc="Items in active reservations" count={reservedCount} href="/reservations" />
+              <InventoryStatusRow iconEl={<LayoutGrid className="h-5 w-5 text-purple-500" />} iconBg="bg-purple-100" label="Total Products" desc={`Across ${inventory.length} product lines`} count={totalStock} href="/inventory" />
             </div>
           </div>
 
-          {/* Recent Activity */}
-          <div className="rounded-2xl bg-white p-3 shadow-sm border border-gray-100">
-            <div className="mb-1 flex items-center justify-between">
-              <h2 className="text-sm font-bold text-gray-800">Recent Activity</h2>
+          <div className="flex flex-col rounded-2xl bg-white p-5 shadow-sm border border-gray-100 overflow-hidden">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-base font-bold text-gray-800">Recent Activity</h2>
               <Link href="/sales" className="text-xs font-medium text-blue-600 hover:underline">View all</Link>
             </div>
             {loading ? <PulseRows n={4} /> : recentActivity.length === 0 ? (
-              <div className="flex flex-col items-center gap-2 py-6 text-center">
-                <Package className="h-8 w-8 text-gray-200" />
-                <p className="text-xs text-gray-400">No recent activity yet.</p>
+              <div className="flex flex-1 flex-col items-center justify-center gap-2 py-6 text-center">
+                <Package className="h-10 w-10 text-gray-200" />
+                <p className="text-sm text-gray-400">No recent activity yet.</p>
               </div>
             ) : (
-              <div className="divide-y divide-gray-50">
+              <div className="flex flex-col flex-1 divide-y divide-gray-50">
                 {recentActivity.map(item => {
                   const iconMap = {
-                    sale:        { el: <ShoppingCart className="h-3.5 w-3.5 text-emerald-600" />, bg: 'bg-emerald-100' },
-                    reservation: { el: <Calendar className="h-3.5 w-3.5 text-amber-600" />,       bg: 'bg-amber-100' },
-                    stock:       { el: <Package className="h-3.5 w-3.5 text-blue-500" />,          bg: 'bg-blue-100' },
+                    sale:        { el: <ShoppingCart className="h-4 w-4 text-emerald-600" />, bg: 'bg-emerald-100' },
+                    reservation: { el: <Calendar className="h-4 w-4 text-amber-600" />,       bg: 'bg-amber-100' },
+                    stock:       { el: <Package className="h-4 w-4 text-blue-500" />,          bg: 'bg-blue-100' },
                   }
                   const { el, bg } = iconMap[item.type]
                   return (
-                    <div key={item.key} className="flex items-center gap-2.5 py-2">
-                      <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${bg}`}>{el}</div>
+                    <div key={item.key} className="flex flex-1 items-center gap-3 py-2.5">
+                      <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${bg}`}>{el}</div>
                       <div className="min-w-0 flex-1">
-                        <p className="text-xs font-semibold text-gray-800">{item.label}</p>
-                        <p className="truncate text-[11px] text-gray-400">{item.sub}</p>
+                        <p className="text-sm font-semibold text-gray-800">{item.label}</p>
+                        <p className="truncate text-xs text-gray-400">{item.sub}</p>
                       </div>
                       <div className="shrink-0 text-right">
                         {item.amount && (
-                          <p className={`text-xs font-bold ${item.type === 'sale' ? 'text-emerald-600' : item.type === 'stock' ? 'text-blue-600' : 'text-gray-700'}`}>
+                          <p className={`text-sm font-bold ${item.type === 'sale' ? 'text-emerald-600' : item.type === 'stock' ? 'text-blue-600' : 'text-gray-700'}`}>
                             {item.type === 'stock' ? `${item.amount} pcs` : item.amount}
                           </p>
                         )}
-                        <p className="text-[11px] text-gray-400">{timeAgo(item.date)}</p>
+                        <p className="text-xs text-gray-400">{timeAgo(item.date)}</p>
                       </div>
                     </div>
                   )
@@ -541,16 +403,15 @@ function DashboardContent() {
           </div>
         </div>
 
-        {/* ── Quick Actions ── */}
-        <div className="rounded-2xl bg-white p-3 shadow-sm border border-gray-100">
-          <h2 className="mb-2 text-sm font-bold text-gray-800">Quick Actions</h2>
-          <div className="grid grid-cols-2 gap-2 xl:grid-cols-3">
-            <QuickAction href="/sales"          icon={<ShoppingCart className="h-4 w-4" />} label="New Sale"    desc="Process a transaction" iconBg="bg-blue-100"    iconColor="text-blue-600"    hoverBg="hover:bg-blue-50" />
-            <QuickAction href="/inventory"      icon={<PackagePlus className="h-4 w-4" />}  label="Add Item"    desc="Add to inventory"      iconBg="bg-emerald-100" iconColor="text-emerald-600" hoverBg="hover:bg-emerald-50" />
-            <QuickAction href="/reservations"   icon={<Calendar className="h-4 w-4" />}     label="Reserve"     desc="New reservation"       iconBg="bg-amber-100"   iconColor="text-amber-600"   hoverBg="hover:bg-amber-50" />
-            <QuickAction href="/customers"      icon={<UserCheck className="h-4 w-4" />}    label="Customers"   desc="View customers"        iconBg="bg-pink-100"    iconColor="text-pink-600"    hoverBg="hover:bg-pink-50" />
-            <QuickAction href="/analytics"      icon={<BarChart3 className="h-4 w-4" />}    label="Analytics"   desc="Sales & trends"        iconBg="bg-violet-100"  iconColor="text-violet-600"  hoverBg="hover:bg-violet-50" />
-            <QuickAction href="/inventory/logs" icon={<ClipboardList className="h-4 w-4" />} label="Stock Logs" desc="Audit trail"            iconBg="bg-gray-100"    iconColor="text-gray-500"    hoverBg="hover:bg-gray-50" />
+        <div className="rounded-2xl bg-white p-5 shadow-sm border border-gray-100 shrink-0">
+          <h2 className="mb-3 text-base font-bold text-gray-800">Quick Actions</h2>
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+            <QuickAction href="/sales"          icon={<ShoppingCart className="h-5 w-5" />} label="New Sale"    desc="Process a transaction" iconBg="bg-blue-100"    iconColor="text-blue-600"    hoverBg="hover:bg-blue-50" />
+            <QuickAction href="/inventory"      icon={<PackagePlus className="h-5 w-5" />}  label="Add Item"    desc="Add to inventory"      iconBg="bg-emerald-100" iconColor="text-emerald-600" hoverBg="hover:bg-emerald-50" />
+            <QuickAction href="/reservations"   icon={<Calendar className="h-5 w-5" />}     label="Reserve"     desc="New reservation"       iconBg="bg-amber-100"   iconColor="text-amber-600"   hoverBg="hover:bg-amber-50" />
+            <QuickAction href="/customers"      icon={<UserCheck className="h-5 w-5" />}    label="Customers"   desc="View customers"        iconBg="bg-pink-100"    iconColor="text-pink-600"    hoverBg="hover:bg-pink-50" />
+            <QuickAction href="/analytics"      icon={<BarChart3 className="h-5 w-5" />}    label="Analytics"   desc="Sales & trends"        iconBg="bg-violet-100"  iconColor="text-violet-600"  hoverBg="hover:bg-violet-50" />
+            <QuickAction href="/inventory/logs" icon={<ClipboardList className="h-5 w-5" />} label="Stock Logs" desc="Audit trail"            iconBg="bg-gray-100"    iconColor="text-gray-500"    hoverBg="hover:bg-gray-50" />
           </div>
         </div>
       </div>
@@ -565,26 +426,24 @@ function KpiCard({ title, value, change, subtitle, spark, icon, iconBg, loading 
   spark?: React.ReactNode; icon: React.ReactNode; iconBg: string; loading?: boolean
 }) {
   return (
-    <div className="rounded-xl border border-gray-100 bg-white p-3 shadow-sm">
-      {/* Top row: icon + title | change badge */}
-      <div className="flex items-center gap-2">
-        <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${iconBg}`}>
+    <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
+      <div className="flex items-center gap-2.5">
+        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${iconBg}`}>
           {icon}
         </div>
-        <div className="flex min-w-0 flex-1 items-center justify-between gap-1.5">
-          <p className="truncate text-xs font-medium text-gray-500">{title}</p>
+        <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
+          <p className="truncate text-sm font-medium text-gray-500">{title}</p>
           {change != null && !loading && <ChangeBadge v={change} />}
         </div>
       </div>
-      {/* Bottom row: value | sparkline */}
-      <div className="mt-2 flex items-end justify-between gap-2">
+      <div className="mt-3 flex items-end justify-between gap-2">
         <div className="min-w-0">
           {loading
-            ? <div className="h-6 w-28 animate-pulse rounded-lg bg-gray-100" />
-            : <p className="text-lg font-extrabold tracking-tight text-gray-900">{value}</p>
+            ? <div className="h-7 w-28 animate-pulse rounded-lg bg-gray-100" />
+            : <p className="text-2xl font-extrabold tracking-tight text-gray-900">{value}</p>
           }
           {!loading && subtitle && (
-            <p className="mt-0.5 text-[11px] text-gray-400">{subtitle}</p>
+            <p className="mt-0.5 text-xs text-gray-400">{subtitle}</p>
           )}
         </div>
         {spark && !loading && <div className="shrink-0 opacity-90">{spark}</div>}
@@ -610,16 +469,16 @@ function InventoryStatusRow({ iconEl, iconBg, label, desc, count, href }: {
   iconEl: React.ReactNode; iconBg: string; label: string; desc: string; count: number; href: string
 }) {
   return (
-    <Link href={href} className="flex flex-1 items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors hover:bg-gray-50">
-      <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${iconBg}`}>
+    <Link href={href} className="flex flex-1 items-center gap-3 rounded-xl px-3 py-3 transition-colors hover:bg-gray-50">
+      <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${iconBg}`}>
         {iconEl}
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-xs font-semibold text-gray-800">{label}</p>
-        <p className="text-[11px] text-gray-400">{desc}</p>
+        <p className="text-sm font-semibold text-gray-800">{label}</p>
+        <p className="text-xs text-gray-400">{desc}</p>
       </div>
-      <span className="text-sm font-bold text-gray-800">{count}</span>
-      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-gray-300" />
+      <span className="text-base font-bold text-gray-800">{count}</span>
+      <ChevronRight className="h-4 w-4 shrink-0 text-gray-300" />
     </Link>
   )
 }
@@ -630,13 +489,13 @@ function QuickAction({ href, icon, label, desc, iconBg, iconColor, hoverBg }: {
 }) {
   return (
     <Link href={href}
-      className={`flex items-center gap-2 rounded-xl border border-gray-100 p-2.5 transition-colors ${hoverBg} group`}>
-      <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${iconBg} ${iconColor}`}>
+      className={`flex items-center gap-3 rounded-xl border border-gray-100 p-3.5 transition-colors ${hoverBg} group`}>
+      <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${iconBg} ${iconColor}`}>
         {icon}
       </div>
       <div className="min-w-0">
-        <p className="text-xs font-semibold text-gray-800 group-hover:text-gray-900 leading-tight">{label}</p>
-        <p className="text-[10px] text-gray-400 leading-tight">{desc}</p>
+        <p className="text-sm font-semibold text-gray-800 group-hover:text-gray-900 leading-tight">{label}</p>
+        <p className="text-xs text-gray-400 leading-tight">{desc}</p>
       </div>
     </Link>
   )

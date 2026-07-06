@@ -43,8 +43,27 @@ export async function predictSales(): Promise<string> {
   })
 
   const dailyValues = Object.values(daily)
+  const totalSalesCount = snap.docs.length
+
+  if (totalSalesCount === 0) {
+    return JSON.stringify({
+      canPredict: false,
+      reason: 'NO_SALES_DATA',
+      explanation: 'There are no sales recorded in the system yet. The prediction model needs actual transaction history to generate forecasts.',
+      whatIsNeeded: 'At least 7 days with completed sales transactions.',
+      suggestion: 'Start recording sales in the system and come back after a week of activity.',
+    })
+  }
+
   if (dailyValues.length < 7) {
-    return 'Not enough sales history to make a prediction. Need at least 7 days of data.'
+    return JSON.stringify({
+      canPredict: false,
+      reason: 'INSUFFICIENT_DAYS',
+      explanation: `Only ${dailyValues.length} day(s) of sales data found in the last 90 days. The prediction model needs at least 7 different days of sales to detect patterns and trends.`,
+      currentData: `${totalSalesCount} total sale(s) across ${dailyValues.length} day(s)`,
+      whatIsNeeded: `${7 - dailyValues.length} more day(s) of sales activity needed.`,
+      suggestion: 'Keep recording daily sales. Once you have a week of data, the AI can start generating accurate forecasts.',
+    })
   }
 
   // Average daily revenue (last 30 days vs last 60 days to detect trend)
@@ -64,24 +83,41 @@ export async function predictSales(): Promise<string> {
   const trendPct = ((trendFactor - 1) * 100).toFixed(1)
   const trendDir = trendFactor >= 1 ? 'upward' : 'downward'
 
-  // Seasonal multiplier based on current month
+  // Seasonal multiplier — learned from store's own historical data per month
   const month = now.getMonth() // 0-11
-  const seasonalMultipliers: Record<number, number> = {
-    0: 0.85,  // January — post-holiday slowdown
-    1: 0.90,  // February
-    2: 0.95,  // March
-    3: 0.95,  // April
-    4: 1.00,  // May
-    5: 0.95,  // June — school season starts
-    6: 0.90,  // July
-    7: 0.95,  // August
-    8: 1.00,  // September — ber months start
-    9: 1.05,  // October
-    10: 1.10, // November — pre-Christmas
-    11: 1.25, // December — Christmas peak
-  }
-  const seasonal = seasonalMultipliers[month] ?? 1.0
   const monthName = now.toLocaleDateString('en-PH', { month: 'long' })
+
+  // Build per-month averages from all historical data (up to 2 years)
+  const twoYearsAgo = new Date(); twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 2)
+  const monthlyAvg: Record<number, { total: number; days: Set<string> }> = {}
+  for (let m = 0; m < 12; m++) monthlyAvg[m] = { total: 0, days: new Set() }
+
+  snap.docs.forEach(d => {
+    const data = d.data() as Record<string, unknown>
+    const date = getSaleDate(data)
+    if (!date || date < twoYearsAgo) return
+    const m = date.getMonth()
+    monthlyAvg[m].total += getSaleAmount(data)
+    monthlyAvg[m].days.add(date.toISOString().split('T')[0])
+  })
+
+  // Calculate per-month daily average, then ratio vs overall average
+  const monthDailyAvgs = Object.entries(monthlyAvg).map(([m, { total, days }]) => ({
+    month: Number(m),
+    avg: days.size > 0 ? total / days.size : 0,
+  }))
+  const overallAvg = monthDailyAvgs.reduce((s, x) => s + x.avg, 0) / 12 || avg30
+
+  // Seasonal multiplier: ratio of this month's historical avg vs overall avg
+  // Fallback to Philippine retail defaults if no data for a month
+  const defaultMultipliers: Record<number, number> = {
+    0: 0.85, 1: 0.90, 2: 0.95, 3: 0.95, 4: 1.00,
+    5: 0.95, 6: 0.90, 7: 0.95, 8: 1.00, 9: 1.05, 10: 1.10, 11: 1.25,
+  }
+  const thisMonthAvg = monthDailyAvgs.find(x => x.month === month)?.avg ?? 0
+  const learnedMultiplier = thisMonthAvg > 0 && overallAvg > 0 ? thisMonthAvg / overallAvg : null
+  const seasonal = learnedMultiplier ?? defaultMultipliers[month] ?? 1.0
+  const multiplierSource = learnedMultiplier ? 'learned from your store data' : 'using Philippine retail baseline'
 
   // Projections
   const projectedDailyAvg = avg30 * trendFactor * seasonal
@@ -121,7 +157,7 @@ export async function predictSales(): Promise<string> {
   const result = [
     `Based on last 30-day average: ${fmt(avg30)}/day`,
     `Trend: ${trendDir} (${trendPct}% vs previous 30 days)`,
-    `Seasonal factor: ${monthName} = ${((seasonal - 1) * 100).toFixed(0)}% ${seasonal >= 1 ? 'boost' : 'slowdown'}`,
+    `Seasonal factor: ${monthName} = ${((seasonal - 1) * 100).toFixed(0)}% ${seasonal >= 1 ? 'boost' : 'slowdown'} (${multiplierSource})`,
     `Next 7 days projection: ${fmt(projectedWeekLow)} – ${fmt(projectedWeekHigh)}`,
     `${monthName} projected total: ${fmt(projectedMonthTotal)} (${fmt(earnedThisMonth)} earned so far, ${daysRemaining} days left)`,
     `Strongest category right now: ${topCat}`,

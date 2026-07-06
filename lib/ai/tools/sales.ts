@@ -24,7 +24,11 @@ const getSaleAmount = (s: Record<string, unknown>) => toNum(s.totalAmount ?? s.a
 
 export async function getTodaySales(): Promise<string> {
   const today = new Date(); today.setHours(0, 0, 0, 0)
-  const snap = await db().collection('sales').get()
+  // Query only today's records from Firestore — saves tokens by not loading full history
+  const snap = await db().collection('sales')
+    .where('createdAt', '>=', today)
+    .get()
+    .catch(() => db().collection('sales').get()) // fallback if field name differs
   const todaySales = snap.docs
     .map(d => ({ id: d.id, ...d.data() } as Record<string, unknown>))
     .filter(s => { const d = getSaleDate(s); return d && d >= today })
@@ -45,7 +49,11 @@ export async function getRecentSales(days = 30): Promise<string> {
   if (cached) return cached
 
   const since = new Date(); since.setDate(since.getDate() - days); since.setHours(0, 0, 0, 0)
-  const snap = await db().collection('sales').get()
+  // Query only records within date range — avoids loading full sales history
+  const snap = await db().collection('sales')
+    .where('createdAt', '>=', since)
+    .get()
+    .catch(() => db().collection('sales').get()) // fallback if field name differs
   const recent = snap.docs
     .map(d => ({ id: d.id, ...d.data() } as Record<string, unknown>))
     .filter(s => { const d = getSaleDate(s); return d && d >= since })
@@ -218,6 +226,22 @@ export async function getDashboardSummary(): Promise<string> {
   return result
 }
 
+// Philippine seasonal context per month — used for AI recommendations
+const PH_SEASONAL_CONTEXT: Record<number, { season: string; trends: string[]; holidays: string[] }> = {
+  0:  { season: 'New Year Recovery',   trends: ['home appliances', 'bags', 'clothing', 'school supplies'], holidays: ['New Year hangover — customers looking for deals after holiday spending'] },
+  1:  { season: 'Valentines',          trends: ['accessories', 'clothing', 'bags', 'personal care'],      holidays: ["Valentine's Day (Feb 14) — gifts, fashion items trending"] },
+  2:  { season: 'Summer Prep',         trends: ['electronics', 'fans', 'footwear', 'clothing'],           holidays: ['Start of PH summer — outdoor gear, fans, cooling appliances trending'] },
+  3:  { season: 'Holy Week / Summer',  trends: ['fans', 'appliances', 'footwear', 'bags'],                holidays: ['Holy Week travel — bags and footwear in demand; Lenten season'] },
+  4:  { season: 'Summer Peak',         trends: ['electronics', 'fans', 'footwear', 'clothing'],           holidays: ['Labor Day (May 1) — full summer; cooling appliances and outdoor items peak'] },
+  5:  { season: 'Ber Month Start',     trends: ['school supplies', 'bags', 'clothing', 'electronics'],    holidays: ['June — school opening season; school supplies and bags highly in demand'] },
+  6:  { season: 'Rainy Season',        trends: ['appliances', 'clothing', 'home goods'],                  holidays: ['July — rainy season; indoor appliances and home items popular'] },
+  7:  { season: 'Back to School',      trends: ['school supplies', 'bags', 'electronics', 'clothing'],    holidays: ['August — school season continues; National Heroes Day (Aug 26)'] },
+  8:  { season: 'Ber Month / Ber Rush',trends: ['electronics', 'clothing', 'bags', 'accessories'],        holidays: ["September — Christmas season STARTS in PH; 'Ber months' shoppers begin holiday prep"] },
+  9:  { season: 'Pre-Christmas',       trends: ['electronics', 'clothing', 'bags', 'home appliances'],    holidays: ['October — Christmas shopping picks up; gift items and home decor trending'] },
+  10: { season: 'Christmas Rush',      trends: ['electronics', 'appliances', 'clothing', 'accessories', 'bags'], holidays: ['November — major Christmas shopping rush; All Saints Day (Nov 1); Bonifacio Day (Nov 30)'] },
+  11: { season: 'Christmas Peak',      trends: ['electronics', 'appliances', 'clothing', 'footwear', 'bags', 'accessories'], holidays: ['December — peak Christmas season; Christmas Day (Dec 25); family gift-giving; highest retail month in PH'] },
+}
+
 export async function getRecommendations(): Promise<string> {
   const cacheKey = 'recommendations'
   const cached = aiCache.get<string>(cacheKey)
@@ -229,9 +253,12 @@ export async function getRecommendations(): Promise<string> {
   ])
 
   const now = new Date()
-  const month = now.toLocaleDateString('en-PH', { month: 'long' })
+  const monthIndex = now.getMonth()
+  const monthName = now.toLocaleDateString('en-PH', { month: 'long' })
   const day = now.toLocaleDateString('en-PH', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
+  const seasonal = PH_SEASONAL_CONTEXT[monthIndex]
 
+  // Top categories from actual sales
   const catSales: Record<string, { revenue: number; units: number }> = {}
   salesSnap.docs.forEach(d => {
     const data = d.data() as Record<string, unknown>
@@ -244,17 +271,50 @@ export async function getRecommendations(): Promise<string> {
     })
   })
 
-  const topCats = Object.entries(catSales).sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 5)
-    .map(([cat, { revenue, units }]) => `• ${cat}: ${fmt(revenue)} revenue, ${units} units`)
+  const topCats = Object.entries(catSales)
+    .sort((a, b) => b[1].revenue - a[1].revenue)
+    .slice(0, 5)
+    .map(([cat, { revenue, units }]) => `• ${cat}: ${fmt(revenue)} revenue, ${units} units sold`)
 
-  const highStock = invSnap.docs
+  // Match inventory with seasonal trending categories
+  const trendingCategories = seasonal.trends.map(t => t.toLowerCase())
+  const allItems = invSnap.docs
     .map(d => ({ id: d.id, ...d.data() } as Record<string, unknown>))
-    .filter(d => !d.isDeleted && toNum(d.stock) > 10)
+    .filter(d => !d.isDeleted && toNum(d.stock) > 0)
+
+  // Items that match seasonal trends and have good stock
+  const seasonalMatches = allItems
+    .filter(d => {
+      const cat = String(d.categoryName ?? '').toLowerCase()
+      return trendingCategories.some(t => cat.includes(t) || t.includes(cat))
+    })
     .sort((a, b) => toNum(b.stock) - toNum(a.stock))
-    .slice(0, 8)
+    .slice(0, 6)
     .map(d => `• ${d.name} (${d.categoryName ?? 'Unknown'}): ${toNum(d.stock)} units @ ${fmt(toNum(d.price))}`)
 
-  const result = `Date: ${day}\nMonth: ${month}\n\nTop-selling categories:\n${topCats.join('\n') || '(no data)'}\n\nHigh stock items to promote:\n${highStock.join('\n') || '(no data)'}`
+  // High stock items regardless of season (need to move inventory)
+  const highStock = allItems
+    .sort((a, b) => toNum(b.stock) - toNum(a.stock))
+    .slice(0, 5)
+    .map(d => `• ${d.name} (${d.categoryName ?? 'Unknown'}): ${toNum(d.stock)} units @ ${fmt(toNum(d.price))}`)
+
+  const result = [
+    `Store: JMGS Japan Surplus (Philippine surplus retail shop)`,
+    `Date: ${day}`,
+    `Current Season: ${seasonal.season}`,
+    `Philippine Context: ${seasonal.holidays.join('; ')}`,
+    `Trending in PH this month: ${seasonal.trends.join(', ')}`,
+    ``,
+    `Items in stock that match this month's PH trends:`,
+    seasonalMatches.length > 0 ? seasonalMatches.join('\n') : '(no matching items in current inventory)',
+    ``,
+    `Highest stock items (prioritize moving these):`,
+    highStock.join('\n') || '(no data)',
+    ``,
+    `Your store top-selling categories (all time):`,
+    topCats.join('\n') || '(no sales data yet)',
+  ].join('\n')
+
   aiCache.set(cacheKey, result)
   return result
 }

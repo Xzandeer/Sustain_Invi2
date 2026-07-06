@@ -21,11 +21,16 @@ function getAdminApp(): App {
     throw new Error('Missing FIREBASE_ADMIN_PRIVATE_KEY or FIREBASE_ADMIN_CLIENT_EMAIL environment variables.')
   }
 
+  // Vercel stores the key with literal \n — normalize to real newlines
+  const normalizedKey = privateKey.includes('\\n')
+    ? privateKey.replace(/\\n/g, '\n')
+    : privateKey
+
   adminApp = initializeApp({
     credential: cert({
       projectId,
       clientEmail,
-      privateKey: privateKey.replace(/\\n/g, '\n'),
+      privateKey: normalizedKey,
     }),
   })
 

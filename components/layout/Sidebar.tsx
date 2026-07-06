@@ -7,13 +7,11 @@ import {
   Package2, Trash2, Users, LogOut, Calendar,
   ClipboardList, UserCheck,
 } from 'lucide-react'
-import { useUserRole } from '@/hooks/useUserRole'
-import { signOut } from 'firebase/auth'
-import { auth } from '@/lib/firebase'
 import { useEffect, useState } from 'react'
-import { onAuthStateChanged } from 'firebase/auth'
+import { onAuthStateChanged, signOut } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { auth, db } from '@/lib/firebase'
+import { useUserRole } from '@/hooks/useUserRole'
 
 const mainNav = [
   { name: 'Dashboard',    href: '/dashboard',       icon: LayoutDashboard },
@@ -89,7 +87,7 @@ export default function Sidebar() {
 
       {/* Logo */}
       <div className="flex items-center gap-3 border-b border-white/5 px-5 py-4">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-blue-600 shadow-sm">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-linear-to-br from-blue-500 to-blue-600 shadow-sm">
           <Package className="h-4 w-4 text-white" />
         </div>
         <div className="min-w-0">

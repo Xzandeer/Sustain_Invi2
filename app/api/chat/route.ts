@@ -1,9 +1,9 @@
-// AI Chat API — Gemini function calling + Firebase Admin + caching + rate limiting
+// AI Chat API — OpenAI REST (fetch) + Firebase Admin + caching + rate limiting
 import { NextRequest, NextResponse } from 'next/server'
-import { GoogleGenerativeAI, FunctionDeclarationsTool, FunctionDeclaration, SchemaType } from '@google/generative-ai'
 import { TOOL_DEFINITIONS, executeTool } from '@/lib/ai/toolRegistry'
 import { checkRateLimit } from '@/lib/ai/rateLimiter'
 import { sanitizeInput, sanitizeHistory } from '@/lib/ai/sanitize'
+import { getCacheKey, saveToPersistentCache, getFromPersistentCache, formatCacheAge } from '@/lib/ai/persistentCache'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -16,20 +16,100 @@ interface ChatRequest {
   message: string
   history?: ChatMessage[]
   userId?: string
+  page?: string
+  role?: 'admin' | 'staff'
+}
+
+// Tools staff cannot access — sensitive business data
+const STAFF_BLOCKED_TOOLS = new Set([
+  'getRecentSales',
+  'getTrendData',
+  'getFrequentCustomers',
+  'getBasketAnalysis',
+  'getAllCustomers',
+  'getCustomerHistory',
+  'predictSales',
+  'getAllShipments',
+  'getActiveShipments',
+  'getDeliveredShipments',
+  'getPendingShipments',
+])
+
+interface OAIMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string | null
+  tool_calls?: OAIToolCall[]
+  tool_call_id?: string
+}
+
+interface OAIToolCall {
+  id: string
+  type: 'function'
+  function: { name: string; arguments: string }
+}
+
+interface OAIResponse {
+  choices: Array<{
+    message: OAIMessage & { tool_calls?: OAIToolCall[] }
+  }>
+  error?: { message: string; type: string }
 }
 
 // ── System Prompt ─────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are JMG, the AI assistant for JMGS Japan Surplus — a retail surplus store in the Philippines.
+const buildSystemPrompt = (page?: string, role?: 'admin' | 'staff') => `You are JMG, the AI assistant for Japon Japan Surplus (JMGS) - a Japanese surplus retail shop located in Urdaneta City, Pangasinan, Philippines.
+
+ABOUT THIS STORE:
+- Store name: Japon Japan Surplus (also referred to as JMGS Japan Surplus)
+- Location: Urdaneta City, Pangasinan, Philippines
+- Sells second-hand and surplus items imported from Japan
+- Serves Filipino customers in Pangasinan and nearby provinces (Ilocos, La Union, Nueva Ecija)
+- Products include: electronics, appliances, clothing, bags, footwear, school supplies, accessories, and home goods
+- Prices are affordable for budget-conscious Filipino shoppers in the Ilocos Region
+- Urdaneta City is a major commercial hub in Pangasinan — high foot traffic from surrounding towns
+- The store follows Philippine retail seasonality and local Pangasinan events
+
+PHILIPPINE SEASONAL KNOWLEDGE (use this when giving recommendations):
+- September to December: "Ber months" - Christmas shopping season, highest retail period in PH
+- December: PEAK month - family gift-giving, Noche Buena, Christmas parties; electronics, appliances, clothing all surge
+- November: Pre-Christmas rush - All Saints Day (Undas), Bonifacio Day; gift shopping begins
+- June to August: School opening - school supplies, bags, and affordable clothing in high demand
+- March to May: Philippine summer - fans, cooling appliances, footwear trending
+- February: Valentine's Day - accessories, clothing, bags as gifts
+- January: Post-holiday slowdown - customers looking for deals
+
+When recommending what to display or promote:
+1. Check the month and apply PH seasonal context above
+2. Cross-reference with actual inventory from the tool data
+3. Prioritize items matching the season AND with good stock
+4. Mention the specific Philippine occasion driving the recommendation
+5. Highlight Japanese quality surplus items that fit the season
 
 You have access to live store data through tools. Always call the appropriate tool before answering data questions.
-
+${role === 'staff' ? `
+USER ROLE: Staff
+IMPORTANT RESTRICTIONS for staff users:
+- You can answer questions about inventory, stock levels, reservations, and what to display/promote
+- You CANNOT share: revenue figures, sales totals, customer names or purchase history, sales predictions, shipment costs, or any financial data
+- If staff asks about revenue, sales amounts, customer data, or predictions, politely explain that this information is only available to admin users
+- Say: "That information is only accessible to admin users. I can help you with inventory and stock-related questions instead."
+` : `
+USER ROLE: Admin (full access)
+`}${page ? `\nThe user is currently on the "${page}" page of the system.\n` : ''}
 TOOL SELECTION RULES (follow strictly):
-- "predict", "forecast", "next week", "how much will we earn", "expected sales", "projection" → ALWAYS call predictSales
-- "trend", "this month", "month over month", "growth", "decline" → call getTrendData
-- "low stock", "restock", "out of stock" → call getLowStockItems
-- "overview", "summary", "how is the store" → call getDashboardSummary
-- "display", "promote", "recommend", "Christmas", "season" → call getRecommendations
+- "predict", "forecast", "next week", "how much will we earn", "expected sales", "projection" -> ALWAYS call predictSales
+- "trend", "this month", "month over month", "growth", "decline" -> call getTrendData
+- "low stock", "restock" -> call getLowStockItems
+- "out of stock", "sold out", "zero stock" -> call getOutOfStockItems
+- "overview", "summary", "how is the store", "show everything", "show it all", "show me all", "show all", "what can you show" -> call getDashboardSummary
+- "display", "promote", "recommend", "what to sell", "what to display", "Christmas", "season", "this month", "trending", "what is popular", "what should we sell", "what should we display" -> call getRecommendations
+- "customer list", "all customers", "who are our customers" -> call getAllCustomers
+- "customer history", "what did [name] buy", "purchases by [name]", "most expensive", "highest purchase" -> call getCustomerHistory with the customer name
+- "shipment", "container", "delivery", "supplier" -> call getAllShipments or getActiveShipments
+- "audit", "stock log", "recent activity" -> call getStockLogs
+- VAGUE OR GENERAL QUERIES ("show all", "tell me everything", "what do you know"): ALWAYS route to getDashboardSummary
+- "trending online", "what is popular", "what is trending in PH", "social media trend", "what should we stock", "browse", "search online", "look up trends" -> call searchWebTrends with a relevant query like "trending [category] Philippines [month]"
+- For recommendation questions: call BOTH getRecommendations AND searchWebTrends together for the best answer
 
 CRITICAL RULES:
 - NEVER invent, guess, or make up product names, prices, categories, or any store data
@@ -38,51 +118,91 @@ CRITICAL RULES:
 - NEVER expose raw database IDs, internal system fields, or raw JSON
 - NEVER repeat the raw tool response — always format it into clean bullet points
 
+HANDLING INSUFFICIENT DATA:
+- If a tool returns JSON with "canPredict: false", extract the explanation/whatIsNeeded/suggestion fields and present them clearly
+- Never show raw JSON — translate into a friendly readable message
+
 RESPONSE STYLE:
 - Short bullet points only — no long paragraphs
-- Max 5 bullets per response
+- Max 6 bullets per response
 - Be direct and actionable
 - Use exact numbers and names from tool results
-- No filler phrases like "Great question!" or "I'd be happy to help"
+- Mention the Philippine seasonal context when giving recommendations
+- No filler phrases like "Great question!" or "I would be happy to help"
 
 Always respond in English.`
 
-// ── Map tool definitions to Gemini schema format ──────────────────────────────
+// ── Build OpenAI tool definitions ─────────────────────────────────────────────
 
-function buildGeminiTools(): FunctionDeclarationsTool[] {
-  const declarations: FunctionDeclaration[] = TOOL_DEFINITIONS.map(tool => ({
-    name: tool.name,
-    description: tool.description,
-    parameters: {
-      type: SchemaType.OBJECT,
-      properties: Object.fromEntries(
-        Object.entries(tool.parameters.properties ?? {}).map(([key, val]) => {
-          const v = val as { type: string; description: string }
-          return [key, { type: v.type === 'number' ? SchemaType.NUMBER : SchemaType.STRING, description: v.description }]
-        })
-      ),
-      required: tool.parameters.required ?? [],
+function buildTools(role?: 'admin' | 'staff') {
+  const allowed = TOOL_DEFINITIONS.filter(t =>
+    role === 'staff' ? !STAFF_BLOCKED_TOOLS.has(t.name) : true
+  )
+  return allowed.map(tool => ({
+    type: 'function' as const,
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: {
+        type: 'object',
+        properties: tool.parameters.properties ?? {},
+        required: tool.parameters.required ?? [],
+      },
     },
   }))
-  return [{ functionDeclarations: declarations }] as FunctionDeclarationsTool[]
+}
+
+// ── OpenAI REST call ──────────────────────────────────────────────────────────
+
+async function callOpenAI(apiKey: string, messages: OAIMessage[], withTools: boolean, role?: 'admin' | 'staff'): Promise<OAIResponse> {
+  const body: Record<string, unknown> = {
+    model: 'gpt-4o-mini',
+    messages,
+    max_tokens: 700,
+    temperature: 0.3,
+  }
+  if (withTools) {
+    body.tools = buildTools(role)
+    body.tool_choice = 'auto'
+  }
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  })
+
+  const data = (await res.json()) as OAIResponse
+  if (!res.ok) {
+    const errMsg = data?.error?.message ?? `OpenAI error ${res.status}`
+    throw new Error(errMsg)
+  }
+  return data
 }
 
 // ── Main handler ──────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  let body: ChatRequest | null = null
+
   try {
     // 1. Check API key
-    const apiKey = process.env.GEMINI_API_KEY
+    const apiKey = process.env.OPENAI_API_KEY
     if (!apiKey) {
       return NextResponse.json({ error: 'The assistant is not currently available.' }, { status: 503 })
     }
 
     // 2. Parse body
-    const body = (await req.json()) as ChatRequest
+    body = (await req.json()) as ChatRequest
     const rawMessage = body.message ?? ''
     const rawHistory = Array.isArray(body.history) ? body.history : []
+    const currentPage = typeof body.page === 'string' ? body.page : undefined
+    const userRole = body.role === 'admin' ? 'admin' : 'staff'
 
-    // 3. Rate limiting — use userId or IP
+    // 3. Rate limiting
     const userId = body.userId ?? req.headers.get('x-forwarded-for') ?? 'anonymous'
     const { allowed, remaining } = checkRateLimit(userId)
     if (!allowed) {
@@ -104,108 +224,108 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // 5. Sanitize and trim history
+    // 5. Sanitize history + cache key
     const history = sanitizeHistory(rawHistory)
+    const cacheKey = getCacheKey(message)
 
-    // 6. Init Gemini
-    const genAI = new GoogleGenerativeAI(apiKey)
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash-lite',
-      systemInstruction: SYSTEM_PROMPT,
-      generationConfig: { maxOutputTokens: 400, temperature: 0.3 },
-    })
+    // 6. Build messages
+    const messages: OAIMessage[] = [
+      { role: 'system', content: buildSystemPrompt(currentPage, userRole) },
+      ...history.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+      { role: 'user', content: message },
+    ]
 
-    const geminiTools = buildGeminiTools()
+    // 7. First call — may request tool calls
+    const firstData = await callOpenAI(apiKey, messages, true, userRole)
+    const firstMsg = firstData.choices[0].message
+    const toolCalls = firstMsg.tool_calls
 
-    // 7. Build chat history in Gemini format
-    // Must start with 'user' and alternate — drop leading assistant messages
-    const validHistory = history.filter(m => m.role === 'user' || m.role === 'assistant')
-    const firstUserIdx = validHistory.findIndex(m => m.role === 'user')
-    const geminiHistory = (firstUserIdx === -1 ? [] : validHistory.slice(firstUserIdx))
-      .map(m => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }],
-      }))
-
-    // 8. First Gemini call — may return a function call request
-    const chat = model.startChat({ history: geminiHistory, tools: geminiTools })
-    const firstResult = await chat.sendMessage(message)
-    const firstResponse = firstResult.response
-
-    // 9. Check if Gemini wants to call a tool
-    const functionCalls = firstResponse.functionCalls()
-    let toolName: string | null = null
+    let toolNames: string[] = []
     let reply = ''
 
-    if (functionCalls && functionCalls.length > 0) {
-      const call = functionCalls[0]
-      toolName = call.name
-      const toolArgs = (call.args ?? {}) as Record<string, unknown>
+    if (toolCalls && toolCalls.length > 0) {
+      toolNames = toolCalls.map(tc => tc.function.name)
 
-      // 10. Execute the tool
-      let toolResult: string
-      try {
-        toolResult = await executeTool(call.name, toolArgs)
-      } catch (toolErr) {
-        console.error(`[chat] Tool "${call.name}" failed:`, toolErr)
-        toolResult = 'Data is temporarily unavailable.'
-      }
+      // 8. Execute all tools in parallel
+      const toolResults = await Promise.all(
+        toolCalls.map(async tc => {
+          let args: Record<string, unknown> = {}
+          try { args = JSON.parse(tc.function.arguments) } catch { args = {} }
+          try {
+            const result = await executeTool(tc.function.name, args)
+            return { id: tc.id, name: tc.function.name, result }
+          } catch (toolErr) {
+            console.error(`[chat] Tool "${tc.function.name}" failed:`, toolErr)
+            return { id: tc.id, name: tc.function.name, result: 'Data is temporarily unavailable.' }
+          }
+        })
+      )
 
-      // 11. Send tool result back to Gemini for final answer
-      const secondResult = await chat.sendMessage([
-        {
-          functionResponse: {
-            name: call.name,
-            response: { result: toolResult },
-          },
-        },
-      ])
-      reply = secondResult.response.text()
+      // 9. Send tool results back for final answer
+      const messagesWithTools: OAIMessage[] = [
+        ...messages,
+        { role: 'assistant', content: null, tool_calls: toolCalls },
+        ...toolResults.map(tr => ({
+          role: 'tool' as const,
+          tool_call_id: tr.id,
+          content: tr.result,
+        })),
+      ]
+
+      const secondData = await callOpenAI(apiKey, messagesWithTools, false, userRole)
+      reply = secondData.choices[0].message.content ?? ''
     } else {
-      // No tool needed — direct answer
-      reply = firstResponse.text()
+      reply = firstMsg.content ?? ''
     }
 
-    // Strip any raw JSON tool output that leaked into the reply
+    // Clean any raw JSON that leaked into reply
     reply = reply
-      .replace(/\{["']?\w+_response["']?:.*?\}\s*/gs, '')  // remove tool response blobs
-      .replace(/^\s*\{[\s\S]*?\}\s*/m, '')                  // remove leading JSON objects
+      .replace(/\{["']?\w+_response["']?:[\s\S]*?\}\s*/gm, '')
+      .replace(/^\s*\{[\s\S]*?\}\s*/m, '')
       .trim()
 
-    if (!reply || !reply.trim()) {
-      reply = 'I don\'t have enough data to answer that right now.'
+    if (!reply) reply = "I don't have enough data to answer that right now."
+
+    // Save to persistent cache (non-blocking)
+    if (toolNames.length > 0) {
+      saveToPersistentCache(cacheKey, reply, toolNames, message).catch(() => {})
     }
 
     return NextResponse.json(
-      { reply, usedTool: toolName, usedLiveData: toolName !== null },
-      {
-        status: 200,
-        headers: { 'X-RateLimit-Remaining': String(remaining) },
-      }
+      { reply, usedTool: toolNames[0] ?? null, usedTools: toolNames, usedLiveData: toolNames.length > 0 },
+      { status: 200, headers: { 'X-RateLimit-Remaining': String(remaining) } }
     )
+
   } catch (error) {
     console.error('POST /api/chat error:', error)
 
     const msg = error instanceof Error ? error.message : ''
-    const isQuota = msg.includes('429') || msg.includes('quota') || msg.toLowerCase().includes('resource exhausted') || msg.includes('rate')
+    const isQuota  = msg.includes('quota') || msg.includes('429') || msg.includes('rate limit') || msg.includes('insufficient_quota')
 
-    // Auto-retry once on quota errors after 3s
-    if (isQuota) {
-      try {
-        await new Promise(r => setTimeout(r, 3000))
-        // Re-invoke with same request — simplified retry
+    // Quota/rate-limit: try persistent cache fallback
+    if (isQuota && body) {
+      const rawMessage = body.message ?? ''
+      const { cleaned: message } = sanitizeInput(rawMessage)
+      const cacheKey = getCacheKey(message || rawMessage)
+      const cached = await getFromPersistentCache(cacheKey).catch(() => null)
+      if (cached) {
         return NextResponse.json(
-          { error: 'The assistant is a bit busy right now. Please try again in a moment.' },
-          { status: 429 }
+          {
+            reply: cached.reply + `\n\n*(Showing cached response from ${formatCacheAge(cached.age)} ago — AI is temporarily busy)*`,
+            usedTool: cached.usedTools[0] ?? null,
+            usedTools: cached.usedTools,
+            usedLiveData: false,
+            fromCache: true,
+          },
+          { status: 200 }
         )
-      } catch {
-        // fall through
       }
     }
 
-    return NextResponse.json(
-      { error: 'The assistant is not currently available. Please try again later.' },
-      { status: 500 }
-    )
+    const userMsg = isQuota
+      ? 'The AI assistant is temporarily busy. Please try again in a moment.'
+      : 'Something went wrong. Please try again.'
+
+    return NextResponse.json({ error: userMsg }, { status: 500 })
   }
 }
