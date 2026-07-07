@@ -12,7 +12,7 @@ import {
   Legend,
 } from 'chart.js'
 import { Line, Doughnut } from 'react-chartjs-2'
-import { collection, onSnapshot } from 'firebase/firestore'
+import { collection, getDocs } from 'firebase/firestore'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { db } from '@/lib/firebase'
 import AnalyticsCard from '@/components/analytics/AnalyticsCard'
@@ -638,99 +638,93 @@ function AnalyticsContent() {
   const [forecastError, setForecastError] = useState<string | null>(null)
 
   useEffect(() => {
-    const unsubscribeCategories = onSnapshot(collection(db, 'categories'), (snapshot) => {
-      const rows = snapshot.docs
-        .map((categoryDoc) => {
-          const data = categoryDoc.data() as Record<string, unknown>
+    let cancelled = false
+    async function loadData() {
+      try {
+        const [catSnap, salesSnap, invSnap, resSnap] = await Promise.all([
+          getDocs(collection(db, 'categories')),
+          getDocs(collection(db, 'sales')),
+          getDocs(collection(db, 'inventory')),
+          getDocs(collection(db, 'reservations')),
+        ])
+        if (cancelled) return
+
+        const catRows = catSnap.docs
+          .map((categoryDoc) => {
+            const data = categoryDoc.data() as Record<string, unknown>
+            return {
+              id: categoryDoc.id,
+              name: typeof data.name === 'string' && data.name.trim() ? data.name : categoryDoc.id,
+            }
+          })
+          .sort((a, b) => a.name.localeCompare(b.name))
+        setCategories(catRows)
+
+        const salesRows: SaleRecord[] = salesSnap.docs.map((saleDoc) => {
+          const data = saleDoc.data() as Record<string, unknown>
           return {
-            id: categoryDoc.id,
-            name: typeof data.name === 'string' && data.name.trim() ? data.name : categoryDoc.id,
+            id: saleDoc.id,
+            items: Array.isArray(data.items)
+              ? data.items
+                  .map((item) => {
+                    const saleItem = item as Record<string, unknown>
+                    const name =
+                      typeof saleItem.name === 'string' && saleItem.name.trim()
+                        ? saleItem.name
+                        : 'Unnamed Item'
+                    return {
+                      name,
+                      quantity: Math.max(0, toNumber(saleItem.quantity, 0)),
+                      price: Math.max(0, toNumber(saleItem.price, 0)),
+                      categoryId:
+                        typeof saleItem.categoryId === 'string' && saleItem.categoryId.trim()
+                          ? saleItem.categoryId
+                          : '',
+                      condition: (saleItem.condition === 'Refurbished' ? 'Refurbished' : 'New') as SaleItemCondition,
+                    }
+                  })
+                  .filter((item) => item.quantity > 0 || item.price > 0)
+              : [],
+            totalAmount: Math.max(0, toNumber(data.totalAmount, toNumber(data.total, toNumber(data.amount, 0)))),
+            createdAt: toDate(data.createdAt),
           }
         })
-        .sort((a, b) => a.name.localeCompare(b.name))
-      setCategories(rows)
-    })
+        setSales(salesRows)
 
-    const unsubscribeSales = onSnapshot(collection(db, 'sales'), (snapshot) => {
-      const rows: SaleRecord[] = snapshot.docs.map((saleDoc) => {
-        const data = saleDoc.data() as Record<string, unknown>
-        return {
-          id: saleDoc.id,
-          items: Array.isArray(data.items)
-            ? data.items
-                .map((item) => {
-                  const saleItem = item as Record<string, unknown>
-                  const name =
-                    typeof saleItem.name === 'string' && saleItem.name.trim()
-                      ? saleItem.name
-                      : 'Unnamed Item'
-                  return {
-                    name,
-                    quantity: Math.max(0, toNumber(saleItem.quantity, 0)),
-                    price: Math.max(0, toNumber(saleItem.price, 0)),
-                    categoryId:
-                      typeof saleItem.categoryId === 'string' && saleItem.categoryId.trim()
-                        ? saleItem.categoryId
-                        : '',
-                    condition: (saleItem.condition === 'Refurbished' ? 'Refurbished' : 'New') as SaleItemCondition,
-                  }
-                })
-                .filter((item) => item.quantity > 0 || item.price > 0)
-            : [],
-          totalAmount: Math.max(0, toNumber(data.totalAmount, toNumber(data.total, toNumber(data.amount, 0)))),
-          createdAt: toDate(data.createdAt),
-        }
-      })
-      setSales(rows)
-    })
+        const invRows: InventoryRecord[] = invSnap.docs
+          .map((itemDoc) => {
+            const data = itemDoc.data() as Record<string, unknown>
+            const categoryId =
+              typeof data.categoryId === 'string' && data.categoryId.trim() ? data.categoryId : ''
+            const categoryName =
+              typeof data.categoryName === 'string' && data.categoryName.trim() ? data.categoryName : ''
+            return {
+              id: itemDoc.id,
+              categoryId,
+              categoryName: categoryName || 'General',
+              category: categoryName || 'General',
+              quantity: Math.max(0, toNumber(data.stock ?? data.quantity, 0)),
+              isDeleted: data.isDeleted === true,
+            }
+          })
+          .filter((item) => item.isDeleted !== true)
+        setInventory(invRows)
 
-    const unsubscribeInventory = onSnapshot(collection(db, 'inventory'), (snapshot) => {
-      const rows: InventoryRecord[] = snapshot.docs
-        .map((itemDoc) => {
-          const data = itemDoc.data() as Record<string, unknown>
-          const categoryId =
-            typeof data.categoryId === 'string' && data.categoryId.trim() ? data.categoryId : ''
-          const categoryName =
-            typeof data.categoryName === 'string' && data.categoryName.trim() ? data.categoryName : ''
-          return {
-            id: itemDoc.id,
-            categoryId,
-            categoryName: categoryName || 'General',
-            category: categoryName || 'General',
-            quantity: Math.max(0, toNumber(data.stock ?? data.quantity, 0)),
-            isDeleted: data.isDeleted === true,
-          }
+        const resRows: ReservationRecord[] = resSnap.docs.map((resDoc) => {
+          const data = resDoc.data() as Record<string, unknown>
+          const rawStatus = typeof data.status === 'string' ? data.status : ''
+          const status = (['Active', 'Completed', 'Cancelled', 'Expired'] as const).includes(
+            rawStatus as ReservationRecord['status']
+          )
+            ? (rawStatus as ReservationRecord['status'])
+            : 'Active'
+          return { id: resDoc.id, status, createdAt: toDate(data.createdAt) }
         })
-        .filter((item) => item.isDeleted !== true)
-      setInventory(rows)
-    })
-
-    // Listen to reservations collection for the Reservation Activity panel
-    const unsubscribeReservations = onSnapshot(collection(db, 'reservations'), (snapshot) => {
-      const rows: ReservationRecord[] = snapshot.docs.map((resDoc) => {
-        const data = resDoc.data() as Record<string, unknown>
-        // Normalize status — default to 'Active' if unrecognized
-        const rawStatus = typeof data.status === 'string' ? data.status : ''
-        const status = (['Active', 'Completed', 'Cancelled', 'Expired'] as const).includes(
-          rawStatus as ReservationRecord['status']
-        )
-          ? (rawStatus as ReservationRecord['status'])
-          : 'Active'
-        return {
-          id: resDoc.id,
-          status,
-          createdAt: toDate(data.createdAt),
-        }
-      })
-      setReservations(rows)
-    })
-
-    return () => {
-      unsubscribeCategories()
-      unsubscribeSales()
-      unsubscribeInventory()
-      unsubscribeReservations()
+        setReservations(resRows)
+      } catch (_) {}
     }
+    loadData()
+    return () => { cancelled = true }
   }, [])
 
   // Auto-load AI forecast from cache on mount
@@ -1154,27 +1148,39 @@ function AnalyticsContent() {
     }
   }, [trendSeries.rows, forecastSeries.steps, aiForecast])
 
+  // Compute y-axis minimum: start at 70% of lowest non-zero value so the chart
+  // doesn't waste half its height on blank space below the actual data range.
+  // Y-axis minimum: only raise above 0 when every data point is non-zero.
+  // If any actual sale day is ₱0 we must start at 0 so those points remain visible.
+  const chartYMin = useMemo(() => {
+    const actualVals = trendSeries.rows.map((r) => r.total)
+    if (actualVals.some((v) => v <= 0)) return 0          // keep ₱0 days on-screen
+    const aiVals = mergedChartData.aiValues?.filter((v): v is number => v !== null) ?? []
+    const allVals = [...actualVals, ...aiVals]
+    if (allVals.length === 0) return 0
+    return Math.max(0, Math.min(...allVals) * 0.75)         // 25% breathing room below min
+  }, [trendSeries.rows, mergedChartData])
 
   return (
-    <main className="min-h-screen bg-[#F8FAFC] px-6 py-6">
-      <div className="mx-auto max-w-[1440px] space-y-6">
+    <main className="min-h-screen bg-[#F8FAFC] px-4 py-3">
+      <div className="mx-auto max-w-[1440px] space-y-3">
 
         {/* ── PAGE HEADER ──────────────────────────────────────────────────── */}
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="mb-1 flex items-center gap-2.5">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-600 shadow-sm">
-                <svg className="h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-                </svg>
-              </div>
-              <h1 className="text-2xl font-bold text-slate-900">Analytics</h1>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-600 shadow-sm">
+              <svg className="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+              </svg>
             </div>
-            <p className="text-sm text-slate-500">Analyze sales performance, customer demand, and AI-powered sales forecasting.</p>
+            <div>
+              <h1 className="text-lg font-bold text-slate-900">Analytics</h1>
+              <p className="text-xs text-slate-400">Sales performance, demand &amp; AI forecasting</p>
+            </div>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm text-slate-700 shadow-sm">
-              <svg className="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 shadow-sm">
+              <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
               </svg>
               <span className="font-medium">{activeRange.start.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
@@ -1183,20 +1189,20 @@ function AnalyticsContent() {
             </div>
             <button
               type="button"
-              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 transition"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 transition"
             >
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
               </svg>
-              Export Report
+              Export
             </button>
           </div>
         </div>
 
         {/* ── FILTERS ──────────────────────────────────────────────────────── */}
-        <div className="rounded-2xl border border-slate-100 bg-white px-6 py-4 shadow-sm">
-          <div className="flex flex-wrap items-end justify-between gap-4">
-            <div className="flex flex-wrap items-end gap-4">
+        <div className="rounded-xl border border-slate-100 bg-white px-4 py-3 shadow-sm">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div className="flex flex-wrap items-end gap-3">
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold uppercase tracking-wide text-slate-400">Time Range</label>
                 <select
@@ -1274,208 +1280,182 @@ function AnalyticsContent() {
         </div>
 
         {/* ── KPI CARDS ────────────────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
 
           {/* Total Sales */}
-          <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
             <div className="flex items-start justify-between">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Total Sales</p>
-                <p className="mt-2 text-xl font-bold text-slate-900">{currency(currentSummary.totalSales)}</p>
+              <div className="min-w-0">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Total Sales</p>
+                <p className="mt-1 text-base font-bold text-slate-900">{currency(currentSummary.totalSales)}</p>
               </div>
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-50">
-                <svg className="h-5 w-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-50">
+                <svg className="h-4 w-4 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
               </div>
             </div>
             {comparisonMetrics.totalSales[0] && (
-              <div className="mt-3 flex items-center gap-1.5">
-                <span className={`inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-semibold ${(comparisonMetrics.totalSales[0].change ?? 0) >= 0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+              <div className="mt-1.5 flex items-center gap-1">
+                <span className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${(comparisonMetrics.totalSales[0].change ?? 0) >= 0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
                   {(comparisonMetrics.totalSales[0].change ?? 0) >= 0 ? '↑' : '↓'} {percentFormatter.format(Math.abs(comparisonMetrics.totalSales[0].change ?? 0))}%
                 </span>
-                <span className="text-xs text-slate-400">vs last period</span>
+                <span className="text-[10px] text-slate-400">vs last period</span>
               </div>
             )}
           </div>
 
           {/* Items Sold */}
-          <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Items Sold</p>
-                <p className="mt-2 text-xl font-bold text-slate-900">{compactNumber.format(currentSummary.itemsSold)}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Items Sold</p>
+                <p className="mt-1 text-base font-bold text-slate-900">{compactNumber.format(currentSummary.itemsSold)}</p>
               </div>
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-green-50">
-                <svg className="h-5 w-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-green-50">
+                <svg className="h-4 w-4 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
                 </svg>
               </div>
             </div>
             {comparisonMetrics.itemsSold[0] && (
-              <div className="mt-3 flex items-center gap-1.5">
-                <span className={`inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-semibold ${(comparisonMetrics.itemsSold[0].change ?? 0) >= 0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+              <div className="mt-1.5 flex items-center gap-1">
+                <span className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${(comparisonMetrics.itemsSold[0].change ?? 0) >= 0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
                   {(comparisonMetrics.itemsSold[0].change ?? 0) >= 0 ? '↑' : '↓'} {percentFormatter.format(Math.abs(comparisonMetrics.itemsSold[0].change ?? 0))}%
                 </span>
-                <span className="text-xs text-slate-400">vs last period</span>
+                <span className="text-[10px] text-slate-400">vs last period</span>
               </div>
             )}
           </div>
 
           {/* Average Order Value */}
-          <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Avg Order Value</p>
-                <p className="mt-2 text-xl font-bold text-slate-900">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Avg Order</p>
+                <p className="mt-1 text-base font-bold text-slate-900">
                   {currentSummary.itemsSold > 0 ? currency(currentSummary.totalSales / currentSummary.itemsSold) : '₱0.00'}
                 </p>
               </div>
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-50">
-                <svg className="h-5 w-5 text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-violet-50">
+                <svg className="h-4 w-4 text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/>
                 </svg>
               </div>
             </div>
-            <div className="mt-3">
-              <span className="text-xs text-slate-400">per item sold</span>
-            </div>
+            <p className="mt-2 text-[10px] text-slate-400">per item sold</p>
           </div>
 
           {/* Transactions */}
-          <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Transactions</p>
-                <p className="mt-2 text-xl font-bold text-slate-900">{filteredSales.length}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Transactions</p>
+                <p className="mt-1 text-base font-bold text-slate-900">{filteredSales.length}</p>
               </div>
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-orange-50">
-                <svg className="h-5 w-5 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-orange-50">
+                <svg className="h-4 w-4 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
                 </svg>
               </div>
             </div>
-            <div className="mt-3">
-              <span className="text-xs text-slate-400">completed sales</span>
-            </div>
+            <p className="mt-2 text-[10px] text-slate-400">completed sales</p>
           </div>
 
           {/* Projected Demand */}
-          <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
             <div className="flex items-start justify-between">
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Projected Demand</p>
-                <p className="mt-2 truncate text-base font-bold text-indigo-700">{predictiveSummary.projectedFastMovingCategory}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Proj. Demand</p>
+                <p className="mt-1.5 truncate text-sm font-bold text-indigo-700">{predictiveSummary.projectedFastMovingCategory}</p>
               </div>
-              <div className="ml-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-50">
-                <svg className="h-5 w-5 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <div className="ml-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-indigo-50">
+                <svg className="h-4 w-4 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
                 </svg>
               </div>
             </div>
-            <div className="mt-3">
-              <span className="inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">High</span>
-              <span className="ml-2 text-xs text-slate-400">demand forecast</span>
+            <div className="mt-2">
+              <span className="inline-flex items-center rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">High</span>
+              <span className="ml-1.5 text-[10px] text-slate-400">demand</span>
             </div>
           </div>
 
           {/* AI Confidence Score */}
-          <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">AI Confidence</p>
-                <p className="mt-2 text-xl font-bold text-violet-700">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">AI Confidence</p>
+                <p className="mt-1 text-base font-bold text-violet-700">
                   {aiConfidenceNum !== null ? `${aiConfidenceNum}%` : '—'}
                 </p>
               </div>
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-50">
-                <svg className="h-5 w-5 text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-violet-50">
+                <svg className="h-4 w-4 text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17H3a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v10a2 2 0 01-2 2h-2"/>
                 </svg>
               </div>
             </div>
-            <div className="mt-3">
-              <span className="inline-flex items-center rounded-full bg-violet-50 px-2 py-0.5 text-xs font-semibold text-violet-700">
+            <div className="mt-2">
+              <span className="inline-flex items-center rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">
                 {aiForecast?.aiForecast?.confidence ?? 'No forecast'}
               </span>
             </div>
           </div>
         </div>
 
-        {/* ── MAIN: Hero Chart (75%) + AI Insights Panel (25%) ────────────── */}
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[3fr_1fr]" style={{ alignItems: 'stretch' }}>
+        {/* ── MAIN: Chart (75%) + AI Insights Panel (25%) ─────────────────── */}
+        <div className="grid grid-cols-1 gap-2 xl:grid-cols-[3fr_1fr]" style={{ alignItems: 'stretch' }}>
 
-          {/* ── Sales Trend + AI Forecast — hero chart card ─────────────────── */}
-          <div className="flex flex-col overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm">
+          {/* ── Sales Trend + AI Forecast chart card ────────────────────────── */}
+          <div className="flex flex-col overflow-hidden rounded-xl border border-slate-100 bg-white shadow-sm">
 
-            {/* Card header — title left, meta-chips + HTML legend right */}
-            <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 px-6 py-5">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2.5">
-                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-600">
-                    <svg className="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
-                    </svg>
-                  </div>
-                  <h2 className="text-base font-bold text-slate-900">Sales Trend &amp; AI Forecast</h2>
+            {/* Card header */}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-2.5">
+              <div className="flex items-center gap-2">
+                <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-blue-600">
+                  <svg className="h-3.5 w-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+                  </svg>
                 </div>
-                <p className="mt-1.5 text-xs text-slate-400">
-                  {trendSeries.granularity === 'day' ? 'Daily' : 'Monthly'} sales ·{' '}
-                  {activeRange.start.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })} –{' '}
-                  {activeRange.end.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}
-                </p>
+                <div>
+                  <h2 className="text-sm font-bold text-slate-900">Sales Trend &amp; AI Forecast</h2>
+                  <p className="text-[10px] text-slate-400">
+                    {trendSeries.granularity === 'day' ? 'Daily' : 'Monthly'} ·{' '}
+                    {activeRange.start.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })} –{' '}
+                    {activeRange.end.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </p>
+                </div>
               </div>
 
-              <div className="flex shrink-0 flex-col items-end gap-2.5">
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
                 {/* Metadata chips */}
-                <div className="flex flex-wrap items-center justify-end gap-1.5">
-                  <span className="inline-flex items-center gap-1 rounded-full border border-violet-100 bg-violet-50 px-2.5 py-1 text-[11px] font-semibold text-violet-700">
-                    <span className="h-1.5 w-1.5 rounded-full bg-violet-400"/>
-                    Confidence · {aiConfidenceNum !== null ? `${aiConfidenceNum}%` : '—'}
+                <span className="inline-flex items-center gap-1 rounded-full border border-violet-100 bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-700">
+                  <span className="h-1.5 w-1.5 rounded-full bg-violet-400"/>
+                  {aiConfidenceNum !== null ? `${aiConfidenceNum}% Confidence` : 'No AI'}
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-full border border-blue-100 bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+                  <span className="h-1.5 w-1.5 rounded-full bg-blue-400"/>
+                  {trendSeries.granularity === 'day' ? '7-day' : '1-period'} Forecast
+                </span>
+                {/* Legend */}
+                <span className="flex items-center gap-1 text-[10px] text-slate-500">
+                  <span className="inline-block h-0.5 w-4 rounded-full bg-blue-600"/>Actual
+                </span>
+                {mergedChartData.hasAI ? (
+                  <span className="flex items-center gap-1 text-[10px] text-slate-500">
+                    <svg width="16" height="4" viewBox="0 0 16 4"><line x1="0" y1="2" x2="16" y2="2" stroke="#7c3aed" strokeWidth="2" strokeDasharray="4 3"/></svg>AI
                   </span>
-                  <span className="inline-flex items-center gap-1 rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-700">
-                    <span className="h-1.5 w-1.5 rounded-full bg-blue-400"/>
-                    {trendSeries.granularity === 'day' ? '7-day' : '1-period'} Forecast
+                ) : (
+                  <span className="flex items-center gap-1 text-[10px] text-slate-500">
+                    <svg width="16" height="4" viewBox="0 0 16 4"><line x1="0" y1="2" x2="16" y2="2" stroke="#94a3b8" strokeWidth="2" strokeDasharray="4 3"/></svg>Forecast
                   </span>
-                  <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-500">
-                    <svg className="h-3 w-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                    </svg>
-                    {aiForecast?.generatedAt
-                      ? new Date(aiForecast.generatedAt).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                      : 'Not generated'}
-                  </span>
-                </div>
-
-                {/* HTML legend — aligned top-right */}
-                <div className="flex flex-wrap items-center justify-end gap-3.5 text-[11px] text-slate-500">
-                  <span className="flex items-center gap-1.5">
-                    <span className="inline-block h-0.5 w-5 rounded-full bg-blue-600"/>
-                    Actual Sales
-                  </span>
-                  {mergedChartData.hasAI ? (
-                    <>
-                      <span className="flex items-center gap-1.5">
-                        <svg width="20" height="4" viewBox="0 0 20 4"><line x1="0" y1="2" x2="20" y2="2" stroke="#7c3aed" strokeWidth="2" strokeDasharray="5 3"/></svg>
-                        AI Forecast
-                      </span>
-                      <span className="flex items-center gap-1.5">
-                        <span className="inline-block h-3.5 w-5 rounded" style={{ background: 'rgba(139,92,246,0.18)' }}/>
-                        Confidence Range
-                      </span>
-                    </>
-                  ) : (
-                    <span className="flex items-center gap-1.5">
-                      <svg width="20" height="4" viewBox="0 0 20 4"><line x1="0" y1="2" x2="20" y2="2" stroke="#94a3b8" strokeWidth="2" strokeDasharray="5 3"/></svg>
-                      Forecast
-                    </span>
-                  )}
-                </div>
+                )}
               </div>
             </div>
 
-            {/* Chart area — fills all remaining card height */}
-            <div className="relative min-h-[500px] flex-1 px-5 pb-5 pt-4">
+            {/* Chart area — fixed compact height */}
+            <div className="relative h-[355px] px-3 pb-2 pt-2">
               <Line
                 plugins={[{
                   id: 'forecastMarker',
@@ -1607,13 +1587,15 @@ function AnalyticsContent() {
                       ticks: { font: { size: 11 }, color: '#94a3b8', maxRotation: 0, autoSkipPadding: 12 },
                     },
                     y: {
-                      beginAtZero: true,
+                      beginAtZero: false,
+                      min: chartYMin,
                       grid: { color: '#f1f5f9' },
                       border: { display: false, dash: [4, 4] },
                       ticks: {
                         font: { size: 11 },
                         color: '#94a3b8',
                         padding: 8,
+                        maxTicksLimit: 5,
                         callback: (v) => `₱${Number(v).toLocaleString('en-PH')}`,
                       },
                     },
@@ -1622,45 +1604,45 @@ function AnalyticsContent() {
               />
             </div>
 
-            {/* Compact footer note */}
-            <div className="flex items-center gap-1.5 border-t border-slate-50 px-6 py-3">
-              <svg className="h-3.5 w-3.5 shrink-0 text-violet-400" fill="currentColor" viewBox="0 0 20 20">
+            {/* Footer note */}
+            <div className="flex items-center gap-1 px-4 pt-1 pb-2">
+              <svg className="h-3 w-3 shrink-0 text-violet-400" fill="currentColor" viewBox="0 0 20 20">
                 <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd"/>
               </svg>
-              <p className="text-[11px] text-slate-400">
-                Forecast generated using AI based on historical sales trends.
+              <p className="text-[10px] text-slate-400">
+                AI forecast based on historical sales trends.
                 {mergedChartData.hasAI && aiForecast?.fromCache && (
-                  <span className="ml-1 text-violet-400">· Served from cache</span>
+                  <span className="ml-1 text-violet-400">· Cached</span>
                 )}
               </p>
             </div>
           </div>
 
           {/* ── AI Forecast Insights Panel ───────────────────────────────────── */}
-          <div className="flex flex-col overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm">
+          <div className="flex flex-col overflow-hidden rounded-xl border border-slate-100 bg-white shadow-sm">
 
             {/* Panel header */}
-            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-5">
+            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
               <div className="flex items-center gap-2">
-                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-100">
-                  <span className="text-sm leading-none">✨</span>
+                <div className="flex h-6 w-6 items-center justify-center rounded-md bg-violet-100">
+                  <span className="text-xs leading-none">✨</span>
                 </div>
                 <h2 className="text-sm font-bold text-slate-900">AI Insights</h2>
               </div>
               {aiForecast?.fromCache && (
-                <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-500">CACHED</span>
+                <span className="rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-500">CACHED</span>
               )}
             </div>
 
             {/* Scrollable content */}
-            <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
+            <div className="flex flex-1 flex-col gap-1.5 overflow-y-auto px-3 py-2">
 
               {/* Generate button */}
               <button
                 type="button"
                 onClick={() => handleGenerateForecast(true)}
                 disabled={forecastLoading}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60 transition"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60 transition"
               >
                 {forecastLoading ? (
                   <>
@@ -1717,13 +1699,13 @@ function AnalyticsContent() {
               {!forecastLoading && aiForecast?.canForecast && aiForecast.aiForecast && (
                 <>
                   {/* AI Insight */}
-                  <div className="rounded-xl bg-violet-50 p-3.5">
+                  <div className="rounded-xl bg-violet-50 p-2.5">
                     <p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-violet-400">📈 AI Insight</p>
                     <p className="text-xs leading-relaxed text-slate-600">{aiForecast.aiForecast.insight}</p>
                   </div>
 
                   {/* Confidence Score bar */}
-                  <div className="rounded-xl border border-slate-100 bg-slate-50 p-3.5">
+                  <div className="rounded-xl border border-slate-100 bg-slate-50 p-2.5">
                     <div className="mb-2 flex items-center justify-between">
                       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">🧠 Confidence</p>
                       <span className="text-sm font-bold text-slate-900">{aiConfidenceNum !== null ? `${aiConfidenceNum}%` : '—'}</span>
@@ -1739,7 +1721,7 @@ function AnalyticsContent() {
 
                   {/* Fast-moving category */}
                   {aiForecast.summary && (
-                    <div className="rounded-xl border border-slate-100 bg-slate-50 p-3.5">
+                    <div className="rounded-xl border border-slate-100 bg-slate-50 p-2.5">
                       <p className="mb-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-400">🔥 Fast-Moving</p>
                       <p className="text-sm font-bold text-slate-900">{aiForecast.summary.topCategories[0]?.name ?? '—'}</p>
                       <p className="mt-0.5 text-xs text-slate-400">{currency(aiForecast.summary.topCategories[0]?.revenue ?? 0)} revenue</p>
@@ -1764,7 +1746,7 @@ function AnalyticsContent() {
 
                   {/* Recommended restock from top categories */}
                   {aiForecast.summary && aiForecast.summary.topCategories.length > 1 && (
-                    <div className="rounded-xl border border-slate-100 bg-slate-50 p-3.5">
+                    <div className="rounded-xl border border-slate-100 bg-slate-50 p-2.5">
                       <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">📦 Top Categories</p>
                       <div className="space-y-1.5">
                         {aiForecast.summary.topCategories.slice(0, 3).map((cat, i) => (
@@ -1790,19 +1772,19 @@ function AnalyticsContent() {
             </div>
 
             {/* Panel footer */}
-            <div className="border-t border-slate-50 px-5 py-3">
-              <p className="text-[10px] text-slate-400">Powered by Predictive AI Engine · {trendSeries.granularity === 'day' ? '7-day' : '1-period'} window</p>
+            <div className="border-t border-slate-50 px-3 py-1">
+              <p className="text-[10px] text-slate-400">Predictive AI Engine · {trendSeries.granularity === 'day' ? '7-day' : '1-period'} window</p>
             </div>
           </div>
         </div>
 
         {/* ── LOWER CHARTS ROW ─────────────────────────────────────────────── */}
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
 
           {/* Category Distribution */}
-          <div className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
             <h3 className="text-sm font-bold text-slate-900">Category Distribution</h3>
-            <p className="mt-0.5 mb-4 text-xs text-slate-400">Sales distribution by category</p>
+            <p className="mt-0.5 mb-3 text-xs text-slate-400">Sales distribution by category</p>
             {currentSummary.categories.length === 0 ? (
               <p className="py-8 text-center text-sm text-slate-400">No category data available.</p>
             ) : (
@@ -1856,9 +1838,9 @@ function AnalyticsContent() {
           </div>
 
           {/* Sales by Condition */}
-          <div className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
             <h3 className="text-sm font-bold text-slate-900">Sales by Condition</h3>
-            <p className="mt-0.5 mb-4 text-xs text-slate-400">Breakdown by item condition</p>
+            <p className="mt-0.5 mb-3 text-xs text-slate-400">Breakdown by item condition</p>
             {salesByCondition.total === 0 ? (
               <p className="py-8 text-center text-sm text-slate-400">No condition data available.</p>
             ) : (
@@ -1913,8 +1895,8 @@ function AnalyticsContent() {
           </div>
 
           {/* Reservation Activity */}
-          <div className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
-            <div className="mb-4 flex items-start justify-between">
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+            <div className="mb-3 flex items-start justify-between">
               <div>
                 <h3 className="text-sm font-bold text-slate-900">Reservation Activity</h3>
                 <p className="mt-0.5 text-xs text-slate-400">{getRangeLabel(timeRangePreset)}</p>
@@ -1979,11 +1961,11 @@ function AnalyticsContent() {
         </div>
 
         {/* ── DATA TABLES ROW ──────────────────────────────────────────────── */}
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[2fr_1fr_1fr]">
+        <div className="grid grid-cols-1 gap-2 xl:grid-cols-[2fr_1fr_1fr]">
 
           {/* Top Categories */}
-          <div className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
-            <div className="mb-4 flex items-center justify-between">
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+            <div className="mb-3 flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-bold text-slate-900">Top Categories</h3>
                 <p className="mt-0.5 text-xs text-slate-400">Ranked by sales amount</p>
@@ -2023,8 +2005,8 @@ function AnalyticsContent() {
           </div>
 
           {/* Top Products */}
-          <div className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
-            <div className="mb-4">
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+            <div className="mb-3">
               <h3 className="text-sm font-bold text-slate-900">Top Products</h3>
               <p className="mt-0.5 text-xs text-slate-400">Best performing products</p>
             </div>
@@ -2047,8 +2029,8 @@ function AnalyticsContent() {
           </div>
 
           {/* Inventory by Category */}
-          <div className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
-            <div className="mb-4">
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+            <div className="mb-3">
               <h3 className="text-sm font-bold text-slate-900">Inventory by Category</h3>
               <p className="mt-0.5 text-xs text-slate-400">Current stock snapshot</p>
             </div>
@@ -2068,11 +2050,11 @@ function AnalyticsContent() {
         </div>
 
         {/* ── PREDICTIVE ANALYTICS + EXECUTIVE SUMMARY ─────────────────────── */}
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+        <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
 
           {/* Predictive Analytics — modern stat cards */}
-          <div className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
-            <div className="mb-5 flex items-center justify-between">
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+            <div className="mb-4 flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-bold text-slate-900">Predictive Analytics</h3>
                 <p className="mt-0.5 text-xs text-slate-400">AI-powered category demand forecast</p>
@@ -2107,8 +2089,8 @@ function AnalyticsContent() {
           </div>
 
           {/* Executive Summary — status cards */}
-          <div className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
-            <div className="mb-5">
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+            <div className="mb-4">
               <h3 className="text-sm font-bold text-slate-900">Executive Summary</h3>
               <p className="mt-0.5 text-xs text-slate-400">Key insights for {getRangeLabel(timeRangePreset).toLowerCase()}</p>
             </div>

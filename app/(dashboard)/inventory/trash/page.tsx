@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
-import { collection, onSnapshot } from 'firebase/firestore'
+import { collection, getDocs } from 'firebase/firestore'
 import { toast } from 'sonner'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { auth, db } from '@/lib/firebase'
@@ -169,40 +169,45 @@ function InventoryTrashContent() {
   const [perPage, setPerPage] = useState(10)
 
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'inventory'), (snap) => {
-      const rows: TrashItem[] = snap.docs.map((docItem) => {
-        const data = docItem.data() as Record<string, unknown>
-        return {
-          id: docItem.id,
-          name: typeof data.name === 'string' ? data.name.trim() : '',
-          sku: typeof data.sku === 'string' ? data.sku.trim() : (typeof data.id === 'string' ? data.id.slice(0, 12).toUpperCase() : docItem.id.slice(0, 12).toUpperCase()),
-          category: (typeof data.categoryName === 'string' && data.categoryName.trim()) || (typeof data.category === 'string' && data.category.trim()) || 'Uncategorized',
-          condition: normalizeInventoryCondition(data.condition),
-          stock: Math.max(0, toNumber(data.stock ?? data.quantity, 0)),
-          reservedStock: Math.max(0, toNumber(data.reservedStock, 0)),
-          isDeleted: data.isDeleted === true,
-          isVoided: data.isVoided === true,
-          deletedAt: typeof data.deletedAt === 'string' ? data.deletedAt : null,
-          voidedAt: typeof data.voidedAt === 'string' ? data.voidedAt : null,
-          voidedBy: typeof data.voidedBy === 'string' ? data.voidedBy : null,
-          voidReason: typeof data.voidReason === 'string' ? data.voidReason : null,
-          restoredAt: typeof data.restoredAt === 'string' ? data.restoredAt : null,
-        }
-      }).filter(item => item.name && (item.isDeleted || item.isVoided))
-
-      rows.sort((a, b) => {
-        const at = a.voidedAt ?? a.deletedAt ?? ''
-        const bt = b.voidedAt ?? b.deletedAt ?? ''
-        return bt.localeCompare(at)
-      })
-      setItems(rows)
-      setLoading(false)
-    }, (err) => {
-      console.error(err)
-      setError('Failed to load trash.')
-      setLoading(false)
-    })
-    return () => unsub()
+    let cancelled = false
+    async function loadTrash() {
+      try {
+        const snap = await getDocs(collection(db, 'inventory'))
+        if (cancelled) return
+        const rows: TrashItem[] = snap.docs.map((docItem) => {
+          const data = docItem.data() as Record<string, unknown>
+          return {
+            id: docItem.id,
+            name: typeof data.name === 'string' ? data.name.trim() : '',
+            sku: typeof data.sku === 'string' ? data.sku.trim() : (typeof data.id === 'string' ? data.id.slice(0, 12).toUpperCase() : docItem.id.slice(0, 12).toUpperCase()),
+            category: (typeof data.categoryName === 'string' && data.categoryName.trim()) || (typeof data.category === 'string' && data.category.trim()) || 'Uncategorized',
+            condition: normalizeInventoryCondition(data.condition),
+            stock: Math.max(0, toNumber(data.stock ?? data.quantity, 0)),
+            reservedStock: Math.max(0, toNumber(data.reservedStock, 0)),
+            isDeleted: data.isDeleted === true,
+            isVoided: data.isVoided === true,
+            deletedAt: typeof data.deletedAt === 'string' ? data.deletedAt : null,
+            voidedAt: typeof data.voidedAt === 'string' ? data.voidedAt : null,
+            voidedBy: typeof data.voidedBy === 'string' ? data.voidedBy : null,
+            voidReason: typeof data.voidReason === 'string' ? data.voidReason : null,
+            restoredAt: typeof data.restoredAt === 'string' ? data.restoredAt : null,
+          }
+        }).filter(item => item.name && (item.isDeleted || item.isVoided))
+        rows.sort((a, b) => {
+          const at = a.voidedAt ?? a.deletedAt ?? ''
+          const bt = b.voidedAt ?? b.deletedAt ?? ''
+          return bt.localeCompare(at)
+        })
+        setItems(rows)
+        setLoading(false)
+      } catch (err) {
+        console.error(err)
+        setError('Failed to load trash.')
+        setLoading(false)
+      }
+    }
+    loadTrash()
+    return () => { cancelled = true }
   }, [])
 
   const categories = useMemo(() => Array.from(new Set(items.map(i => i.category))).sort(), [items])

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { collection, doc, getDoc, onSnapshot, orderBy, query, limit } from 'firebase/firestore'
+import { collection, doc, getDoc, getDocs, orderBy, query, limit } from 'firebase/firestore'
 import { onAuthStateChanged } from 'firebase/auth'
 import {
   ChevronRight, TrendingUp, TrendingDown,
@@ -136,9 +136,17 @@ function DashboardContent() {
   }, [])
 
   useEffect(() => {
-    const unsubs = [
-      onSnapshot(collection(db, 'inventory'), snap => {
-        setInventory(snap.docs.map(d => {
+    let cancelled = false
+    async function loadData() {
+      try {
+        const [invSnap, salesSnap, resSnap, logsSnap] = await Promise.all([
+          getDocs(collection(db, 'inventory')),
+          getDocs(collection(db, 'sales')),
+          getDocs(query(collection(db, 'reservations'), orderBy('createdAt', 'desc'))),
+          getDocs(query(collection(db, 'stockLogs'), orderBy('createdAt', 'desc'), limit(20))),
+        ])
+        if (cancelled) return
+        setInventory(invSnap.docs.map(d => {
           const data = d.data() as Record<string, unknown>
           return {
             id: d.id,
@@ -151,10 +159,7 @@ function DashboardContent() {
             isDeleted: data.isDeleted === true,
           }
         }).filter(i => !i.isDeleted))
-        setLoading(false)
-      }),
-      onSnapshot(collection(db, 'sales'), snap => {
-        setSales(snap.docs.map(d => {
+        setSales(salesSnap.docs.map(d => {
           const data = d.data() as Record<string, unknown>
           return {
             id: d.id,
@@ -166,9 +171,7 @@ function DashboardContent() {
             createdAt: toDate(data.createdAt),
           }
         }))
-      }),
-      onSnapshot(query(collection(db, 'reservations'), orderBy('createdAt', 'desc')), snap => {
-        setReservations(snap.docs.map(d => {
+        setReservations(resSnap.docs.map(d => {
           const data = d.data() as Record<string, unknown>
           return {
             id: d.id,
@@ -179,9 +182,7 @@ function DashboardContent() {
             createdAt: toDate(data.createdAt),
           }
         }))
-      }),
-      onSnapshot(query(collection(db, 'stockLogs'), orderBy('createdAt', 'desc'), limit(20)), snap => {
-        setStockLogs(snap.docs.map(d => {
+        setStockLogs(logsSnap.docs.map(d => {
           const data = d.data() as Record<string, unknown>
           return {
             id: d.id,
@@ -191,9 +192,11 @@ function DashboardContent() {
             createdAt: toDate(data.createdAt),
           }
         }))
-      }),
-    ]
-    return () => unsubs.forEach(u => u())
+        setLoading(false)
+      } catch (_) { setLoading(false) }
+    }
+    loadData()
+    return () => { cancelled = true }
   }, [])
 
   // ── KPI computations ──────────────────────────────────────────────────────

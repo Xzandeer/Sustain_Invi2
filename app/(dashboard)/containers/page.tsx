@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   collection,
-  onSnapshot,
+  getDocs,
   addDoc,
   updateDoc,
   doc,
@@ -574,11 +574,19 @@ function ContainersContent() {
   const [addItemTarget, setAddItemTarget]       = useState<ContainerDoc | null>(null)
   const [savingItem, setSavingItem]             = useState(false)
 
-  // Firestore listeners
+  // One-time fetch (containers page doesn't need live updates)
   useEffect(() => {
-    const unsubs = [
-      onSnapshot(collection(db, 'containers'), snap => {
-        const docs: ContainerDoc[] = snap.docs.map(d => {
+    let cancelled = false
+    async function loadData() {
+      try {
+        const [contSnap, invSnap, salesSnap, catSnap] = await Promise.all([
+          getDocs(collection(db, 'containers')),
+          getDocs(collection(db, 'inventory')),
+          getDocs(collection(db, 'sales')),
+          getDocs(collection(db, 'categories')),
+        ])
+        if (cancelled) return
+        const docs: ContainerDoc[] = contSnap.docs.map(d => {
           const data = d.data() as Record<string, unknown>
           return {
             id: d.id,
@@ -596,11 +604,7 @@ function ContainersContent() {
           return b.purchaseDate.localeCompare(a.purchaseDate)
         })
         setContainers(docs)
-        setLoading(false)
-      }),
-
-      onSnapshot(collection(db, 'inventory'), snap => {
-        setInventory(snap.docs.map(d => {
+        setInventory(invSnap.docs.map(d => {
           const data = d.data() as Record<string, unknown>
           return {
             id: d.id,
@@ -613,10 +617,7 @@ function ContainersContent() {
             containerId: data.containerId ? String(data.containerId) : undefined,
           }
         }))
-      }),
-
-      onSnapshot(collection(db, 'sales'), snap => {
-        setSales(snap.docs.map(d => {
+        setSales(salesSnap.docs.map(d => {
           const data = d.data() as Record<string, unknown>
           return {
             id: d.id,
@@ -624,17 +625,16 @@ function ContainersContent() {
             status: String(data.status ?? 'completed'),
           }
         }))
-      }),
-
-      onSnapshot(collection(db, 'categories'), snap => {
-        const list: Category[] = snap.docs
+        const list: Category[] = catSnap.docs
           .map(d => { const data = d.data() as Record<string, unknown>; return { id: d.id, name: String(data.name ?? '').trim() } })
           .filter(c => c.name)
         list.sort((a, b) => a.name.localeCompare(b.name))
         setCategories(list)
-      }),
-    ]
-    return () => unsubs.forEach(u => u())
+        setLoading(false)
+      } catch (_) { setLoading(false) }
+    }
+    loadData()
+    return () => { cancelled = true }
   }, [])
 
   // Precompute sold qty map across all sales

@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react'
-import { collection, onSnapshot, orderBy, query } from 'firebase/firestore'
+import { collection, getDocs, orderBy, query, limit } from 'firebase/firestore'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { db } from '@/lib/firebase'
 import { getStockLogActionLabel, resolveStockLogAction, ResolvedStockLogAction } from '@/lib/inventory/stockLogActions'
@@ -172,40 +172,46 @@ function InventoryLogsContent() {
   const now = useNow()
 
   useEffect(() => {
-    const q = query(collection(db, 'stockLogs'), orderBy('createdAt', 'desc'))
-    const unsub = onSnapshot(q, (snap) => {
-      const records = snap.docs.map((doc) => {
-        const data = doc.data() as Record<string, unknown>
-        const actionType = typeof data.actionType === 'string' ? data.actionType : ''
-        const resolvedAction = resolveStockLogAction({
-          actionType, remarks: data.remarks,
-          quantityChanged: toNumber(data.quantityChanged, 0),
-          stockBefore: toNumber(data.stockBefore, 0), stockAfter: toNumber(data.stockAfter, 0),
-          reservedBefore: toNumber(data.reservedBefore, 0), reservedAfter: toNumber(data.reservedAfter, 0),
+    let cancelled = false
+    async function loadLogs() {
+      try {
+        // Limit to 500 most recent logs to avoid reading the entire collection on every load
+        const snap = await getDocs(query(collection(db, 'stockLogs'), orderBy('createdAt', 'desc'), limit(500)))
+        if (cancelled) return
+        const records = snap.docs.map((doc) => {
+          const data = doc.data() as Record<string, unknown>
+          const actionType = typeof data.actionType === 'string' ? data.actionType : ''
+          const resolvedAction = resolveStockLogAction({
+            actionType, remarks: data.remarks,
+            quantityChanged: toNumber(data.quantityChanged, 0),
+            stockBefore: toNumber(data.stockBefore, 0), stockAfter: toNumber(data.stockAfter, 0),
+            reservedBefore: toNumber(data.reservedBefore, 0), reservedAfter: toNumber(data.reservedAfter, 0),
+          })
+          return {
+            id: doc.id, actionType, resolvedAction,
+            itemId: typeof data.itemId === 'string' ? data.itemId : '',
+            itemName: typeof data.itemName === 'string' ? data.itemName : 'Unnamed Item',
+            condition: typeof data.condition === 'string' ? data.condition : 'Unknown',
+            previousValue: typeof data.previousValue === 'string' ? data.previousValue : '',
+            newValue: typeof data.newValue === 'string' ? data.newValue : '',
+            quantityBefore: toNumber(data.quantityBefore, 0),
+            quantityChanged: toNumber(data.quantityChanged, 0),
+            quantityAfter: toNumber(data.quantityAfter, 0),
+            stockBefore: toNumber(data.stockBefore, 0), stockAfter: toNumber(data.stockAfter, 0),
+            reservedBefore: toNumber(data.reservedBefore, 0), reservedAfter: toNumber(data.reservedAfter, 0),
+            userName: typeof data.userName === 'string' && data.userName.trim() ? data.userName : 'System User',
+            userEmail: typeof data.userEmail === 'string' ? data.userEmail.trim() : '',
+            relatedId: typeof data.relatedId === 'string' ? data.relatedId.trim() : '',
+            remarks: typeof data.remarks === 'string' ? data.remarks : '',
+            createdAt: toDate(data.createdAt),
+          } satisfies StockLogRecord
         })
-        return {
-          id: doc.id, actionType, resolvedAction,
-          itemId: typeof data.itemId === 'string' ? data.itemId : '',
-          itemName: typeof data.itemName === 'string' ? data.itemName : 'Unnamed Item',
-          condition: typeof data.condition === 'string' ? data.condition : 'Unknown',
-          previousValue: typeof data.previousValue === 'string' ? data.previousValue : '',
-          newValue: typeof data.newValue === 'string' ? data.newValue : '',
-          quantityBefore: toNumber(data.quantityBefore, 0),
-          quantityChanged: toNumber(data.quantityChanged, 0),
-          quantityAfter: toNumber(data.quantityAfter, 0),
-          stockBefore: toNumber(data.stockBefore, 0), stockAfter: toNumber(data.stockAfter, 0),
-          reservedBefore: toNumber(data.reservedBefore, 0), reservedAfter: toNumber(data.reservedAfter, 0),
-          userName: typeof data.userName === 'string' && data.userName.trim() ? data.userName : 'System User',
-          userEmail: typeof data.userEmail === 'string' ? data.userEmail.trim() : '',
-          relatedId: typeof data.relatedId === 'string' ? data.relatedId.trim() : '',
-          remarks: typeof data.remarks === 'string' ? data.remarks : '',
-          createdAt: toDate(data.createdAt),
-        } satisfies StockLogRecord
-      })
-      setLogs(records.filter(r => r.resolvedAction !== 'unmapped_action'))
-      setLoading(false)
-    }, (err) => { console.error(err); setError('Failed to load stock logs.'); setLoading(false) })
-    return () => unsub()
+        setLogs(records.filter(r => r.resolvedAction !== 'unmapped_action'))
+        setLoading(false)
+      } catch (err) { console.error(err); setError('Failed to load stock logs.'); setLoading(false) }
+    }
+    loadLogs()
+    return () => { cancelled = true }
   }, [])
 
   const actionOptions = useMemo(() =>

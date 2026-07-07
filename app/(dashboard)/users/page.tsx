@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { doc, onSnapshot, updateDoc, collection } from 'firebase/firestore'
+import { doc, getDocs, updateDoc, collection } from 'firebase/firestore'
 import { useRouter } from 'next/navigation'
 import { db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
@@ -38,24 +38,27 @@ function UsersContent() {
 
   useEffect(() => {
     if (!isAdmin) return
-
-    const unsubscribe = onSnapshot(collection(db, 'users'), (snapshot) => {
-      const list: AppUser[] = snapshot.docs.map((userDoc) => {
-        const data = userDoc.data() as Record<string, unknown>
-        return {
-          id: userDoc.id,
-          name: typeof data.name === 'string' && data.name.trim() ? data.name : 'Unknown User',
-          email: typeof data.email === 'string' ? data.email : '',
-          role: data.role === 'admin' ? 'admin' : 'staff',
-          canViewStockLogs: data.canViewStockLogs === true,
-        }
-      })
-
-      list.sort((a, b) => a.email.localeCompare(b.email))
-      setUsers(list)
-    })
-
-    return () => unsubscribe()
+    let cancelled = false
+    async function loadUsers() {
+      try {
+        const snap = await getDocs(collection(db, 'users'))
+        if (cancelled) return
+        const list: AppUser[] = snap.docs.map((userDoc) => {
+          const data = userDoc.data() as Record<string, unknown>
+          return {
+            id: userDoc.id,
+            name: typeof data.name === 'string' && data.name.trim() ? data.name : 'Unknown User',
+            email: typeof data.email === 'string' ? data.email : '',
+            role: data.role === 'admin' ? 'admin' : 'staff',
+            canViewStockLogs: data.canViewStockLogs === true,
+          }
+        })
+        list.sort((a, b) => a.email.localeCompare(b.email))
+        setUsers(list)
+      } catch (_) {}
+    }
+    loadUsers()
+    return () => { cancelled = true }
   }, [isAdmin])
 
   const updateRole = async (userId: string, role: UserRole) => {

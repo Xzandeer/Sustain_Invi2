@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { collection, onSnapshot } from 'firebase/firestore'
+import { collection, getDocs } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
@@ -88,16 +88,23 @@ function CustomersContent() {
   const [search, setSearch]           = useState('')
   const [expanded, setExpanded]       = useState<string | null>(null)
 
-  // Realtime listeners
+  // One-time fetch (not real-time — customer list doesn't need live updates)
   useEffect(() => {
-    const unsubSales = onSnapshot(collection(db, 'sales'), (snap) => {
-      setSales(snap.docs.map((d) => ({ id: d.id, ...d.data() } as SaleDoc)))
-    })
-    const unsubRes = onSnapshot(collection(db, 'reservations'), (snap) => {
-      setReservations(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ReservationDoc)))
-      setLoading(false)
-    })
-    return () => { unsubSales(); unsubRes() }
+    let cancelled = false
+    async function loadData() {
+      try {
+        const [salesSnap, resSnap] = await Promise.all([
+          getDocs(collection(db, 'sales')),
+          getDocs(collection(db, 'reservations')),
+        ])
+        if (cancelled) return
+        setSales(salesSnap.docs.map((d) => ({ id: d.id, ...d.data() } as SaleDoc)))
+        setReservations(resSnap.docs.map((d) => ({ id: d.id, ...d.data() } as ReservationDoc)))
+        setLoading(false)
+      } catch (_) { setLoading(false) }
+    }
+    loadData()
+    return () => { cancelled = true }
   }, [])
 
   // Build customer map keyed by normalised email
