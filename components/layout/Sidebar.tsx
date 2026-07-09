@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, BarChart3, ShoppingCart, Package,
   Package2, Trash2, Users, LogOut, Calendar,
-  ClipboardList, UserCheck,
+  ClipboardList, UserCheck, Settings,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
@@ -126,6 +126,14 @@ export default function Sidebar() {
             </nav>
           </div>
         )}
+
+        {/* ACCOUNT */}
+        <div>
+          <p className="mb-1.5 px-3 text-[10px] font-bold uppercase tracking-widest text-gray-500">Account</p>
+          <nav className="space-y-0.5">
+            <NavItem item={{ name: 'Settings', href: '/settings', icon: Settings }} />
+          </nav>
+        </div>
       </div>
 
       {/* User profile */}
