@@ -1,6 +1,8 @@
 'use client'
 
-import { X } from 'lucide-react'
+import { useState } from 'react'
+import { X, RotateCcw } from 'lucide-react'
+import { toast } from 'sonner'
 
 export interface SaleTransaction {
   docId: string
@@ -16,23 +18,23 @@ export interface SaleTransaction {
     condition: string
   }>
   totalAmount: number
-  status: 'completed' | 'voided'
+  status: 'completed' | 'voided' | 'refunded'
   createdAt: Date | null
 }
 
 interface SalesViewModalProps {
   transaction: SaleTransaction | null
   onClose: () => void
+  onRefunded?: (docId: string) => void
 }
 
-const formatAmount = (amount: number) => {
-  return amount.toLocaleString('en-PH', {
+const formatAmount = (amount: number) =>
+  amount.toLocaleString('en-PH', {
     style: 'currency',
     currency: 'PHP',
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })
-}
 
 const formatDate = (date: Date | null) => {
   if (!date) return 'N/A'
@@ -45,12 +47,47 @@ const formatDate = (date: Date | null) => {
   })
 }
 
-export default function SalesViewModal({ transaction, onClose }: SalesViewModalProps) {
+export default function SalesViewModal({ transaction, onClose, onRefunded }: SalesViewModalProps) {
+  const [showConfirm, setShowConfirm] = useState(false)
+  const [reason, setReason] = useState('')
+  const [loading, setLoading] = useState(false)
+
   if (!transaction) return null
+
+  const handleRefund = async () => {
+    setLoading(true)
+    try {
+      const res = await fetch(`/api/sales/refund`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ saleId: transaction.docId, reason: reason.trim() || 'Refund processed' }),
+      })
+      const data = await res.json() as { error?: string }
+      if (!res.ok) {
+        toast.error(data.error ?? 'Failed to process refund')
+        return
+      }
+      toast.success(`Refund processed for ${transaction.receiptNumber}`)
+      onRefunded?.(transaction.docId)
+      onClose()
+    } catch {
+      toast.error('Network error. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const statusBadge = {
+    completed: 'bg-green-100 text-green-700',
+    voided: 'bg-red-100 text-red-700',
+    refunded: 'bg-amber-100 text-amber-700',
+  }[transaction.status]
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
       <div className="w-full max-w-2xl rounded-xl border bg-white p-6 shadow-sm">
+
+        {/* Header */}
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-xl font-semibold text-slate-900">Transaction Details</h2>
           <button onClick={onClose} className="text-slate-500 transition hover:text-slate-700" title="Close">
@@ -58,29 +95,76 @@ export default function SalesViewModal({ transaction, onClose }: SalesViewModalP
           </button>
         </div>
 
+        {/* Details */}
         <div className="space-y-3 text-sm text-slate-700">
           <p><span className="font-semibold text-slate-900">Receipt Number:</span> {transaction.receiptNumber}</p>
           <p><span className="font-semibold text-slate-900">Customer:</span> {transaction.customer}</p>
           <p><span className="font-semibold text-slate-900">Email:</span> {transaction.customerEmail || 'No email provided'}</p>
           <p>
             <span className="font-semibold text-slate-900">Items purchased:</span>{' '}
-            {transaction.items.length > 0 ? transaction.items.map((item) => `${item.name} (${item.condition})`).join(', ') : 'N/A'}
+            {transaction.items.length > 0
+              ? transaction.items.map((item) => `${item.name} x${item.quantity} (${item.condition})`).join(', ')
+              : 'N/A'}
           </p>
           <p><span className="font-semibold text-slate-900">Total amount:</span> {formatAmount(transaction.totalAmount)}</p>
           <p><span className="font-semibold text-slate-900">Date:</span> {formatDate(transaction.createdAt)}</p>
-          <p>
-            <span className="font-semibold text-slate-900">Status:</span>{' '}
-            {transaction.status === 'voided' ? 'Voided' : 'Completed'}
+          <p className="flex items-center gap-2">
+            <span className="font-semibold text-slate-900">Status:</span>
+            <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${statusBadge}`}>
+              {transaction.status}
+            </span>
           </p>
         </div>
 
-        <div className="mt-6">
+        {/* Refund confirmation inline */}
+        {showConfirm && (
+          <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4">
+            <p className="text-sm font-semibold text-amber-800 mb-2">
+              Confirm Refund — items will be restocked automatically
+            </p>
+            <input
+              type="text"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Reason for refund (optional)"
+              className="w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-amber-500 mb-3"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={handleRefund}
+                disabled={loading}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60 transition"
+              >
+                {loading ? 'Processing…' : 'Confirm Refund'}
+              </button>
+              <button
+                onClick={() => setShowConfirm(false)}
+                className="rounded-lg border px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Footer buttons */}
+        <div className="mt-6 flex items-center justify-between">
           <button
             onClick={onClose}
             className="rounded-lg border px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
           >
             Close
           </button>
+
+          {transaction.status === 'completed' && !showConfirm && (
+            <button
+              onClick={() => setShowConfirm(true)}
+              className="inline-flex items-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-600 transition"
+            >
+              <RotateCcw className="h-4 w-4" />
+              Refund
+            </button>
+          )}
         </div>
       </div>
     </div>

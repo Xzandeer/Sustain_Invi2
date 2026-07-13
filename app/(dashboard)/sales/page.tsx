@@ -35,7 +35,7 @@ interface SaleTransaction {
     condition: string
   }>
   totalAmount: number
-  status: 'completed' | 'voided'
+  status: 'completed' | 'voided' | 'refunded'
   createdAt: Date | null
 }
 
@@ -129,6 +129,9 @@ function SalesContent() {
   const [inventoryPage, setInventoryPage] = useState(1)
   const [discount, setDiscount] = useState(0)
   const [showAllSalesModal, setShowAllSalesModal] = useState(false)
+  const [showRefundConfirm, setShowRefundConfirm] = useState(false)
+  const [refundReason, setRefundReason] = useState('')
+  const [refundLoading, setRefundLoading] = useState(false)
   const ITEMS_PER_PAGE = 10
   const documentRef = useRef<HTMLDivElement | null>(null)
   const deferredSearch = useDeferredValue(search)
@@ -233,7 +236,7 @@ function SalesContent() {
             customerEmail: typeof data.customerEmail === 'string' ? data.customerEmail.trim() : '',
             items,
             totalAmount: toNumber(data.totalAmount, toNumber(data.total, toNumber(data.amount))),
-            status: parsedStatus === 'voided' ? 'voided' : 'completed',
+            status: parsedStatus === 'voided' ? 'voided' : parsedStatus === 'refunded' ? 'refunded' : 'completed',
             createdAt: toDate(data.date ?? data.saleDate ?? data.createdAt ?? data.timestamp),
           }
         })
@@ -432,6 +435,34 @@ function SalesContent() {
   const cartTotal = Math.max(0, cartSubtotal - discount)
   const isCompletedMode = completedDocument !== null
   const completedDocumentEmail = completedDocument?.customer.email.trim() ?? ''
+
+  const handleRefund = async () => {
+    if (!selectedTransaction) return
+    setRefundLoading(true)
+    try {
+      const res = await fetch('/api/sales/refund', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          saleId: selectedTransaction.docId,
+          reason: refundReason.trim() || 'Refund processed',
+        }),
+      })
+      const data = await res.json() as { error?: string }
+      if (!res.ok) {
+        toast.error(data.error ?? 'Failed to process refund')
+        return
+      }
+      toast.success(`Refund processed for ${selectedTransaction.receiptNumber}`)
+      setSelectedTransaction(null)
+      setShowRefundConfirm(false)
+      setRefundReason('')
+    } catch {
+      toast.error('Network error. Please try again.')
+    } finally {
+      setRefundLoading(false)
+    }
+  }
 
   const exportDocumentAsImage = async () => {
     if (!documentRef.current || !completedDocument) return
@@ -1260,12 +1291,17 @@ function SalesContent() {
                 <h2 className="font-semibold text-slate-900">Transaction Detail</h2>
                 <p className="text-xs text-slate-500">{selectedTransaction.receiptNumber || selectedTransaction.id}</p>
               </div>
-              <button type="button" onClick={() => setSelectedTransaction(null)} className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50">Close</button>
+              <button type="button" onClick={() => { setSelectedTransaction(null); setShowRefundConfirm(false); setRefundReason('') }} className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50">Close</button>
             </div>
             <div className="p-4 space-y-3 text-sm">
               <div className="flex justify-between"><span className="text-slate-500">Customer</span><span className="font-medium">{selectedTransaction.customer ?? '—'}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">Total</span><span className="font-semibold">{currency(selectedTransaction.totalAmount ?? 0)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Status</span><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${selectedTransaction.status === 'voided' ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700'}`}>{selectedTransaction.status === 'voided' ? 'Voided' : 'Completed'}</span></div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500">Status</span>
+                <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${selectedTransaction.status === 'voided' ? 'bg-red-50 text-red-600' : selectedTransaction.status === 'refunded' ? 'bg-amber-50 text-amber-700' : 'bg-green-50 text-green-700'}`}>
+                  {selectedTransaction.status === 'voided' ? 'Voided' : selectedTransaction.status === 'refunded' ? 'Refunded' : 'Completed'}
+                </span>
+              </div>
               {Array.isArray(selectedTransaction.items) && selectedTransaction.items.length > 0 ? (
                 <div>
                   <p className="mb-2 font-medium text-slate-700">Items</p>
@@ -1283,6 +1319,49 @@ function SalesContent() {
                   </table>
                 </div>
               ) : null}
+
+              {/* Refund section */}
+              {selectedTransaction.status === 'completed' && (
+                <div className="pt-2">
+                  {!showRefundConfirm ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowRefundConfirm(true)}
+                      className="w-full rounded-lg border border-amber-300 bg-amber-50 py-2 text-sm font-semibold text-amber-700 hover:bg-amber-100 transition"
+                    >
+                      Process Refund
+                    </button>
+                  ) : (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
+                      <p className="text-xs font-semibold text-amber-800">Items will be restocked automatically</p>
+                      <input
+                        type="text"
+                        value={refundReason}
+                        onChange={(e) => setRefundReason(e.target.value)}
+                        placeholder="Reason for refund (optional)"
+                        className="w-full rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-amber-500"
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={handleRefund}
+                          disabled={refundLoading}
+                          className="flex-1 rounded-lg bg-red-600 py-1.5 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-60 transition"
+                        >
+                          {refundLoading ? 'Processing…' : 'Confirm Refund'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setShowRefundConfirm(false); setRefundReason('') }}
+                          className="rounded-lg border px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 transition"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1318,8 +1397,8 @@ function SalesContent() {
                       <td className="px-4 py-3 text-right text-slate-600">{Array.isArray(tx.items) ? tx.items.reduce((sum: number, item: { quantity: number }) => sum + (item.quantity ?? 0), 0) : '—'}</td>
                       <td className="px-4 py-3 text-right font-medium text-slate-900">{currency(tx.totalAmount ?? 0)}</td>
                       <td className="px-4 py-3 text-center">
-                        <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${tx.status === 'voided' ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700'}`}>
-                          {tx.status === 'voided' ? 'Voided' : 'Completed'}
+                        <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${tx.status === 'voided' ? 'bg-red-50 text-red-600' : tx.status === 'refunded' ? 'bg-amber-50 text-amber-700' : 'bg-green-50 text-green-700'}`}>
+                          {tx.status === 'voided' ? 'Voided' : tx.status === 'refunded' ? 'Refunded' : 'Completed'}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-center">
@@ -1336,13 +1415,13 @@ function SalesContent() {
         </div>
       ) : null}
 
-      {/* ── Email Modal ── */}
+      {/* Email Modal */}
       {showEmailModal ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl">
             <div className="border-b border-slate-200 px-5 py-4">
               <h2 className="font-semibold text-slate-900">Send Receipt</h2>
-              <p className="mt-0.5 text-xs text-slate-500">Enter the customer&apos;s email to send the receipt from JMGS Japon Surplus.</p>
+              <p className="mt-0.5 text-xs text-slate-500">Enter the customer email to send the receipt from JMGS Japon Surplus.</p>
             </div>
             <div className="px-5 py-4 space-y-3">
               <div>
