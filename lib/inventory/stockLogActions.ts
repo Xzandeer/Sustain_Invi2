@@ -10,6 +10,7 @@ export type ResolvedStockLogAction =
   | 'stock_transferred_in'
   | 'transfer'
   | 'sale_deduction'
+  | 'sale_refund'
   | 'reservation_deduction'
   | 'reservation_claim'
   | 'reservation_release'
@@ -32,6 +33,7 @@ const STOCK_LOG_ACTION_LABELS: Record<ResolvedStockLogAction, string> = {
   stock_transferred_in: 'Transfer In',
   transfer: 'Stock Transfer',
   sale_deduction: 'Sale Deduction',
+  sale_refund: 'Sale Refund',
   reservation_deduction: 'Reservation Deduction',
   reservation_claim: 'Reservation Claim',
   reservation_release: 'Reservation Release',

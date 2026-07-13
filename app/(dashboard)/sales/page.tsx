@@ -105,7 +105,7 @@ function SalesContent() {
   const [successMessage, setSuccessMessage] = useState('')
 
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'voided'>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'voided' | 'refunded'>('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
@@ -1327,7 +1327,7 @@ function SalesContent() {
                     <button
                       type="button"
                       onClick={() => setShowRefundConfirm(true)}
-                      className="w-full rounded-lg border border-amber-300 bg-amber-50 py-2 text-sm font-semibold text-amber-700 hover:bg-amber-100 transition"
+                      className="w-full rounded-lg bg-blue-600 py-2 text-sm font-semibold text-white hover:bg-blue-700 transition"
                     >
                       Process Refund
                     </button>
@@ -1371,9 +1371,38 @@ function SalesContent() {
       {showAllSalesModal ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-200 p-4 shrink-0">
-              <h2 className="font-semibold text-slate-900">All Sales</h2>
-              <button type="button" onClick={() => setShowAllSalesModal(false)} className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50">Close</button>
+            <div className="border-b border-slate-200 p-4 shrink-0 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="font-semibold text-slate-900">All Sales</h2>
+                <button type="button" onClick={() => setShowAllSalesModal(false)} className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50">Close</button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <div className="flex flex-1 min-w-[200px] items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5">
+                  <svg className="h-4 w-4 shrink-0 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="11" cy="11" r="8"/><path strokeLinecap="round" d="M21 21l-4.35-4.35"/></svg>
+                  <input
+                    type="text"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Search receipt, customer, item..."
+                    className="w-full bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400"
+                  />
+                  {search && (
+                    <button type="button" onClick={() => setSearch('')} className="text-slate-400 hover:text-slate-600">
+                      <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                  )}
+                </div>
+                <select
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value as 'all' | 'completed' | 'voided' | 'refunded')}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:outline-none"
+                >
+                  <option value="all">All Status</option>
+                  <option value="completed">Completed</option>
+                  <option value="refunded">Refunded</option>
+                  <option value="voided">Voided</option>
+                </select>
+              </div>
             </div>
             <div className="overflow-y-auto flex-1">
               <table className="w-full text-sm">

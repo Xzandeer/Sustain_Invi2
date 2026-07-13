@@ -69,6 +69,8 @@ function ActionBadge({ action, label }: { action: ResolvedStockLogAction; label:
     switch (action) {
       case 'stock_increased': case 'item_added': case 'stock_transferred_in': case 'reservation_release':
         return 'bg-emerald-100 text-emerald-800'
+      case 'sale_refund':
+        return 'bg-blue-100 text-blue-800'
       case 'stock_decreased': case 'sale_deduction': case 'reservation_deduction': case 'reservation_claim': case 'stock_transferred_out':
         return 'bg-amber-100 text-amber-800'
       case 'condition_changed': case 'item_edited':

@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
 
         await addDoc(collection(db, 'stockLogs'), {
           createdAt: serverTimestamp(),
-          actionType: 'stock_increased',
+          actionType: 'sale_refund',
           itemId: item.itemId,
           itemName: item.name,
           condition: item.condition ?? itemData.condition ?? 'New',
