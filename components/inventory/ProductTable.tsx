@@ -21,6 +21,7 @@ export interface Product {
   voidedAt?: string | null
   voidedBy?: string | null
   voidReason?: string | null
+  createdAtMs?: number
 }
 
 interface ProductTableProps {

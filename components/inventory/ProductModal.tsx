@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { X } from 'lucide-react'
+import { WARRANTY_DAYS } from '@/lib/constants/warranty'
 
 export interface ProductFormValues {
   name: string
@@ -207,6 +208,16 @@ export default function ProductModal({
                   <option value="Refurbished">Refurbished</option>
                 </select>
               )}
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-900">Warranty</label>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600">
+                <p>
+                  <span className="font-medium text-slate-900">{WARRANTY_DAYS} days</span> refund window
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500">Store-wide policy applied to all items.</p>
+              </div>
             </div>
 
             {/* Container linking — shown only when containers exist */}

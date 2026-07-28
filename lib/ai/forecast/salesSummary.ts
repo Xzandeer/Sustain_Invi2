@@ -54,9 +54,10 @@ export interface SalesSummary {
   reason?: string
 }
 
-export async function getSalesSummary(): Promise<SalesSummary> {
+export async function getSalesSummary(categoryFilter?: string): Promise<SalesSummary> {
   const db = getAdminDb()
   const now = new Date()
+  const wantedCategory = categoryFilter?.trim().toLowerCase() || null
 
   // Only fetch last 28 days — avoids loading the entire sales collection
   const since = new Date(now)
@@ -83,8 +84,25 @@ export async function getSalesSummary(): Promise<SalesSummary> {
     const dt = getSaleDate(d)
     if (!dt) return
     const key = dt.toISOString().split('T')[0]
+
+    // Per-category mode: revenue counted only from matching line items
+    const allItems = Array.isArray(d.items) ? (d.items as Array<Record<string, unknown>>) : []
+    let saleRevenue: number
+    let countsAsTransaction: boolean
+    if (wantedCategory) {
+      const matching = allItems.filter(item =>
+        String(item.categoryName ?? item.category ?? '').trim().toLowerCase() === wantedCategory
+      )
+      saleRevenue = matching.reduce((s, item) => s + toNum(item.price) * toNum(item.quantity, 1), 0)
+      countsAsTransaction = matching.length > 0
+      if (!countsAsTransaction) return
+    } else {
+      saleRevenue = getSaleAmount(d)
+      countsAsTransaction = true
+    }
+
     if (!byDay[key]) byDay[key] = { revenue: 0, transactions: 0 }
-    byDay[key].revenue += getSaleAmount(d)
+    byDay[key].revenue += saleRevenue
     byDay[key].transactions += 1
 
     // Category breakdown (last 14 days only)

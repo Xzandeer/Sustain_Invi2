@@ -143,3 +143,6 @@ vite.config.ts.timestamp-*
 # Local secrets file
 .env.local 
 .env.development.local
+
+# Dev-only seeder (no auth guard - never deploy)
+app/api/dev/

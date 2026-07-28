@@ -27,7 +27,11 @@ export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
   // ?force=true bypasses Firestore cache and always calls OpenAI fresh
-  const force = new URL(req.url).searchParams.get('force') === 'true'
+  // ?category=Footwear scopes the forecast to a single category
+  const url = new URL(req.url)
+  const force = url.searchParams.get('force') === 'true'
+  const categoryParam = url.searchParams.get('category')?.trim() || undefined
+  const category = categoryParam && categoryParam.toLowerCase() !== 'all' ? categoryParam : undefined
 
   try {
     // ── 1. Check API key ──────────────────────────────────────────────────────
@@ -40,7 +44,7 @@ export async function GET(req: NextRequest) {
     }
 
     // ── 2. Fetch summarized sales data ────────────────────────────────────────
-    const summary = await getSalesSummary()
+    const summary = await getSalesSummary(category)
 
     if (!summary.canForecast) {
       return NextResponse.json({
@@ -56,12 +60,13 @@ export async function GET(req: NextRequest) {
     const baseForecast = buildWeightedForecast(summary.daily)
 
     // ── 4. AI enhancement layer ───────────────────────────────────────────────
-    const aiForecast = await enhanceWithAI(baseForecast, summary, apiKey, force)
+    const aiForecast = await enhanceWithAI(baseForecast, summary, apiKey, force, category)
 
     // ── 5. Return combined result ─────────────────────────────────────────────
     return NextResponse.json({
       success: true,
       canForecast: true,
+      category: category ?? 'all',
       baseForecast: {
         forecast: baseForecast.forecast,
         avgDailyRevenue: baseForecast.avgDailyRevenue,

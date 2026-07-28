@@ -55,6 +55,7 @@ function InventoryContent() {
   const [stockStatusFilter, setStockStatusFilter] = useState('all')
   const [minPrice, setMinPrice] = useState('')
   const [maxPrice, setMaxPrice] = useState('')
+  const [sortBy, setSortBy] = useState<'recent' | 'name' | 'price_low' | 'price_high'>('recent')
 
   const [isProductModalOpen, setIsProductModalOpen] = useState(false)
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false)
@@ -123,6 +124,12 @@ function InventoryContent() {
               voidedAt: typeof data.voidedAt === 'string' ? data.voidedAt : null,
               voidedBy: typeof data.voidedBy === 'string' ? data.voidedBy : null,
               voidReason: typeof data.voidReason === 'string' ? data.voidReason : null,
+              createdAtMs: (() => {
+                const raw = data.createdAt as { seconds?: number } | string | undefined
+                if (raw && typeof raw === 'object' && typeof raw.seconds === 'number') return raw.seconds * 1000
+                if (typeof raw === 'string') { const t = Date.parse(raw); return Number.isNaN(t) ? 0 : t }
+                return 0
+              })(),
             }
           })
           .filter((item) => item.name && item.isDeleted !== true)
@@ -185,7 +192,13 @@ function InventoryContent() {
       .filter((product) =>
         maxPriceValue == null || Number.isNaN(maxPriceValue) ? true : product.price <= maxPriceValue
       )
-  }, [inventory, search, categoryFilter, conditionFilter, stockStatusFilter, minPrice, maxPrice, voidTab])
+      .sort((a, b) => {
+        if (sortBy === 'recent') return (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0)
+        if (sortBy === 'name') return a.name.localeCompare(b.name)
+        if (sortBy === 'price_low') return a.price - b.price
+        return b.price - a.price
+      })
+  }, [inventory, search, categoryFilter, conditionFilter, stockStatusFilter, minPrice, maxPrice, voidTab, sortBy])
 
   const handleSaveProduct = async (values: ProductFormValues) => {
     setError('')
@@ -574,6 +587,16 @@ function InventoryContent() {
               placeholder="Max price"
               className="w-40 rounded-lg border border-slate-200 px-3 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none"
             />
+            <select
+              value={sortBy}
+              onChange={(e) => { setSortBy(e.target.value as typeof sortBy); setCurrentPage(1) }}
+              className="w-48 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 focus:border-blue-400 focus:outline-none"
+            >
+              <option value="recent">Recently Added</option>
+              <option value="name">Name (A–Z)</option>
+              <option value="price_low">Price (Low to High)</option>
+              <option value="price_high">Price (High to Low)</option>
+            </select>
           </div>
           {/* Row 3: action buttons */}
           <div className="flex flex-wrap items-center gap-2">
@@ -598,7 +621,7 @@ function InventoryContent() {
               Apply Filters
             </button>
             <button
-              onClick={() => { setSearch(''); setCategoryFilter('all'); setConditionFilter('all'); setStockStatusFilter('all'); setMinPrice(''); setMaxPrice('') }}
+              onClick={() => { setSearch(''); setCategoryFilter('all'); setConditionFilter('all'); setStockStatusFilter('all'); setMinPrice(''); setMaxPrice(''); setSortBy('recent') }}
               className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
             >
               <svg className="h-4 w-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

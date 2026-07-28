@@ -8,6 +8,7 @@ import {
   getProcessedByInfo,
 } from '@/lib/server/inventory'
 import { createTransactionNumber } from '@/lib/server/transactionNumbers'
+import { WARRANTY_DAYS } from '@/lib/constants/warranty'
 import { parseDateRange, toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import {
   SALES_THANK_YOU_NOTE,
@@ -271,6 +272,7 @@ export async function POST(req: NextRequest) {
         categoryId: item.categoryId,
         categoryName: item.categoryName,
         condition: item.condition,
+        warrantyDays: WARRANTY_DAYS,
         status: 'completed',
       })),
       categoryName: categoryNames.join(', '),

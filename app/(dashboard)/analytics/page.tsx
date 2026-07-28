@@ -727,12 +727,22 @@ function AnalyticsContent() {
     return () => { cancelled = true }
   }, [])
 
-  // Auto-load AI forecast from cache on mount
+  // Resolve the selected category ID to its display name for the forecast API
+  const forecastCategoryName = useMemo(() => {
+    if (selectedCategory === 'All Categories') return null
+    const match = categories.find((c) => c.id === selectedCategory)
+    return match?.name ?? null
+  }, [selectedCategory, categories])
+
+  // Auto-load AI forecast from cache on mount and when category changes
   useEffect(() => {
     let cancelled = false
     async function loadCachedForecast() {
       try {
-        const res = await fetch('/api/forecast/ai-enhanced')
+        const params = new URLSearchParams()
+        if (forecastCategoryName) params.set('category', forecastCategoryName)
+        const qs = params.toString()
+        const res = await fetch(`/api/forecast/ai-enhanced${qs ? `?${qs}` : ''}`)
         if (!res.ok) return
         const data: AIForecastData = await res.json()
         if (!cancelled) setAiForecast(data)
@@ -740,13 +750,17 @@ function AnalyticsContent() {
     }
     loadCachedForecast()
     return () => { cancelled = true }
-  }, [])
+  }, [forecastCategoryName])
 
   const handleGenerateForecast = async (force = false) => {
     setForecastLoading(true)
     setForecastError(null)
     try {
-      const url = force ? '/api/forecast/ai-enhanced?force=true' : '/api/forecast/ai-enhanced'
+      const params = new URLSearchParams()
+      if (force) params.set('force', 'true')
+      if (forecastCategoryName) params.set('category', forecastCategoryName)
+      const qs = params.toString()
+      const url = `/api/forecast/ai-enhanced${qs ? `?${qs}` : ''}`
       const res = await fetch(url)
       const data: AIForecastData = await res.json()
       if (!res.ok) {

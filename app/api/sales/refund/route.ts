@@ -8,6 +8,7 @@ import {
   collection,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { WARRANTY_DAYS } from '@/lib/constants/warranty'
 
 export async function POST(req: NextRequest) {
   try {
@@ -44,14 +45,43 @@ export async function POST(req: NextRequest) {
       name: string
       quantity: number
       condition?: string
+      warrantyDays?: number
     }> = Array.isArray(saleData.items)
       ? (saleData.items as Record<string, unknown>[]).map((item) => ({
           itemId: typeof item.itemId === 'string' ? item.itemId : undefined,
           name: typeof item.name === 'string' ? item.name : 'Unknown Item',
           quantity: typeof item.quantity === 'number' ? item.quantity : 1,
           condition: typeof item.condition === 'string' ? item.condition : undefined,
+          warrantyDays: typeof item.warrantyDays === 'number' ? item.warrantyDays : undefined,
         }))
       : []
+
+    // ── Warranty check: refund only allowed within the warranty window ──
+    // Sale date comes from transactionDate (ISO) or createdAt (Firestore Timestamp).
+    const saleDate = (() => {
+      const iso = saleData.transactionDate
+      if (typeof iso === 'string') {
+        const t = Date.parse(iso)
+        if (!Number.isNaN(t)) return new Date(t)
+      }
+      const raw = saleData.createdAt as { seconds?: number } | undefined
+      if (raw && typeof raw === 'object' && typeof raw.seconds === 'number') {
+        return new Date(raw.seconds * 1000)
+      }
+      return null
+    })()
+
+    if (saleDate) {
+      const daysSinceSale = (Date.now() - saleDate.getTime()) / (1000 * 60 * 60 * 24)
+      if (daysSinceSale > WARRANTY_DAYS) {
+        return NextResponse.json(
+          {
+            error: `Refund period has expired. This sale was completed ${Math.floor(daysSinceSale)} day(s) ago, and the warranty window is ${WARRANTY_DAYS} days.`,
+          },
+          { status: 400 }
+        )
+      }
+    }
 
     // 2. Restock each item and log it
     for (const item of items) {

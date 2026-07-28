@@ -28,7 +28,7 @@ export interface AIEnhancementResult {
 // ── Prompt builder ─────────────────────────────────────────────────────────────
 // Compact prompt: gives GPT only what it needs, minimizing token usage.
 
-function buildPrompt(base: WeightedForecastResult, summary: SalesSummary): string {
+function buildPrompt(base: WeightedForecastResult, summary: SalesSummary, category?: string): string {
   const topCats = summary.topCategories
     .map(c => `${c.name}: ${c.units} units`)
     .join(', ')
@@ -40,6 +40,7 @@ function buildPrompt(base: WeightedForecastResult, summary: SalesSummary): strin
     .join(', ')
 
   return `You are a sales forecasting engine for a Philippine surplus retail store.
+${category ? `\nSCOPE: This forecast covers ONLY the "${category}" category. All figures below are ${category} revenue only.\n` : ''}
 
 STATISTICAL BASE FORECAST (7 days):
 ${base.forecast.map(d => `${d.day} (${d.date}): ${d.weighted}`).join('\n')}
@@ -190,10 +191,14 @@ interface CacheDocument {
   expiresAt: number    // Unix ms
 }
 
-async function readFromFirestore(): Promise<AIEnhancementResult | null> {
+// Cache key varies per category so category forecasts don't collide
+const cacheDocId = (category?: string) =>
+  category ? `${CACHE_DOC}_${category.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_')}` : CACHE_DOC
+
+async function readFromFirestore(category?: string): Promise<AIEnhancementResult | null> {
   try {
     const db = getAdminDb()
-    const snap = await db.collection(CACHE_COLLECTION).doc(CACHE_DOC).get()
+    const snap = await db.collection(CACHE_COLLECTION).doc(cacheDocId(category)).get()
     if (!snap.exists) return null
     const doc = snap.data() as CacheDocument
     if (Date.now() > doc.expiresAt) return null   // expired
@@ -203,7 +208,7 @@ async function readFromFirestore(): Promise<AIEnhancementResult | null> {
   }
 }
 
-async function writeToFirestore(result: AIEnhancementResult): Promise<void> {
+async function writeToFirestore(result: AIEnhancementResult, category?: string): Promise<void> {
   try {
     const db = getAdminDb()
     const doc: CacheDocument = {
@@ -211,7 +216,7 @@ async function writeToFirestore(result: AIEnhancementResult): Promise<void> {
       cachedAt: Date.now(),
       expiresAt: Date.now() + CACHE_TTL_MS,
     }
-    await db.collection(CACHE_COLLECTION).doc(CACHE_DOC).set(doc)
+    await db.collection(CACHE_COLLECTION).doc(cacheDocId(category)).set(doc)
   } catch {
     // Non-fatal — cache write failure just means next request re-calls OpenAI
   }
@@ -223,16 +228,17 @@ export async function enhanceWithAI(
   base: WeightedForecastResult,
   summary: SalesSummary,
   apiKey: string,
-  force = false           // true = bypass cache, always call OpenAI fresh
+  force = false,          // true = bypass cache, always call OpenAI fresh
+  category?: string       // optional: forecast scoped to a specific category
 ): Promise<AIEnhancementResult> {
   // 1. Try Firestore cache first — skip if force=true (user clicked Regenerate)
   if (!force) {
-    const cached = await readFromFirestore()
+    const cached = await readFromFirestore(category)
     if (cached) return cached
   }
 
   // 2. Call OpenAI
-  const prompt = buildPrompt(base, summary)
+  const prompt = buildPrompt(base, summary, category)
   let raw: string
   try {
     raw = await callOpenAI(apiKey, prompt)
@@ -260,7 +266,7 @@ export async function enhanceWithAI(
 
   // 4. Persist to Firestore (non-blocking)
   if (!result.error) {
-    writeToFirestore(result).catch(() => {})
+    writeToFirestore(result, category).catch(() => {})
   }
 
   return result

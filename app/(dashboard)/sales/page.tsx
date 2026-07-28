@@ -18,6 +18,19 @@ import {
 } from '@/lib/transactions/transactionDocuments'
 import { normalizeInventoryCondition, toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { openReceiptPrintWindow } from '@/lib/transactions/receiptPrint'
+import { WARRANTY_DAYS } from '@/lib/constants/warranty'
+
+// Whole days elapsed since the sale — null when the date is unknown
+const refundDaysElapsed = (saleDate: Date | null | undefined) => {
+  if (!saleDate) return null
+  return Math.floor((Date.now() - saleDate.getTime()) / 86400000)
+}
+
+// Mirrors the server-side check in /api/sales/refund
+const isRefundExpired = (saleDate: Date | null | undefined) => {
+  const days = refundDaysElapsed(saleDate)
+  return days !== null && days > WARRANTY_DAYS
+}
 
 interface SaleTransaction {
   docId: string
@@ -115,6 +128,7 @@ function SalesContent() {
   const [inventoryStockStatusFilter, setInventoryStockStatusFilter] = useState<'all' | 'Available' | 'Low Stock' | 'Out of Stock'>('all')
   const [customerFullName, setCustomerFullName] = useState('')
   const [customerEmail, setCustomerEmail] = useState('')
+  const [showReserveForm, setShowReserveForm] = useState(false)
   const [customerContactNumber, setCustomerContactNumber] = useState('')
   const [cart, setCart] = useState<CartItem[]>([])
   const [completedDocument, setCompletedDocument] = useState<CompletedTransactionDocument | null>(null)
@@ -675,7 +689,21 @@ function SalesContent() {
       return
     }
 
+    // Reservations require customer details — show the form first
+    if (!showReserveForm) {
+      setShowReserveForm(true)
+      setError('')
+      return
+    }
 
+    if (!customerFullName.trim()) {
+      setError('Customer name is required for reservations.')
+      return
+    }
+    if (!customerContactNumber.trim()) {
+      setError('Customer contact number is required for reservations.')
+      return
+    }
 
     setSubmitting(true)
     setError('')
@@ -733,6 +761,7 @@ function SalesContent() {
       const active = result.receipt ?? null
       setActiveReceipt(active)
       setCompletedDocument(result.document ?? null)
+      setShowReserveForm(false)
       setSuccessMessage('Reservation created successfully.')
       toast.success('Reservation created successfully.')
     } catch (reservationError) {
@@ -1220,24 +1249,43 @@ function SalesContent() {
                   <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
                   </svg>
-                  Reserve Order
+                  {showReserveForm ? 'Confirm Reservation' : 'Reserve Order'}
                 </button>
+                {showReserveForm && (
+                  <button
+                    type="button"
+                    onClick={() => { setShowReserveForm(false); setError('') }}
+                    className="w-full rounded-xl px-4 py-1.5 text-xs font-medium text-slate-500 transition hover:text-slate-700"
+                  >
+                    Cancel reservation
+                  </button>
+                )}
               </div>
             </div>
 
-            {/* Customer Information */}
+            {/* Customer Information — walk-in: name only (optional). Reservation: full details required. */}
             <div className="rounded-2xl border border-slate-200 bg-white shadow-sm shrink-0">
               <div className="border-b border-slate-100 px-4 py-3">
                 <div className="flex items-center gap-2">
                   <svg className="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                   </svg>
-                  <span className="text-sm font-semibold text-slate-900">Customer Information</span>
+                  <span className="text-sm font-semibold text-slate-900">
+                    {showReserveForm ? 'Reservation Details' : 'Customer'}
+                  </span>
+                  {showReserveForm && (
+                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700">Required</span>
+                  )}
                 </div>
               </div>
               <div className="px-4 py-3 space-y-2.5">
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-600">Name <span className="font-normal text-slate-400">(Optional)</span></label>
+                  <label className="mb-1 block text-xs font-medium text-slate-600">
+                    Name{' '}
+                    {showReserveForm
+                      ? <span className="font-semibold text-rose-500">*</span>
+                      : <span className="font-normal text-slate-400">(Optional — printed on receipt)</span>}
+                  </label>
                   <input
                     type="text"
                     value={customerFullName}
@@ -1247,28 +1295,32 @@ function SalesContent() {
                     className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none disabled:opacity-60"
                   />
                 </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-600">Email <span className="font-normal text-slate-400">(Optional)</span></label>
-                  <input
-                    type="email"
-                    value={customerEmail}
-                    onChange={(e) => setCustomerEmail(e.target.value)}
-                    placeholder="Email address"
-                    disabled={isCompletedMode}
-                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none disabled:opacity-60"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-600">Phone <span className="font-normal text-slate-400">(Optional)</span></label>
-                  <input
-                    type="tel"
-                    value={customerContactNumber}
-                    onChange={(e) => setCustomerContactNumber(e.target.value)}
-                    placeholder="09XXXXXXXXX"
-                    disabled={isCompletedMode}
-                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none disabled:opacity-60"
-                  />
-                </div>
+                {showReserveForm && (
+                  <>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-600">Phone <span className="font-semibold text-rose-500">*</span></label>
+                      <input
+                        type="tel"
+                        value={customerContactNumber}
+                        onChange={(e) => setCustomerContactNumber(e.target.value)}
+                        placeholder="09XXXXXXXXX"
+                        disabled={isCompletedMode}
+                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none disabled:opacity-60"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-600">Email <span className="font-normal text-slate-400">(Optional)</span></label>
+                      <input
+                        type="email"
+                        value={customerEmail}
+                        onChange={(e) => setCustomerEmail(e.target.value)}
+                        placeholder="Email address"
+                        disabled={isCompletedMode}
+                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none disabled:opacity-60"
+                      />
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
@@ -1320,10 +1372,34 @@ function SalesContent() {
                 </div>
               ) : null}
 
+              {/* Warranty status */}
+              {selectedTransaction.status === 'completed' && (() => {
+                const days = refundDaysElapsed(selectedTransaction.createdAt)
+                if (days === null) return null
+                const left = WARRANTY_DAYS - days
+                return (
+                  <div className="flex justify-between text-xs">
+                    <span className="text-slate-500">Warranty ({WARRANTY_DAYS} days)</span>
+                    <span className={left >= 0 ? 'font-medium text-emerald-600' : 'font-medium text-rose-600'}>
+                      {left >= 0
+                        ? `${left} day${left === 1 ? '' : 's'} left to refund`
+                        : `Expired ${Math.abs(left)} day${Math.abs(left) === 1 ? '' : 's'} ago`}
+                    </span>
+                  </div>
+                )
+              })()}
+
               {/* Refund section */}
               {selectedTransaction.status === 'completed' && (
                 <div className="pt-2">
-                  {!showRefundConfirm ? (
+                  {isRefundExpired(selectedTransaction.createdAt) ? (
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-center">
+                      <p className="text-xs font-semibold text-slate-600">Refund period has expired</p>
+                      <p className="mt-0.5 text-[11px] text-slate-500">
+                        This sale is past the {WARRANTY_DAYS}-day warranty window and can no longer be refunded.
+                      </p>
+                    </div>
+                  ) : !showRefundConfirm ? (
                     <button
                       type="button"
                       onClick={() => setShowRefundConfirm(true)}
