@@ -24,6 +24,42 @@ interface ContainerOption {
   name: string
 }
 
+type SortOption =
+  | 'recent' | 'oldest'
+  | 'name' | 'name_desc'
+  | 'price_low' | 'price_high'
+  | 'stock_low' | 'stock_high'
+  | 'category'
+
+const SORT_OPTIONS: { value: SortOption; label: string }[] = [
+  { value: 'recent',     label: 'Recently Added' },
+  { value: 'oldest',     label: 'Oldest First' },
+  { value: 'name',       label: 'Name (A\u2013Z)' },
+  { value: 'name_desc',  label: 'Name (Z\u2013A)' },
+  { value: 'price_low',  label: 'Price (Low to High)' },
+  { value: 'price_high', label: 'Price (High to Low)' },
+  { value: 'stock_low',  label: 'Stock (Low to High)' },
+  { value: 'stock_high', label: 'Stock (High to Low)' },
+  { value: 'category',   label: 'Category (A\u2013Z)' },
+]
+
+type ColumnKey = 'category' | 'price' | 'stock' | 'reserved' | 'available' | 'condition' | 'status'
+
+const COLUMN_LABELS: { key: ColumnKey; label: string }[] = [
+  { key: 'category',  label: 'Category' },
+  { key: 'price',     label: 'Price' },
+  { key: 'stock',     label: 'Stock' },
+  { key: 'reserved',  label: 'Reserved' },
+  { key: 'available', label: 'Available' },
+  { key: 'condition', label: 'Condition' },
+  { key: 'status',    label: 'Stock Status' },
+]
+
+const DEFAULT_COLUMNS: Record<ColumnKey, boolean> = {
+  category: true, price: true, stock: true,
+  reserved: true, available: true, condition: true, status: true,
+}
+
 const toNumber = (value: unknown, fallback = 0) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string') {
@@ -57,7 +93,28 @@ function InventoryContent() {
   const [stockStatusFilter, setStockStatusFilter] = useState('all')
   const [minPrice, setMinPrice] = useState('')
   const [maxPrice, setMaxPrice] = useState('')
-  const [sortBy, setSortBy] = useState<'recent' | 'name' | 'price_low' | 'price_high'>('recent')
+  const [sortBy, setSortBy] = useState<SortOption>('recent')
+  const [showTableOptions, setShowTableOptions] = useState(false)
+  const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>(DEFAULT_COLUMNS)
+
+  // Restore the user's saved table preferences
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('sustain.inventory.tablePrefs')
+      if (!raw) return
+      const saved = JSON.parse(raw) as { sortBy?: SortOption; columns?: Record<string, boolean> }
+      if (saved.sortBy) setSortBy(saved.sortBy)
+      if (saved.columns) setVisibleColumns(prev => ({ ...prev, ...saved.columns }))
+    } catch { /* ignore malformed preferences */ }
+  }, [])
+
+  // Persist whenever they change
+  useEffect(() => {
+    try {
+      localStorage.setItem('sustain.inventory.tablePrefs',
+        JSON.stringify({ sortBy, columns: visibleColumns }))
+    } catch { /* storage unavailable */ }
+  }, [sortBy, visibleColumns])
 
   const [isProductModalOpen, setIsProductModalOpen] = useState(false)
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false)
@@ -195,10 +252,18 @@ function InventoryContent() {
         maxPriceValue == null || Number.isNaN(maxPriceValue) ? true : product.price <= maxPriceValue
       )
       .sort((a, b) => {
-        if (sortBy === 'recent') return (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0)
-        if (sortBy === 'name') return a.name.localeCompare(b.name)
-        if (sortBy === 'price_low') return a.price - b.price
-        return b.price - a.price
+        switch (sortBy) {
+          case 'recent':     return (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0)
+          case 'oldest':     return (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0)
+          case 'name':       return a.name.localeCompare(b.name)
+          case 'name_desc':  return b.name.localeCompare(a.name)
+          case 'price_low':  return a.price - b.price
+          case 'price_high': return b.price - a.price
+          case 'stock_low':  return a.quantity - b.quantity
+          case 'stock_high': return b.quantity - a.quantity
+          case 'category':   return a.category.localeCompare(b.category) || a.name.localeCompare(b.name)
+          default:           return 0
+        }
       })
   }, [inventory, search, categoryFilter, conditionFilter, stockStatusFilter, minPrice, maxPrice, voidTab, sortBy])
 
@@ -596,13 +661,10 @@ function InventoryContent() {
             />
             <select
               value={sortBy}
-              onChange={(e) => { setSortBy(e.target.value as typeof sortBy); setCurrentPage(1) }}
-              className="w-48 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 focus:border-blue-400 focus:outline-none"
+              onChange={(e) => { setSortBy(e.target.value as SortOption); setCurrentPage(1) }}
+              className="w-52 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 focus:border-blue-400 focus:outline-none"
             >
-              <option value="recent">Recently Added</option>
-              <option value="name">Name (A–Z)</option>
-              <option value="price_low">Price (Low to High)</option>
-              <option value="price_high">Price (High to Low)</option>
+              {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </div>
           {/* Row 3: action buttons */}
@@ -750,11 +812,64 @@ function InventoryContent() {
                 </svg>
                 Export
               </button>
-              <button className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50">
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-                </svg>
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setShowTableOptions(v => !v)}
+                  title="Table options"
+                  className={`flex h-9 w-9 items-center justify-center rounded-lg border transition ${
+                    showTableOptions
+                      ? 'border-blue-300 bg-blue-50 text-blue-600'
+                      : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+                  }`}
+                >
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                  </svg>
+                </button>
+
+                {showTableOptions && (
+                  <>
+                    {/* click-away backdrop */}
+                    <div className="fixed inset-0 z-20" onClick={() => setShowTableOptions(false)} />
+                    <div className="absolute right-0 z-30 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-3 shadow-lg">
+                      <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Sort By</p>
+                      <select
+                        value={sortBy}
+                        onChange={(e) => { setSortBy(e.target.value as SortOption); setCurrentPage(1) }}
+                        className="mb-3 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm text-slate-800 focus:border-blue-400 focus:outline-none"
+                      >
+                        {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </select>
+
+                      <div className="mb-2 flex items-center justify-between">
+                        <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Columns</p>
+                        <button
+                          onClick={() => setVisibleColumns(DEFAULT_COLUMNS)}
+                          className="text-[11px] font-medium text-blue-600 hover:underline"
+                        >
+                          Reset
+                        </button>
+                      </div>
+                      <div className="space-y-0.5">
+                        {COLUMN_LABELS.map(({ key, label }) => (
+                          <label
+                            key={key}
+                            className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm text-slate-700 transition hover:bg-slate-50"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={visibleColumns[key]}
+                              onChange={(e) => setVisibleColumns(prev => ({ ...prev, [key]: e.target.checked }))}
+                              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-400"
+                            />
+                            {label}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
@@ -772,33 +887,38 @@ function InventoryContent() {
                         <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4" /></svg>
                       </span>
                     </th>
+                    {visibleColumns.category && (
                     <th className="px-3 py-2 text-left">
                       <span className="flex items-center gap-1">Category
                         <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4" /></svg>
                       </span>
-                    </th>
+                    </th>)}
+                    {visibleColumns.price && (
                     <th className="px-3 py-2 text-left">
                       <span className="flex items-center gap-1">Price
                         <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4" /></svg>
                       </span>
-                    </th>
+                    </th>)}
+                    {visibleColumns.stock && (
                     <th className="px-3 py-2 text-left">
                       <span className="flex items-center gap-1">Stock
                         <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                       </span>
-                    </th>
+                    </th>)}
+                    {visibleColumns.reserved && (
                     <th className="px-3 py-2 text-left">
                       <span className="flex items-center gap-1">Reserved
                         <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                       </span>
-                    </th>
+                    </th>)}
+                    {visibleColumns.available && (
                     <th className="px-3 py-2 text-left">
                       <span className="flex items-center gap-1">Available
                         <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4" /></svg>
                       </span>
-                    </th>
-                    <th className="px-3 py-2 text-left">Condition</th>
-                    <th className="px-3 py-2 text-left">Stock Status</th>
+                    </th>)}
+                    {visibleColumns.condition && <th className="px-3 py-2 text-left">Condition</th>}
+                    {visibleColumns.status && <th className="px-3 py-2 text-left">Stock Status</th>}
                     <th className="px-3 py-2 text-left">Actions</th>
                   </tr>
                 </thead>
@@ -809,25 +929,29 @@ function InventoryContent() {
                         <p className="font-medium text-slate-900">{product.name}</p>
                         <p className="text-xs text-slate-400">Variant: {product.condition}</p>
                       </td>
-                      <td className="px-5 py-3.5 text-slate-600">{product.category}</td>
-                      <td className="px-5 py-3.5 font-medium text-slate-800">{formatPrice(product.price)}</td>
+                      {visibleColumns.category && <td className="px-5 py-3.5 text-slate-600">{product.category}</td>}
+                      {visibleColumns.price && <td className="px-5 py-3.5 font-medium text-slate-800">{formatPrice(product.price)}</td>}
+                      {visibleColumns.stock && (
                       <td className="px-5 py-3.5">
                         <span className="font-semibold text-slate-900">{product.quantity}</span>
                         <span className="ml-1.5 text-xs text-slate-400">Min: {product.minStock}</span>
-                      </td>
-                      <td className="px-5 py-3.5 text-slate-600">{product.reservedStock}</td>
+                      </td>)}
+                      {visibleColumns.reserved && <td className="px-5 py-3.5 text-slate-600">{product.reservedStock}</td>}
+                      {visibleColumns.available && (
                       <td className="px-5 py-3.5">
                         <span className={`font-semibold ${product.availableStock > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
                           {product.availableStock}
                         </span>
-                      </td>
+                      </td>)}
+                      {visibleColumns.condition && (
                       <td className="px-5 py-3.5">
                         <span className={`inline-flex rounded-md px-2.5 py-0.5 text-xs font-semibold ${
                           product.condition === 'New' ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-600'
                         }`}>
                           {product.condition}
                         </span>
-                      </td>
+                      </td>)}
+                      {visibleColumns.status && (
                       <td className="px-5 py-3.5">
                         <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold ${
                           product.stockStatus === 'Available'
@@ -843,7 +967,7 @@ function InventoryContent() {
                           }`} />
                           {product.stockStatus}
                         </span>
-                      </td>
+                      </td>)}
                       <td className="px-5 py-3.5">
                         {(canManageInventory || canVoid) ? (
                           <div className="flex items-center gap-2">
