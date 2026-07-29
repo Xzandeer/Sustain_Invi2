@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { X } from 'lucide-react'
-import { WARRANTY_DAYS } from '@/lib/constants/warranty'
+import { DEFAULT_WARRANTY_DAYS } from '@/lib/constants/warranty'
 
 export interface ProductFormValues {
   name: string
@@ -54,6 +54,17 @@ export default function ProductModal({
   const [minStock, setMinStock] = useState('')
   const [condition, setCondition] = useState<'New' | 'Refurbished'>('New')
   const [containerId, setContainerId] = useState('')
+  const [policyDays, setPolicyDays] = useState<number>(DEFAULT_WARRANTY_DAYS)
+
+  useEffect(() => {
+    if (!isOpen) return
+    let cancelled = false
+    fetch('/api/settings')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!cancelled && d && typeof d.warrantyDays === 'number') setPolicyDays(d.warrantyDays) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [isOpen])
 
   useEffect(() => {
     if (!isOpen) return
@@ -214,7 +225,7 @@ export default function ProductModal({
               <label className="text-sm font-medium text-slate-900">Warranty</label>
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600">
                 <p>
-                  <span className="font-medium text-slate-900">{WARRANTY_DAYS} days</span> refund window
+                  <span className="font-medium text-slate-900">{policyDays} days</span> refund window
                 </p>
                 <p className="mt-0.5 text-xs text-slate-500">Store-wide policy applied to all items.</p>
               </div>

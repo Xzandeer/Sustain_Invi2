@@ -3,12 +3,13 @@
 import { useState } from 'react'
 import { X, RotateCcw } from 'lucide-react'
 import { toast } from 'sonner'
-import { WARRANTY_DAYS } from '@/lib/constants/warranty'
+import { DEFAULT_WARRANTY_DAYS } from '@/lib/constants/warranty'
+import { useUserRole } from '@/hooks/useUserRole'
 
 // Mirrors the server-side warranty check in /api/sales/refund
 const isRefundExpired = (saleDate: Date | null | undefined) => {
   if (!saleDate) return false
-  return Math.floor((Date.now() - saleDate.getTime()) / 86400000) > WARRANTY_DAYS
+  return Math.floor((Date.now() - saleDate.getTime()) / 86400000) > DEFAULT_WARRANTY_DAYS
 }
 
 export interface SaleTransaction {
@@ -55,6 +56,7 @@ const formatDate = (date: Date | null) => {
 }
 
 export default function SalesViewModal({ transaction, onClose, onRefunded }: SalesViewModalProps) {
+  const { can } = useUserRole()
   const [showConfirm, setShowConfirm] = useState(false)
   const [reason, setReason] = useState('')
   const [loading, setLoading] = useState(false)
@@ -163,10 +165,10 @@ export default function SalesViewModal({ transaction, onClose, onRefunded }: Sal
             Close
           </button>
 
-          {transaction.status === 'completed' && !showConfirm && (
+          {transaction.status === 'completed' && !showConfirm && can('canProcessRefunds') && (
             isRefundExpired(transaction.createdAt) ? (
               <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-500">
-                Refund period expired ({WARRANTY_DAYS}-day warranty)
+                Refund period expired ({DEFAULT_WARRANTY_DAYS}-day warranty)
               </span>
             ) : (
               <button

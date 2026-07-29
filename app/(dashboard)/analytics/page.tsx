@@ -615,7 +615,7 @@ const generateSummary = ({
 
 export default function AnalyticsPage() {
   return (
-    <ProtectedRoute>
+    <ProtectedRoute requirePermission="canViewAnalytics">
       <AnalyticsContent />
     </ProtectedRoute>
   )
@@ -1048,6 +1048,87 @@ function AnalyticsContent() {
     return { counts, total }
   }, [reservations, activeRange.start, activeRange.end])
 
+  // ── CSV export of everything currently on screen ──────────────────────────
+  const handleExportCsv = () => {
+    const esc = (v: unknown) => {
+      const str = String(v ?? '')
+      return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str
+    }
+    const money = (n: number) => (Math.round(n * 100) / 100).toFixed(2)
+    const rows: string[] = []
+    const section = (title: string) => { rows.push(''); rows.push(esc(title)) }
+
+    const rangeLabel = `${formatDateInput(activeRange.start)} to ${formatDateInput(activeRange.end)}`
+    const categoryLabel =
+      selectedCategory === 'All Categories' ? 'All Categories' : (categoryNameMap[selectedCategory] ?? selectedCategory)
+
+    // Header block
+    rows.push(esc('SUSTAIN — Analytics Export'))
+    rows.push(['Generated', esc(new Date().toLocaleString('en-PH'))].join(','))
+    rows.push(['Date Range', esc(rangeLabel)].join(','))
+    rows.push(['Period', esc(getRangeLabel(timeRangePreset))].join(','))
+    rows.push(['Category Filter', esc(categoryLabel)].join(','))
+    rows.push(['Condition Filter', esc(selectedCondition)].join(','))
+
+    // Summary
+    section('SUMMARY')
+    rows.push('Metric,Value')
+    rows.push(['Total Sales', money(currentSummary.totalSales)].join(','))
+    rows.push(['Items Sold', currentSummary.itemsSold].join(','))
+    rows.push(['Transactions', filteredSales.length].join(','))
+    rows.push(['Average Order Value',
+      money(filteredSales.length ? currentSummary.totalSales / filteredSales.length : 0)].join(','))
+    rows.push(['Previous Period Sales', money(previousSummary.totalSales)].join(','))
+    rows.push(['Change vs Previous Period (%)',
+      previousSummary.totalSales > 0
+        ? (((currentSummary.totalSales - previousSummary.totalSales) / previousSummary.totalSales) * 100).toFixed(1)
+        : 'n/a'].join(','))
+
+    // Sales over time
+    section('SALES OVER TIME')
+    rows.push('Period,Revenue')
+    trendSeries.rows.forEach(r => rows.push([esc(r.label), money(r.total)].join(',')))
+
+    // Category performance
+    section('CATEGORY PERFORMANCE')
+    rows.push('Rank,Category,Items Sold,Revenue,Share of Sales (%)')
+    currentSummary.categories.forEach((c, i) => {
+      const share = currentSummary.totalSales > 0 ? (c.revenue / currentSummary.totalSales) * 100 : 0
+      rows.push([i + 1, esc(c.categoryName), c.itemsSold, money(c.revenue), share.toFixed(1)].join(','))
+    })
+
+    // Forecast
+    section('FORECAST')
+    rows.push(['Method', esc(forecastSeries.note)].join(','))
+    rows.push(['Projected Total', money(forecastSeries.projectedTotal)].join(','))
+    rows.push('')
+    rows.push('Period,Projected Revenue')
+    const actualCount = trendSeries.rows.length
+    forecastSeries.labels.slice(actualCount).forEach((label, i) => {
+      const val = forecastSeries.forecastValues[actualCount + i]
+      rows.push([esc(label), money(typeof val === 'number' ? val : 0)].join(','))
+    })
+
+    // AI insight, when one has been generated
+    if (aiForecast?.aiForecast?.insight) {
+      section('AI INSIGHT')
+      rows.push(['Confidence', esc(aiForecast.aiForecast.confidence ?? '')].join(','))
+      rows.push(['Insight', esc(aiForecast.aiForecast.insight)].join(','))
+      rows.push(['Note', esc('Forecast computed by EWMA statistical model; AI adjustment bounded to +/-15%.')].join(','))
+    }
+
+    // Trigger the download
+    const blob = new Blob(['\uFEFF' + rows.join('\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `SUSTAIN-Analytics-${formatDateInput(activeRange.start)}-to-${formatDateInput(activeRange.end)}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   const topCategoryRows = useMemo(
     () =>
       currentSummary.categories.slice(0, 6).map((row, index) => ({
@@ -1203,6 +1284,8 @@ function AnalyticsContent() {
             </div>
             <button
               type="button"
+              onClick={handleExportCsv}
+              title="Download the current view as a CSV file"
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 transition"
             >
               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">

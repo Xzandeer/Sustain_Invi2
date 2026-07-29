@@ -8,7 +8,7 @@ import {
   getProcessedByInfo,
 } from '@/lib/server/inventory'
 import { createTransactionNumber } from '@/lib/server/transactionNumbers'
-import { WARRANTY_DAYS } from '@/lib/constants/warranty'
+import { getWarrantyDays } from '@/lib/server/storeSettings'
 import { parseDateRange, toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import {
   SALES_THANK_YOU_NOTE,
@@ -253,6 +253,9 @@ export async function POST(req: NextRequest) {
     const totalAmount = saleLines.reduce((sum, item) => sum + item.quantity * item.price, 0)
     const categoryNames = Array.from(new Set(saleLines.map((item) => item.categoryName)))
 
+    // Snapshot the store's warranty policy onto this sale
+    const saleWarrantyDays = await getWarrantyDays()
+
     // Step 11: Create sale document reference and generate unique receipt number
     const saleRef = doc(collection(db, 'sales'))
     const numberResult = await createTransactionNumber('sale', saleRef, (numberInfo) => ({
@@ -272,7 +275,7 @@ export async function POST(req: NextRequest) {
         categoryId: item.categoryId,
         categoryName: item.categoryName,
         condition: item.condition,
-        warrantyDays: WARRANTY_DAYS,
+        warrantyDays: saleWarrantyDays,
         status: 'completed',
       })),
       categoryName: categoryNames.join(', '),
@@ -286,6 +289,9 @@ export async function POST(req: NextRequest) {
       total: totalAmount,
       amount: totalAmount,
       status: 'Completed',
+      // Snapshot of the store policy on the day of sale — the refund window
+      // promised to this customer, even if the policy changes later.
+      warrantyDays: saleWarrantyDays,
       processedByName: processedBy.name,
       processedByEmail: processedBy.email ?? '',
       createdAt: serverTimestamp(),

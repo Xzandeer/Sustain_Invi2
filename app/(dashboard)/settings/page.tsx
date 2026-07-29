@@ -12,7 +12,7 @@ import { doc, getDoc, updateDoc } from 'firebase/firestore'
 import { auth, db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 
-type Section = 'profile' | 'password'
+type Section = 'profile' | 'password' | 'policy'
 
 export default function SettingsPage() {
   return (
@@ -39,6 +39,12 @@ function SettingsContent() {
   const [pwLoading, setPwLoading] = useState(false)
   const [pwError, setPwError] = useState('')
   const [pwSuccess, setPwSuccess] = useState('')
+
+  // Store policy state
+  const [warrantyDays, setWarrantyDays] = useState('7')
+  const [policyLoading, setPolicyLoading] = useState(false)
+  const [policyError, setPolicyError] = useState('')
+  const [policySuccess, setPolicySuccess] = useState('')
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -113,6 +119,43 @@ function SettingsContent() {
     }
   }
 
+  // Load the current store policy
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/settings')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled && d && typeof d.warrantyDays === 'number') {
+          setWarrantyDays(String(d.warrantyDays))
+        }
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  const handleSavePolicy = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setPolicyError(''); setPolicySuccess(''); setPolicyLoading(true)
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          warrantyDays: Number(warrantyDays),
+          updatedByEmail: auth.currentUser?.email ?? '',
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to save.')
+      setWarrantyDays(String(data.warrantyDays))
+      setPolicySuccess('Store policy updated.')
+    } catch (err) {
+      setPolicyError(err instanceof Error ? err.message : 'Failed to save settings.')
+    } finally {
+      setPolicyLoading(false)
+    }
+  }
+
   const navItems: { key: Section; label: string; icon: React.ReactNode }[] = [
     {
       key: 'profile',
@@ -129,6 +172,15 @@ function SettingsContent() {
       icon: (
         <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+        </svg>
+      ),
+    },
+    {
+      key: 'policy',
+      label: 'Store Policy',
+      icon: (
+        <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
         </svg>
       ),
     },
@@ -288,6 +340,71 @@ function SettingsContent() {
                         className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60 transition"
                       >
                         {pwLoading ? 'Updating…' : 'Update Password'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </section>
+            )}
+
+            {/* Store Policy Section */}
+            {activeSection === 'policy' && (
+              <section className="rounded-xl border bg-white shadow-sm">
+                <div className="border-b border-slate-100 px-6 py-4">
+                  <h2 className="text-base font-bold text-slate-900">Store Policy</h2>
+                  <p className="mt-0.5 text-sm text-slate-500">
+                    Set the store-wide rules applied to every transaction.
+                  </p>
+                </div>
+                <div className="px-6 py-6">
+                  {policyError && (
+                    <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-600">
+                      {policyError}
+                    </div>
+                  )}
+                  {policySuccess && (
+                    <div className="mb-4 rounded-lg border border-green-200 bg-green-50 px-3 py-2.5 text-sm font-medium text-green-700">
+                      ✓ {policySuccess}
+                    </div>
+                  )}
+                  <form onSubmit={handleSavePolicy} className="max-w-md space-y-4">
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                        Warranty / Refund Window
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={0}
+                          max={365}
+                          value={warrantyDays}
+                          onChange={(e) => setWarrantyDays(e.target.value)}
+                          required
+                          className="w-32 rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                        />
+                        <span className="text-sm font-medium text-slate-600">days</span>
+                      </div>
+                      <p className="mt-2 text-xs text-slate-500">
+                        Customers may return an item within this many days of purchase.
+                        Refund attempts after this window are automatically rejected by the system.
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
+                      <p className="text-xs text-amber-800">
+                        <span className="font-semibold">Note:</span> Changing this affects
+                        future refund checks only. Sales already completed keep the window
+                        that applied on the day they were sold.
+                      </p>
+                    </div>
+
+                    <div className="pt-1">
+                      <button
+                        type="submit"
+                        disabled={policyLoading}
+                        className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60 transition"
+                      >
+                        {policyLoading ? 'Saving…' : 'Save Policy'}
                       </button>
                     </div>
                   </form>

@@ -4,7 +4,7 @@ import React, { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { collection, getDocs, orderBy, query, limit } from 'firebase/firestore'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { db } from '@/lib/firebase'
-import { getStockLogActionLabel, resolveStockLogAction, ResolvedStockLogAction } from '@/lib/inventory/stockLogActions'
+import { getStockLogActionLabel, resolveStockLogAction, ResolvedStockLogAction, ALL_STOCK_LOG_ACTIONS } from '@/lib/inventory/stockLogActions'
 import { toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 
 interface StockLogRecord {
@@ -216,9 +216,16 @@ function InventoryLogsContent() {
     return () => { cancelled = true }
   }, [])
 
-  const actionOptions = useMemo(() =>
-    Array.from(new Set(logs.map(l => l.resolvedAction))).filter(a => a !== 'unmapped_action').sort((a, b) => a.localeCompare(b))
-  , [logs])
+  // Show every action type the system supports, with a count of how many logs
+  // currently match. Types with no records stay visible (greyed, count 0) so the
+  // filter reflects the system's full capability, not just today's data.
+  const actionOptions = useMemo(() => {
+    const counts = logs.reduce<Record<string, number>>((acc, l) => {
+      acc[l.resolvedAction] = (acc[l.resolvedAction] ?? 0) + 1
+      return acc
+    }, {})
+    return ALL_STOCK_LOG_ACTIONS.map(a => ({ action: a, count: counts[a] ?? 0 }))
+  }, [logs])
 
   const filteredLogs = useMemo(() => {
     const term = deferredSearch.trim().toLowerCase()
@@ -295,8 +302,12 @@ function InventoryLogsContent() {
           {/* Actions */}
           <select value={actionFilter} onChange={e => { setActionFilter(e.target.value); setCurrentPage(1) }}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:outline-none">
-            <option value="all">All Actions</option>
-            {actionOptions.map(a => <option key={a} value={a}>{getStockLogActionLabel(a)}</option>)}
+            <option value="all">All Actions ({logs.length})</option>
+            {actionOptions.map(({ action, count }) => (
+              <option key={action} value={action}>
+                {getStockLogActionLabel(action)} ({count})
+              </option>
+            ))}
           </select>
           {/* Conditions */}
           <select value={conditionFilter} onChange={e => { setConditionFilter(e.target.value); setCurrentPage(1) }}

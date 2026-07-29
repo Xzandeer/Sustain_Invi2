@@ -42,7 +42,9 @@ export default function ItemsPage() {
 }
 
 function InventoryContent() {
-  const { isAdmin } = useUserRole()
+  const { isAdmin, can } = useUserRole()
+  const canManageInventory = isAdmin || can('canManageInventory')
+  const canVoid = isAdmin || can('canVoidItems')
   const [inventory, setInventory] = useState<Product[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [containers, setContainers] = useState<ContainerOption[]>([])
@@ -466,13 +468,18 @@ function InventoryContent() {
 
   // ── Export CSV ────────────────────────────────────
   const exportCSV = () => {
+    // Quote any field containing a comma, quote or newline so columns stay aligned
+    const esc = (v: unknown) => {
+      const str = String(v ?? '')
+      return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str
+    }
     const headers = ['Item Name', 'Category', 'Condition', 'Price', 'Stock', 'Reserved', 'Available', 'Min Stock', 'Status']
     const rows = filteredProducts.map((p) => [
       p.name, p.category, p.condition,
       p.price.toFixed(2), p.quantity, p.reservedStock, p.availableStock, p.minStock, p.stockStatus,
     ])
-    const csv = [headers, ...rows].map((r) => r.join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv' })
+    const csv = [headers, ...rows].map((r) => r.map(esc).join(',')).join('\n')
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -511,7 +518,7 @@ function InventoryContent() {
               </svg>
               View Trash
             </Link>
-            {isAdmin && (
+            {canManageInventory && (
               <button
                 onClick={() => { setEditingProduct(null); setIsProductModalOpen(true) }}
                 className="inline-flex items-center gap-2 rounded-lg bg-[#1e3a5f] px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#162d4a]"
@@ -600,7 +607,7 @@ function InventoryContent() {
           </div>
           {/* Row 3: action buttons */}
           <div className="flex flex-wrap items-center gap-2">
-            {isAdmin && (
+            {canManageInventory && (
               <button
                 onClick={() => setIsCategoryModalOpen(true)}
                 className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
@@ -838,8 +845,9 @@ function InventoryContent() {
                         </span>
                       </td>
                       <td className="px-5 py-3.5">
-                        {isAdmin ? (
+                        {(canManageInventory || canVoid) ? (
                           <div className="flex items-center gap-2">
+                            {canManageInventory && (<>
                             <button
                               onClick={() => openEditModal(product)}
                               title="Edit"
@@ -858,7 +866,8 @@ function InventoryContent() {
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
                               </svg>
                             </button>
-                            {product.isVoided ? (
+                            </>)}
+                            {canVoid && (product.isVoided ? (
                               <button
                                 onClick={() => handleUnvoidProduct(product.id)}
                                 disabled={voidingId === product.id}
@@ -878,7 +887,7 @@ function InventoryContent() {
                                 <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
                                 Void
                               </button>
-                            )}
+                            ))}
                           </div>
                         ) : (
                           <span className="text-xs text-slate-400">—</span>

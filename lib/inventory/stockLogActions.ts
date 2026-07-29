@@ -163,3 +163,27 @@ export const resolveStockLogAction = (input: {
 
 // Returns a human-readable label for a given stock log action type
 export const getStockLogActionLabel = (action: ResolvedStockLogAction) => STOCK_LOG_ACTION_LABELS[action]
+
+// Every action type the system can record, in a sensible display order.
+// Used by the Stock Logs filter so the full range is visible even when the
+// log history does not yet contain an example of each one.
+export const ALL_STOCK_LOG_ACTIONS: ResolvedStockLogAction[] = [
+  'item_added',
+  'item_edited',
+  'stock_increased',
+  'stock_decreased',
+  'condition_changed',
+  'transfer',
+  'stock_transferred_in',
+  'stock_transferred_out',
+  'sale_deduction',
+  'sale_refund',
+  'reservation_deduction',
+  'reservation_claim',
+  'reservation_release',
+  'item_voided',
+  'item_unvoided',
+  'item_deleted',
+  'item_restored',
+  'item_deleted_permanently',
+]

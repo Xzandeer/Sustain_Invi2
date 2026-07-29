@@ -195,7 +195,7 @@ function Pagination({
 
 export default function ReservationsPage() {
   return (
-    <ProtectedRoute>
+    <ProtectedRoute requirePermission="canManageReservations">
       <ReservationsContent />
     </ProtectedRoute>
   )

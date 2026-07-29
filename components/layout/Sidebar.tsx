@@ -35,7 +35,7 @@ const systemNav = [
 export default function Sidebar() {
   const pathname = usePathname()
   const router   = useRouter()
-  const { isAdmin, canViewStockLogs } = useUserRole()
+  const { isAdmin, canViewStockLogs, can } = useUserRole()
   const [userName, setUserName]   = useState('User')
   const [userRole, setUserRole]   = useState('Staff')
   const [initials, setInitials]   = useState('U')
@@ -103,7 +103,11 @@ export default function Sidebar() {
         <div>
           <p className="mb-1.5 px-3 text-[10px] font-bold uppercase tracking-widest text-gray-500">Main</p>
           <nav className="space-y-0.5">
-            {mainNav.map(item => <NavItem key={item.href} item={item} />)}
+            {mainNav.map(item => (
+              (item.name === 'Reservations' && !isAdmin && !can('canManageReservations'))
+                ? null
+                : <NavItem key={item.href} item={item} />
+            ))}
           </nav>
         </div>
 
@@ -111,9 +115,11 @@ export default function Sidebar() {
         <div>
           <p className="mb-1.5 px-3 text-[10px] font-bold uppercase tracking-widest text-gray-500">Management</p>
           <nav className="space-y-0.5">
-            {managementNav.map(item => (
-              (!isAdmin && item.name === 'Users') ? null : <NavItem key={item.href + item.name} item={item} />
-            ))}
+            {managementNav.map(item => {
+              if (!isAdmin && item.name === 'Users') return null
+              if (item.name === 'Analytics' && !isAdmin && !can('canViewAnalytics')) return null
+              return <NavItem key={item.href + item.name} item={item} />
+            })}
           </nav>
         </div>
 

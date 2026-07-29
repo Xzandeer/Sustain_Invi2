@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation'
 import { db, auth } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { useUserRole, UserRole } from '@/hooks/useUserRole'
+import { PERMISSIONS, Permission, PermissionSet, resolvePermissions } from '@/lib/auth/permissions'
 
 interface AppUser {
   id: string
@@ -14,6 +15,8 @@ interface AppUser {
   email: string
   role: UserRole
   canViewStockLogs: boolean
+  isDisabled: boolean
+  permissions: PermissionSet
 }
 
 export default function UsersPage() {
@@ -39,6 +42,11 @@ function UsersContent() {
   const [creating, setCreating] = useState(false)
 
   // Reset password confirmation modal
+  const [permissionTarget, setPermissionTarget] = useState<AppUser | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<AppUser | null>(null)
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  const [deleteError, setDeleteError] = useState('')
+  const [deleteLoading, setDeleteLoading] = useState(false)
   const [resetTarget, setResetTarget] = useState<AppUser | null>(null)
   const [adminPassword, setAdminPassword] = useState('')
   const [resetError, setResetError] = useState('')
@@ -59,6 +67,8 @@ function UsersContent() {
           email: typeof data.email === 'string' ? data.email : '',
           role: data.role === 'admin' ? 'admin' : 'staff',
           canViewStockLogs: data.canViewStockLogs === true,
+          isDisabled: data.isDisabled === true,
+          permissions: resolvePermissions(data, data.role === 'admin' ? 'admin' : 'staff'),
         }
       })
       list.sort((a, b) => a.email.localeCompare(b.email))
@@ -73,6 +83,10 @@ function UsersContent() {
 
   const updateRole = async (userId: string, role: UserRole) => {
     setError('')
+    if (userId === auth.currentUser?.uid) {
+      setError('You cannot change your own role.')
+      return
+    }
     setUpdatingUserId(userId)
     try {
       await updateDoc(doc(db, 'users', userId), { role })
@@ -89,6 +103,79 @@ function UsersContent() {
       setUsers(prev => prev.map(u => u.id === userId ? { ...u, canViewStockLogs } : u))
     } catch { setError('Failed to update stock log access.') }
     finally { setUpdatingUserId(null) }
+  }
+
+  const updateAccountStatus = async (userId: string, isDisabled: boolean) => {
+    setError(''); setSuccessMsg('')
+    if (userId === auth.currentUser?.uid) {
+      setError('You cannot disable your own account.')
+      return
+    }
+    // Never allow disabling the last active admin
+    if (isDisabled) {
+      const target = users.find(u => u.id === userId)
+      const activeAdmins = users.filter(u => u.role === 'admin' && !u.isDisabled)
+      if (target?.role === 'admin' && activeAdmins.length <= 1) {
+        setError('You cannot disable the last active administrator account.')
+        return
+      }
+    }
+    setUpdatingUserId(userId)
+    try {
+      await updateDoc(doc(db, 'users', userId), { isDisabled })
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, isDisabled } : u))
+      setSuccessMsg(isDisabled ? 'Account disabled.' : 'Account enabled.')
+    } catch { setError('Failed to update account status.') }
+    finally { setUpdatingUserId(null) }
+  }
+
+  const updatePermission = async (userId: string, key: Permission, value: boolean) => {
+    setError('')
+    setUpdatingUserId(userId)
+    try {
+      await updateDoc(doc(db, 'users', userId), { [key]: value })
+      setUsers(prev => prev.map(u =>
+        u.id === userId ? { ...u, permissions: { ...u.permissions, [key]: value },
+          canViewStockLogs: key === 'canViewStockLogs' ? value : u.canViewStockLogs } : u))
+      setPermissionTarget(prev => prev && prev.id === userId
+        ? { ...prev, permissions: { ...prev.permissions, [key]: value } } : prev)
+    } catch { setError('Failed to update permission.') }
+    finally { setUpdatingUserId(null) }
+  }
+
+  const handleDeleteAccount = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!deleteTarget) return
+    setDeleteError('')
+
+    if (deleteConfirmText.trim().toUpperCase() !== 'CONFIRM') {
+      setDeleteError('Type CONFIRM to delete this account.')
+      return
+    }
+
+    setDeleteLoading(true)
+    try {
+      const res = await fetch('/api/admin/delete-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetUid: deleteTarget.id,
+          requestedByUid: auth.currentUser?.uid ?? '',
+          confirmText: deleteConfirmText.trim(),
+        }),
+      })
+      const data = await res.json() as { error?: string }
+      if (!res.ok) { setDeleteError(data.error ?? 'Failed to delete the account.'); return }
+
+      setUsers(prev => prev.filter(u => u.id !== deleteTarget.id))
+      setSuccessMsg(`Account ${deleteTarget.email} was permanently deleted.`)
+      setDeleteTarget(null)
+      setDeleteConfirmText('')
+    } catch {
+      setDeleteError('Network error. Please try again.')
+    } finally {
+      setDeleteLoading(false)
+    }
   }
 
   // Step 1: open confirmation modal
@@ -219,25 +306,38 @@ function UsersContent() {
                   <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Name</th>
                   <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Email</th>
                   <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Role</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Stock Logs</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Status</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Permissions</th>
                   <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Password</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 bg-white">
                 {users.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-400">No users found.</td>
+                    <td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-400">No users found.</td>
                   </tr>
                 )}
-                {users.map((user) => (
-                  <tr key={user.id}>
-                    <td className="px-4 py-3 text-sm text-slate-900">{user.name}</td>
+                {users.map((user) => {
+                  const isSelf = user.id === auth.currentUser?.uid
+                  return (
+                  <tr key={user.id} className={isSelf ? 'bg-blue-50/40' : undefined}>
+                    <td className="px-4 py-3 text-sm">
+                      <span className={user.isDisabled ? 'text-slate-400 line-through' : 'text-slate-900'}>{user.name}</span>
+                      {isSelf && (
+                        <span className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700">You</span>
+                      )}
+                      {user.isDisabled && (
+                        <span className="ml-2 rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-600">Disabled</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-sm text-slate-700">{user.email}</td>
                     <td className="px-4 py-3 text-sm">
                       <select
                         value={user.role}
                         onChange={(e) => updateRole(user.id, e.target.value as UserRole)}
-                        disabled={updatingUserId === user.id}
+                        disabled={updatingUserId === user.id || isSelf}
+                        title={isSelf ? 'You cannot change your own role' : undefined}
                         className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500 disabled:opacity-60"
                       >
                         <option value="staff">staff</option>
@@ -245,15 +345,34 @@ function UsersContent() {
                       </select>
                     </td>
                     <td className="px-4 py-3 text-sm">
-                      <select
-                        value={user.canViewStockLogs ? 'allowed' : 'blocked'}
-                        onChange={(e) => updateStockLogAccess(user.id, e.target.value === 'allowed')}
-                        disabled={updatingUserId === user.id}
-                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500 disabled:opacity-60"
+                      <button
+                        onClick={() => updateAccountStatus(user.id, !user.isDisabled)}
+                        disabled={updatingUserId === user.id || isSelf}
+                        title={isSelf ? 'You cannot disable your own account' : undefined}
+                        className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition disabled:opacity-60 ${
+                          user.isDisabled
+                            ? 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                            : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                        }`}
                       >
-                        <option value="blocked">blocked</option>
-                        <option value="allowed">allowed</option>
-                      </select>
+                        <span className={`h-1.5 w-1.5 rounded-full ${user.isDisabled ? 'bg-slate-400' : 'bg-emerald-500'}`} />
+                        {user.isDisabled ? 'Disabled' : 'Active'}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3 text-sm">
+                      {user.role === 'admin' ? (
+                        <span className="text-xs font-medium text-slate-400">Full access</span>
+                      ) : (
+                        <button
+                          onClick={() => setPermissionTarget(user)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 transition"
+                        >
+                          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                          </svg>
+                          {PERMISSIONS.filter(p => user.permissions[p.key]).length} of {PERMISSIONS.length}
+                        </button>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-sm">
                       <button
@@ -266,13 +385,167 @@ function UsersContent() {
                         Send Reset
                       </button>
                     </td>
+                    <td className="px-4 py-3 text-sm">
+                      {isSelf ? (
+                        <span className="text-xs text-slate-400">—</span>
+                      ) : (
+                        <button
+                          onClick={() => { setDeleteTarget(user); setDeleteConfirmText(''); setDeleteError('') }}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-red-300 hover:bg-red-50 hover:text-red-700"
+                        >
+                          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                          Delete
+                        </button>
+                      )}
+                    </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
         </section>
       </div>
+
+      {/* ── Delete account confirmation modal ── */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-start gap-3 border-b border-slate-100 px-6 py-4">
+              <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-50">
+                <svg className="h-5 w-5 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z" />
+                </svg>
+              </div>
+              <div className="min-w-0 flex-1">
+                <h2 className="text-base font-bold text-slate-900">Delete this account?</h2>
+                <p className="mt-0.5 text-xs text-slate-500">This action cannot be undone.</p>
+              </div>
+              <button
+                onClick={() => { setDeleteTarget(null); setDeleteConfirmText(''); setDeleteError('') }}
+                className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <form onSubmit={handleDeleteAccount} className="space-y-4 px-6 py-5">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+                <p className="text-sm font-semibold text-slate-900">{deleteTarget.name}</p>
+                <p className="text-xs text-slate-500">{deleteTarget.email}</p>
+                <p className="mt-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">{deleteTarget.role}</p>
+              </div>
+
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
+                <p className="text-xs text-amber-800">
+                  Their sales, stock logs and reservations are kept for the audit trail.
+                  Only the login account is removed.
+                  {' '}<span className="font-semibold">Consider disabling instead if they may return.</span>
+                </p>
+              </div>
+
+              {deleteError && (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+                  {deleteError}
+                </div>
+              )}
+
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-slate-600">
+                  Type <span className="font-mono font-bold text-slate-900">CONFIRM</span> to delete this account
+                </label>
+                <input
+                  type="text"
+                  value={deleteConfirmText}
+                  onChange={e => setDeleteConfirmText(e.target.value)}
+                  placeholder="CONFIRM"
+                  autoFocus
+                  autoComplete="off"
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-red-500 focus:ring-2 focus:ring-red-100"
+                />
+              </div>
+
+              <div className="flex gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={() => { setDeleteTarget(null); setDeleteConfirmText(''); setDeleteError('') }}
+                  className="flex-1 rounded-xl border border-slate-200 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={deleteLoading || deleteConfirmText.trim().toUpperCase() !== 'CONFIRM'}
+                  className="flex-1 rounded-xl bg-red-600 py-2.5 text-sm font-semibold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {deleteLoading ? 'Deleting…' : 'Delete Account'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Permissions modal ── */}
+      {permissionTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">Permissions</h2>
+                <p className="mt-0.5 text-xs text-slate-500">{permissionTarget.name} · {permissionTarget.email}</p>
+              </div>
+              <button
+                onClick={() => setPermissionTarget(null)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition"
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="max-h-[60vh] overflow-y-auto px-6 py-4 space-y-1">
+              {PERMISSIONS.map(({ key, label, description }) => {
+                const on = permissionTarget.permissions[key] === true
+                return (
+                  <label
+                    key={key}
+                    className="flex cursor-pointer items-start gap-3 rounded-xl px-3 py-3 transition hover:bg-slate-50"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => updatePermission(permissionTarget.id, key, !on)}
+                      disabled={updatingUserId === permissionTarget.id}
+                      className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition disabled:opacity-60 ${on ? 'bg-blue-600' : 'bg-slate-300'}`}
+                    >
+                      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${on ? 'left-[22px]' : 'left-0.5'}`} />
+                    </button>
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-900">{label}</p>
+                      <p className="text-xs text-slate-500">{description}</p>
+                    </div>
+                  </label>
+                )
+              })}
+            </div>
+            <div className="border-t border-slate-100 px-6 py-4">
+              <p className="mb-3 text-xs text-slate-500">
+                Changes save immediately. Administrators always have every permission.
+              </p>
+              <button
+                onClick={() => setPermissionTarget(null)}
+                className="w-full rounded-xl bg-slate-900 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 transition"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Admin password confirmation modal ── */}
       {resetTarget && (

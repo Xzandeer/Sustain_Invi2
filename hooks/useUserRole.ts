@@ -1,36 +1,61 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { onAuthStateChanged } from 'firebase/auth'
+import { onAuthStateChanged, signOut } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
 import { auth, db } from '@/lib/firebase'
+import {
+  PermissionSet,
+  DEFAULT_STAFF_PERMISSIONS,
+  ALL_PERMISSIONS_GRANTED,
+  resolvePermissions,
+  Permission,
+} from '@/lib/auth/permissions'
 
 export type UserRole = 'admin' | 'staff'
 
 export const useUserRole = () => {
   const [role, setRole] = useState<UserRole>('staff')
-  const [canViewStockLogs, setCanViewStockLogs] = useState(false)
+  const [permissions, setPermissions] = useState<PermissionSet>(DEFAULT_STAFF_PERMISSIONS)
+  const [isDisabled, setIsDisabled] = useState(false)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (!user) {
         setRole('staff')
-        setCanViewStockLogs(false)
+        setPermissions(DEFAULT_STAFF_PERMISSIONS)
+        setIsDisabled(false)
         setLoading(false)
         return
       }
 
       try {
-        const userSnapshot = await getDoc(doc(db, 'users', user.uid))
-        const rawRole = userSnapshot.exists() ? userSnapshot.data().role : 'staff'
-        const canViewLogs = userSnapshot.exists() ? userSnapshot.data().canViewStockLogs === true : false
-        setRole(rawRole === 'admin' ? 'admin' : 'staff')
-        setCanViewStockLogs(canViewLogs || rawRole === 'admin')
+        const snapshot = await getDoc(doc(db, 'users', user.uid))
+        const data = snapshot.exists() ? (snapshot.data() as Record<string, unknown>) : undefined
+        const resolvedRole: UserRole = data?.role === 'admin' ? 'admin' : 'staff'
+
+        // A disabled account is signed out immediately.
+        if (data?.isDisabled === true) {
+          setIsDisabled(true)
+          setRole('staff')
+          setPermissions(DEFAULT_STAFF_PERMISSIONS)
+          setLoading(false)
+          await signOut(auth).catch(() => {})
+          return
+        }
+
+        setIsDisabled(false)
+        setRole(resolvedRole)
+        setPermissions(
+          resolvedRole === 'admin'
+            ? { ...ALL_PERMISSIONS_GRANTED }
+            : resolvePermissions(data, resolvedRole)
+        )
       } catch (error) {
         console.error('Failed to fetch user role:', error)
         setRole('staff')
-        setCanViewStockLogs(false)
+        setPermissions(DEFAULT_STAFF_PERMISSIONS)
       } finally {
         setLoading(false)
       }
@@ -39,5 +64,16 @@ export const useUserRole = () => {
     return () => unsubscribe()
   }, [])
 
-  return { role, loading, isAdmin: role === 'admin', canViewStockLogs }
+  const can = (permission: Permission) => permissions[permission] === true
+
+  return {
+    role,
+    loading,
+    isAdmin: role === 'admin',
+    isDisabled,
+    permissions,
+    can,
+    // Kept for backwards compatibility with existing call sites
+    canViewStockLogs: permissions.canViewStockLogs,
+  }
 }

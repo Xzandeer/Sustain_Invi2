@@ -18,7 +18,22 @@ import {
 } from '@/lib/transactions/transactionDocuments'
 import { normalizeInventoryCondition, toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { openReceiptPrintWindow } from '@/lib/transactions/receiptPrint'
-import { WARRANTY_DAYS } from '@/lib/constants/warranty'
+import { DEFAULT_WARRANTY_DAYS, REFUND_REASONS } from '@/lib/constants/warranty'
+import { useUserRole } from '@/hooks/useUserRole'
+
+
+// Status badge styling and label, including partial refunds
+const statusBadgeClass = (status: string) =>
+  status === 'voided' ? 'bg-red-50 text-red-600'
+  : status === 'refunded' ? 'bg-amber-50 text-amber-700'
+  : status === 'partially_refunded' ? 'bg-orange-50 text-orange-700'
+  : 'bg-green-50 text-green-700'
+
+const statusLabel = (status: string) =>
+  status === 'voided' ? 'Voided'
+  : status === 'refunded' ? 'Refunded'
+  : status === 'partially_refunded' ? 'Partially Refunded'
+  : 'Completed'
 
 // Whole days elapsed since the sale — null when the date is unknown
 const refundDaysElapsed = (saleDate: Date | null | undefined) => {
@@ -27,9 +42,9 @@ const refundDaysElapsed = (saleDate: Date | null | undefined) => {
 }
 
 // Mirrors the server-side check in /api/sales/refund
-const isRefundExpired = (saleDate: Date | null | undefined) => {
+const isRefundExpired = (saleDate: Date | null | undefined, warrantyDays: number) => {
   const days = refundDaysElapsed(saleDate)
-  return days !== null && days > WARRANTY_DAYS
+  return days !== null && days > warrantyDays
 }
 
 interface SaleTransaction {
@@ -46,10 +61,15 @@ interface SaleTransaction {
     categoryId: string
     categoryName?: string
     condition: string
+    refundedQuantity?: number
   }>
   totalAmount: number
-  status: 'completed' | 'voided' | 'refunded'
+  status: 'completed' | 'voided' | 'refunded' | 'partially_refunded'
   createdAt: Date | null
+  warrantyDays?: number
+  refundedAmount?: number
+  refundReason?: string
+  refundedAt?: Date | null
 }
 
 interface ParsedSaleItem {
@@ -60,6 +80,7 @@ interface ParsedSaleItem {
   categoryId: string
   categoryName: string
   condition: string
+  refundedQuantity: number
 }
 
 interface InventoryItem {
@@ -109,6 +130,7 @@ export default function SalesPage() {
 }
 
 function SalesContent() {
+  const { can } = useUserRole()
   const [transactions, setTransactions] = useState<SaleTransaction[]>([])
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([])
   const [categories, setCategories] = useState<Category[]>([])
@@ -118,7 +140,7 @@ function SalesContent() {
   const [successMessage, setSuccessMessage] = useState('')
 
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'voided' | 'refunded'>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'voided' | 'refunded' | 'partially_refunded'>('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
@@ -129,6 +151,9 @@ function SalesContent() {
   const [customerFullName, setCustomerFullName] = useState('')
   const [customerEmail, setCustomerEmail] = useState('')
   const [showReserveForm, setShowReserveForm] = useState(false)
+  const [refundCategory, setRefundCategory] = useState<string>(REFUND_REASONS[0])
+  const [refundQty, setRefundQty] = useState<Record<string, number>>({})
+  const [warrantyDays, setWarrantyDays] = useState<number>(DEFAULT_WARRANTY_DAYS)
   const [customerContactNumber, setCustomerContactNumber] = useState('')
   const [cart, setCart] = useState<CartItem[]>([])
   const [completedDocument, setCompletedDocument] = useState<CompletedTransactionDocument | null>(null)
@@ -234,6 +259,7 @@ function SalesContent() {
                           ? saleItem.category.trim()
                           : '',
                     condition: saleItem.condition,
+                    refundedQuantity: toNumber(saleItem.refundedQuantity, 0),
                   }
                 })
                 .filter((item): item is ParsedSaleItem => item !== null)
@@ -250,8 +276,17 @@ function SalesContent() {
             customerEmail: typeof data.customerEmail === 'string' ? data.customerEmail.trim() : '',
             items,
             totalAmount: toNumber(data.totalAmount, toNumber(data.total, toNumber(data.amount))),
-            status: parsedStatus === 'voided' ? 'voided' : parsedStatus === 'refunded' ? 'refunded' : 'completed',
+            status: parsedStatus === 'voided' ? 'voided' : parsedStatus === 'refunded' ? 'refunded' : parsedStatus === 'partially_refunded' ? 'partially_refunded' : 'completed',
             createdAt: toDate(data.date ?? data.saleDate ?? data.createdAt ?? data.timestamp),
+            refundedAmount: typeof data.refundedAmount === 'number' ? data.refundedAmount : undefined,
+            refundReason: typeof data.refundReason === 'string' ? data.refundReason : undefined,
+            refundedAt: toDate(data.refundedAt),
+            warrantyDays:
+              typeof data.warrantyDays === 'number'
+                ? data.warrantyDays
+                : typeof (items[0] as { warrantyDays?: number } | undefined)?.warrantyDays === 'number'
+                  ? (items[0] as unknown as { warrantyDays: number }).warrantyDays
+                  : undefined,
           }
         })
 
@@ -450,8 +485,118 @@ function SalesContent() {
   const isCompletedMode = completedDocument !== null
   const completedDocumentEmail = completedDocument?.customer.email.trim() ?? ''
 
+  // Load the store's warranty policy so the UI matches the server rule
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/settings')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled && d && typeof d.warrantyDays === 'number') setWarrantyDays(d.warrantyDays)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  // When a transaction is opened, default every line to its full refundable quantity
+  useEffect(() => {
+    if (!selectedTransaction) { setRefundQty({}); return }
+    const init: Record<string, number> = {}
+    for (const it of selectedTransaction.items ?? []) {
+      const id = it.itemId
+      if (!id) continue
+      const already = (it as { refundedQuantity?: number }).refundedQuantity ?? 0
+      const remaining = Math.max(0, it.quantity - already)
+      if (remaining > 0) init[id] = remaining
+    }
+    setRefundQty(init)
+  }, [selectedTransaction])
+
+  // ── Export the currently filtered sales as CSV (one row per line item) ────
+  const exportSalesCsv = () => {
+    const esc = (v: unknown) => {
+      const str = String(v ?? '')
+      return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str
+    }
+    const money = (n: number) => (Math.round(n * 100) / 100).toFixed(2)
+
+    const headers = [
+      'Receipt No.', 'Date', 'Time', 'Customer', 'Status',
+      'Item', 'Condition', 'Category', 'Qty', 'Unit Price', 'Line Total',
+      'Qty Refunded', 'Transaction Total',
+    ]
+
+    const rows: string[][] = []
+    filteredTransactions.forEach((tx) => {
+      const d = tx.createdAt
+      const dateStr = d ? d.toLocaleDateString('en-PH', { year: 'numeric', month: '2-digit', day: '2-digit' }) : ''
+      const timeStr = d ? d.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit', hour12: true }) : ''
+      const status = statusLabel(tx.status)
+
+      if (!tx.items || tx.items.length === 0) {
+        rows.push([tx.receiptNumber, dateStr, timeStr, tx.customer, status,
+          '', '', '', '', '', '', '', money(tx.totalAmount ?? 0)])
+        return
+      }
+
+      tx.items.forEach((it, idx) => {
+        rows.push([
+          tx.receiptNumber, dateStr, timeStr, tx.customer, status,
+          it.name, it.condition ?? '', it.categoryName ?? '',
+          String(it.quantity), money(it.price ?? 0), money((it.price ?? 0) * it.quantity),
+          String(it.refundedQuantity ?? 0),
+          // Only put the transaction total on the first line so column sums stay correct
+          idx === 0 ? money(tx.totalAmount ?? 0) : '',
+        ])
+      })
+    })
+
+    // Totals row
+    const grandTotal = filteredTransactions.reduce((sum, t) => sum + (t.totalAmount ?? 0), 0)
+    const refundedTotal = filteredTransactions.reduce((sum, t) => sum + (t.refundedAmount ?? 0), 0)
+
+    const meta = [
+      ['SUSTAIN — Sales Export'],
+      ['Generated', new Date().toLocaleString('en-PH')],
+      ['Transactions', String(filteredTransactions.length)],
+      ['Gross Total', money(grandTotal)],
+      ['Refunded Total', money(refundedTotal)],
+      ['Net Total', money(grandTotal - refundedTotal)],
+      ['Status Filter', statusFilter === 'all' ? 'All' : statusLabel(statusFilter)],
+      ...(search.trim() ? [['Search', search.trim()]] : []),
+      ...(startDate || endDate ? [['Date Range', `${startDate || 'any'} to ${endDate || 'any'}`]] : []),
+      [],
+    ]
+
+    const csv = [
+      ...meta.map(r => r.map(esc).join(',')),
+      headers.map(esc).join(','),
+      ...rows.map(r => r.map(esc).join(',')),
+    ].join('\n')
+
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `SUSTAIN-Sales-${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    toast.success(`Exported ${filteredTransactions.length} transaction(s).`)
+  }
+
   const handleRefund = async () => {
     if (!selectedTransaction) return
+    // Only send lines with a quantity > 0; sending none means "refund everything"
+    const lines = Object.entries(refundQty)
+      .map(([itemId, quantity]) => ({ itemId, quantity }))
+      .filter((l) => l.quantity > 0)
+
+    if (lines.length === 0) {
+      toast.error('Select at least one item to refund.')
+      return
+    }
+
     setRefundLoading(true)
     try {
       const res = await fetch('/api/sales/refund', {
@@ -459,18 +604,27 @@ function SalesContent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           saleId: selectedTransaction.docId,
-          reason: refundReason.trim() || 'Refund processed',
+          requestedByUid: auth.currentUser?.uid ?? '',
+          items: lines,
+          reasonCategory: refundCategory,
+          reasonNote: refundReason.trim(),
         }),
       })
-      const data = await res.json() as { error?: string }
+      const data = await res.json() as { error?: string; partial?: boolean; refundedAmount?: number }
       if (!res.ok) {
         toast.error(data.error ?? 'Failed to process refund')
         return
       }
-      toast.success(`Refund processed for ${selectedTransaction.receiptNumber}`)
+      toast.success(
+        data.partial
+          ? `Partial refund processed for ${selectedTransaction.receiptNumber}`
+          : `Refund processed for ${selectedTransaction.receiptNumber}`
+      )
       setSelectedTransaction(null)
       setShowRefundConfirm(false)
       setRefundReason('')
+      setRefundCategory(REFUND_REASONS[0])
+      setRefundQty({})
     } catch {
       toast.error('Network error. Please try again.')
     } finally {
@@ -1350,36 +1504,77 @@ function SalesContent() {
               <div className="flex justify-between"><span className="text-slate-500">Total</span><span className="font-semibold">{currency(selectedTransaction.totalAmount ?? 0)}</span></div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-500">Status</span>
-                <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${selectedTransaction.status === 'voided' ? 'bg-red-50 text-red-600' : selectedTransaction.status === 'refunded' ? 'bg-amber-50 text-amber-700' : 'bg-green-50 text-green-700'}`}>
-                  {selectedTransaction.status === 'voided' ? 'Voided' : selectedTransaction.status === 'refunded' ? 'Refunded' : 'Completed'}
+                <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${statusBadgeClass(selectedTransaction.status)}`}>
+                  {statusLabel(selectedTransaction.status)}
                 </span>
               </div>
               {Array.isArray(selectedTransaction.items) && selectedTransaction.items.length > 0 ? (
                 <div>
                   <p className="mb-2 font-medium text-slate-700">Items</p>
                   <table className="w-full text-xs">
-                    <thead><tr className="border-b border-slate-100 text-slate-400"><th className="pb-1 text-left">Product</th><th className="pb-1 text-right">Qty</th><th className="pb-1 text-right">Price</th></tr></thead>
+                    <thead><tr className="border-b border-slate-100 text-slate-400"><th className="pb-1 text-left">Product</th><th className="pb-1 text-right">Qty</th><th className="pb-1 text-right">Refunded</th><th className="pb-1 text-right">Price</th></tr></thead>
                     <tbody>
-                      {selectedTransaction.items.map((item, idx) => (
-                        <tr key={idx} className="border-b border-slate-50">
-                          <td className="py-1 text-slate-700">{item.name}</td>
-                          <td className="py-1 text-right text-slate-600">{item.quantity}</td>
-                          <td className="py-1 text-right font-medium">{currency(item.price ?? 0)}</td>
-                        </tr>
-                      ))}
+                      {selectedTransaction.items.map((item, idx) => {
+                        const ref = item.refundedQuantity ?? 0
+                        const full = ref >= item.quantity && ref > 0
+                        return (
+                          <tr key={idx} className="border-b border-slate-50">
+                            <td className={`py-1 ${full ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{item.name}</td>
+                            <td className="py-1 text-right text-slate-600">{item.quantity}</td>
+                            <td className="py-1 text-right">
+                              {ref > 0 ? (
+                                <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${full ? 'bg-amber-100 text-amber-700' : 'bg-orange-100 text-orange-700'}`}>
+                                  {ref} returned
+                                </span>
+                              ) : (
+                                <span className="text-slate-300">—</span>
+                              )}
+                            </td>
+                            <td className="py-1 text-right font-medium">{currency(item.price ?? 0)}</td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
+
+                  {/* Refund summary */}
+                  {(selectedTransaction.refundedAmount ?? 0) > 0 && (
+                    <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 space-y-1">
+                      <div className="flex justify-between text-xs">
+                        <span className="font-semibold text-amber-800">Total refunded</span>
+                        <span className="font-bold text-amber-900">{currency(selectedTransaction.refundedAmount ?? 0)}</span>
+                      </div>
+                      {selectedTransaction.refundReason && (
+                        <div className="flex justify-between gap-2 text-[11px]">
+                          <span className="text-amber-700">Reason</span>
+                          <span className="text-right text-amber-800">{selectedTransaction.refundReason}</span>
+                        </div>
+                      )}
+                      {selectedTransaction.refundedAt && (
+                        <div className="flex justify-between text-[11px]">
+                          <span className="text-amber-700">Last refund</span>
+                          <span className="text-amber-800">
+                            {selectedTransaction.refundedAt.toLocaleString('en-PH', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })}
+                          </span>
+                        </div>
+                      )}
+                      <p className="pt-0.5 text-[10px] text-amber-600">
+                        Full history of returned items is in Stock Logs, filtered by Sale Refund.
+                      </p>
+                    </div>
+                  )}
                 </div>
               ) : null}
 
               {/* Warranty status */}
-              {selectedTransaction.status === 'completed' && (() => {
+              {(selectedTransaction.status === 'completed' || selectedTransaction.status === 'partially_refunded') && (() => {
                 const days = refundDaysElapsed(selectedTransaction.createdAt)
                 if (days === null) return null
-                const left = WARRANTY_DAYS - days
+                const saleWindow = selectedTransaction.warrantyDays ?? warrantyDays
+                const left = saleWindow - days
                 return (
                   <div className="flex justify-between text-xs">
-                    <span className="text-slate-500">Warranty ({WARRANTY_DAYS} days)</span>
+                    <span className="text-slate-500">Warranty ({saleWindow} days)</span>
                     <span className={left >= 0 ? 'font-medium text-emerald-600' : 'font-medium text-rose-600'}>
                       {left >= 0
                         ? `${left} day${left === 1 ? '' : 's'} left to refund`
@@ -1390,13 +1585,20 @@ function SalesContent() {
               })()}
 
               {/* Refund section */}
-              {selectedTransaction.status === 'completed' && (
+              {(selectedTransaction.status === 'completed' || selectedTransaction.status === 'partially_refunded') && (
                 <div className="pt-2">
-                  {isRefundExpired(selectedTransaction.createdAt) ? (
+                  {isRefundExpired(selectedTransaction.createdAt, selectedTransaction.warrantyDays ?? warrantyDays) ? (
                     <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-center">
                       <p className="text-xs font-semibold text-slate-600">Refund period has expired</p>
                       <p className="mt-0.5 text-[11px] text-slate-500">
-                        This sale is past the {WARRANTY_DAYS}-day warranty window and can no longer be refunded.
+                        This sale is past the {selectedTransaction.warrantyDays ?? warrantyDays}-day warranty window and can no longer be refunded.
+                      </p>
+                    </div>
+                  ) : !can('canProcessRefunds') ? (
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-center">
+                      <p className="text-xs font-semibold text-slate-600">Refunds not permitted</p>
+                      <p className="mt-0.5 text-[11px] text-slate-500">
+                        Your account does not have permission to process refunds. Contact the administrator.
                       </p>
                     </div>
                   ) : !showRefundConfirm ? (
@@ -1408,15 +1610,80 @@ function SalesContent() {
                       Process Refund
                     </button>
                   ) : (
-                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
-                      <p className="text-xs font-semibold text-amber-800">Items will be restocked automatically</p>
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2.5">
+                      <p className="text-xs font-semibold text-amber-800">
+                        Select what to return — items are restocked automatically
+                      </p>
+
+                      {/* Per-item quantity selection */}
+                      <div className="space-y-1.5 rounded-lg bg-white p-2">
+                        {(selectedTransaction.items ?? []).map((item, idx) => {
+                          const id = item.itemId
+                          if (!id) return null
+                          const already = (item as { refundedQuantity?: number }).refundedQuantity ?? 0
+                          const remaining = Math.max(0, item.quantity - already)
+                          const qty = refundQty[id] ?? 0
+                          return (
+                            <div key={idx} className="flex items-center justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-xs font-medium text-slate-800">{item.name}</p>
+                                <p className="text-[10px] text-slate-500">
+                                  {remaining} of {item.quantity} refundable
+                                  {already > 0 ? ` · ${already} already refunded` : ''}
+                                </p>
+                              </div>
+                              {remaining === 0 ? (
+                                <span className="shrink-0 text-[10px] font-medium text-slate-400">Fully refunded</span>
+                              ) : (
+                                <div className="flex shrink-0 items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => setRefundQty(p => ({ ...p, [id]: Math.max(0, (p[id] ?? 0) - 1) }))}
+                                    className="h-6 w-6 rounded border border-slate-300 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                                  >−</button>
+                                  <span className="w-7 text-center text-xs font-semibold text-slate-800">{qty}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setRefundQty(p => ({ ...p, [id]: Math.min(remaining, (p[id] ?? 0) + 1) }))}
+                                    className="h-6 w-6 rounded border border-slate-300 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                                  >+</button>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+
+                      {/* Refund amount preview */}
+                      <div className="flex justify-between rounded-lg bg-white px-2 py-1.5">
+                        <span className="text-xs text-slate-500">Refund amount</span>
+                        <span className="text-xs font-bold text-slate-900">
+                          {currency((selectedTransaction.items ?? []).reduce((sum, it) => {
+                            const id = it.itemId
+                            return id ? sum + (it.price ?? 0) * (refundQty[id] ?? 0) : sum
+                          }, 0))}
+                        </span>
+                      </div>
+
+                      {/* Reason category */}
+                      <select
+                        value={refundCategory}
+                        onChange={(e) => setRefundCategory(e.target.value)}
+                        className="w-full rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-amber-500"
+                      >
+                        {REFUND_REASONS.map((r) => (
+                          <option key={r} value={r}>{r}</option>
+                        ))}
+                      </select>
+
                       <input
                         type="text"
                         value={refundReason}
                         onChange={(e) => setRefundReason(e.target.value)}
-                        placeholder="Reason for refund (optional)"
+                        placeholder="Additional note (optional)"
                         className="w-full rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-amber-500"
                       />
+
                       <div className="flex gap-2">
                         <button
                           type="button"
@@ -1450,7 +1717,21 @@ function SalesContent() {
             <div className="border-b border-slate-200 p-4 shrink-0 space-y-3">
               <div className="flex items-center justify-between">
                 <h2 className="font-semibold text-slate-900">All Sales</h2>
-                <button type="button" onClick={() => setShowAllSalesModal(false)} className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50">Close</button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={exportSalesCsv}
+                    disabled={filteredTransactions.length === 0}
+                    title="Download the filtered sales as a CSV file"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#1e3a5f] px-3 py-1.5 text-sm font-medium text-white transition hover:bg-[#162d4a] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                    </svg>
+                    Export
+                  </button>
+                  <button type="button" onClick={() => setShowAllSalesModal(false)} className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50">Close</button>
+                </div>
               </div>
               <div className="flex flex-wrap gap-2">
                 <div className="flex flex-1 min-w-[200px] items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5">
@@ -1470,12 +1751,13 @@ function SalesContent() {
                 </div>
                 <select
                   value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value as 'all' | 'completed' | 'voided' | 'refunded')}
+                  onChange={(e) => setStatusFilter(e.target.value as 'all' | 'completed' | 'voided' | 'refunded' | 'partially_refunded')}
                   className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:outline-none"
                 >
                   <option value="all">All Status</option>
                   <option value="completed">Completed</option>
                   <option value="refunded">Refunded</option>
+                  <option value="partially_refunded">Partially Refunded</option>
                   <option value="voided">Voided</option>
                 </select>
               </div>
@@ -1502,8 +1784,8 @@ function SalesContent() {
                       <td className="px-4 py-3 text-right text-slate-600">{Array.isArray(tx.items) ? tx.items.reduce((sum: number, item: { quantity: number }) => sum + (item.quantity ?? 0), 0) : '—'}</td>
                       <td className="px-4 py-3 text-right font-medium text-slate-900">{currency(tx.totalAmount ?? 0)}</td>
                       <td className="px-4 py-3 text-center">
-                        <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${tx.status === 'voided' ? 'bg-red-50 text-red-600' : tx.status === 'refunded' ? 'bg-amber-50 text-amber-700' : 'bg-green-50 text-green-700'}`}>
-                          {tx.status === 'voided' ? 'Voided' : tx.status === 'refunded' ? 'Refunded' : 'Completed'}
+                        <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${statusBadgeClass(tx.status)}`}>
+                          {statusLabel(tx.status)}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-center">
