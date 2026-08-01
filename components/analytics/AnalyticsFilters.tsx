@@ -1,5 +1,8 @@
 'use client'
 
+// Filter bar for the Analytics page - time range, category and condition.
+// Purely presentational: it reports changes upward and holds no state of its own.
+
 import { useEffect, useState } from 'react'
 
 export interface AnalyticsFilterValues {

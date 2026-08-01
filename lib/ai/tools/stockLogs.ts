@@ -1,3 +1,9 @@
+// AI assistant tool - stock movement history.
+//
+// Read-only lookup over the `stockLogs` collection. Blocked for staff accounts
+// in app/api/chat/route.ts, since movement history reveals cost and supplier
+// patterns the owner may not want shared. Cached via lib/ai/cache.
+
 import { getAdminDb } from '@/lib/firebaseAdmin'
 
 const db = () => getAdminDb()

@@ -1,5 +1,14 @@
 'use client'
 
+// Login page.
+//
+// Signs in with Firebase Auth, and offers a password reset by email.
+//
+// Role and permissions are NOT read here - the dashboard reads them from the
+// user's Firestore profile through hooks/useUserRole once the session exists.
+// That same hook is what signs a disabled account back out, so a disabled user
+// can pass this screen and is then bounced immediately.
+
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { onAuthStateChanged, signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth'

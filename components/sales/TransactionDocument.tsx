@@ -1,5 +1,8 @@
 'use client'
 
+// Printable / emailable receipt and reservation ticket layout.
+// Also captured as an image for the email attachment.
+
 import { forwardRef } from 'react'
 import {
   CompletedTransactionDocument,

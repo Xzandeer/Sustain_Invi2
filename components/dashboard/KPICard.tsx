@@ -1,3 +1,5 @@
+// A single dashboard tile: title, value, icon and colour.
+
 interface KPICardProps {
   title: string
   value: string | number

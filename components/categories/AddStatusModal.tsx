@@ -1,5 +1,7 @@
 'use client'
 
+// Modal for adding a custom status option. Calls onSuccess when saved.
+
 import { useState } from 'react'
 import { collection, addDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'

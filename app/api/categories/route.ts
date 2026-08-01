@@ -1,3 +1,11 @@
+// Product categories.
+//
+// GET  → all categories, sorted by name
+// POST → creates one, rejecting duplicates by exact name (409)
+//
+// Categories are referenced by inventory items through categoryId, and the
+// per-category forecast groups by the same field.
+
 import { NextRequest, NextResponse } from 'next/server'
 import { addDoc, collection, getDocs, limit, orderBy, query, where } from 'firebase/firestore'
 import { db } from '@/lib/firebase'

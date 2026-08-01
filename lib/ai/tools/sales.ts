@@ -1,3 +1,10 @@
+// AI assistant tools - sales questions.
+//
+// Read-only lookups: today's sales, recent sales, top categories, trend data,
+// frequent customers, basket analysis, the dashboard summary and restock
+// recommendations. Each returns a formatted string for the chat answer.
+// Cached via lib/ai/cache.
+
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { aiCache } from '@/lib/ai/cache'
 

@@ -1,5 +1,7 @@
 'use client'
 
+// Analytics panel - best performing categories in the selected range.
+
 interface TopSellingRow {
   categoryId: string
   categoryName: string

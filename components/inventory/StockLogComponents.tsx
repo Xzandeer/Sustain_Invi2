@@ -1,5 +1,8 @@
 'use client'
 
+// Shared pieces for the stock log screen: the stock / reserved / available
+// display, and the coloured badge for each action type.
+
 import { ResolvedStockLogAction } from '@/lib/inventory/stockLogActions'
 
 interface StockValueDisplayProps {

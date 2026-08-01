@@ -1,3 +1,11 @@
+// AI assistant tools - container / shipment questions.
+//
+// Read-only lookups over the `containers` collection: all shipments, and the
+// active / delivered / pending subsets. Each returns a formatted string that
+// goes straight into the chat answer.
+//
+// Results are cached (lib/ai/cache) to avoid repeated Firestore reads.
+
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { aiCache } from '@/lib/ai/cache'
 

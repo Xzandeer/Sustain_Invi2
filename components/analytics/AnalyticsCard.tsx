@@ -1,5 +1,8 @@
 'use client'
 
+// One KPI tile on the Analytics page: a label, a big value, and an optional
+// comparison badge underneath.
+
 import type { ReactNode } from 'react'
 
 interface AnalyticsCardProps {

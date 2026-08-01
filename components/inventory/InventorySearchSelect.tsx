@@ -1,5 +1,8 @@
 'use client'
 
+// Type-ahead item picker used by the point of sale and the reservation form.
+// Searches by name and shows the available (not reserved) stock for each match.
+
 import { useMemo, useState } from 'react'
 import { Check, ChevronsUpDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'

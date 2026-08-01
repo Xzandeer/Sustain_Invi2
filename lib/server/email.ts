@@ -1,3 +1,18 @@
+// Outbound email: sale invoices and reservation tickets.
+//
+// Uses Nodemailer over SMTP. Credentials come from environment variables, so
+// nothing here works until those are set on the server (and on Vercel).
+//
+// Two senders:
+//   sendInvoiceEmail()           - customer's copy of a completed sale
+//   sendReservationTicketEmail() - claim ticket with the reservation code
+//
+// The HTML templates are inline on purpose: email clients strip external
+// stylesheets, so every style has to be written on the element itself.
+//
+// A failed send never rolls back the sale or reservation - the record is
+// already written by the time this runs. The caller just reports the failure.
+
 import 'server-only'
 import { Resend } from 'resend'
 import { STORE_NAME } from '@/lib/transactions/transactionDocuments'

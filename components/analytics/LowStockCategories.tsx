@@ -1,5 +1,8 @@
 'use client'
 
+// Analytics panel - categories running low on stock, so restocking can be
+// planned by category rather than item by item.
+
 interface LowStockRow {
   category: string
   stock: number

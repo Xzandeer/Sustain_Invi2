@@ -1,5 +1,14 @@
 'use client'
 
+// The AI assistant chat panel.
+//
+// Sends the conversation to /api/chat, which decides whether to call one of
+// the read-only tools in lib/ai/toolRegistry before answering.
+//
+// The assistant can only READ store data - it cannot create, edit or delete
+// anything. `context` lets the caller tell it which page the user is on so
+// answers can be more specific.
+
 import React, { useEffect, useRef, useState } from 'react'
 import { Bot, Send, Trash2, X } from 'lucide-react'
 

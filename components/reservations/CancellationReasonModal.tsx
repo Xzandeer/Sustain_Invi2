@@ -1,5 +1,11 @@
 'use client'
 
+// Asks for a reason before a reservation is cancelled.
+//
+// A reason is required for manual cancellations so the reservation report can
+// show why stock was released. The options live in
+// lib/reservations/cancellationReasons.ts.
+
 import { useState } from 'react'
 import { AlertCircle, XCircle } from 'lucide-react'
 import {

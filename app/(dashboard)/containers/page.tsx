@@ -1,5 +1,22 @@
 'use client'
 
+// Containers page - profitability per incoming shipment.
+//
+// The shop buys surplus by the container. This screen answers the question
+// paper records cannot: was this particular shipment worth buying?
+//
+// For each container it computes:
+//   revenue       - total sales of items that came from it
+//   profit        - revenue minus the container's purchase cost
+//   ROI           - profit as a percentage of that cost
+//   sell-through  - how much of the shipment has actually sold
+//
+// Items are linked to a container by containerId on the inventory record.
+//
+// Layout: ContainerModal (add/edit a container), AddItemModal (add an item
+// straight into a container), ContainerCard (one shipment's summary), then
+// ContainersContent which loads the data and renders the list.
+
 import { useEffect, useMemo, useState } from 'react'
 import {
   collection,
@@ -65,6 +82,9 @@ interface SaleItem {
   name: string
   quantity: number
   price: number
+  // Units given back to the customer. Written by /api/sales/refund and may be
+  // absent on sales made before partial refunds existed, hence optional.
+  refundedQuantity?: number
 }
 
 interface SaleDoc {
@@ -637,14 +657,24 @@ function ContainersContent() {
     return () => { cancelled = true }
   }, [])
 
-  // Precompute sold qty map across all sales
+  // Precompute how many units of each item actually stayed sold.
+  //
+  // Two things are excluded, because neither earned the shop any money:
+  //   • voided sales      - the whole transaction was cancelled
+  //   • refunded quantity - those units came back and were paid back
+  //
+  // Refunds are subtracted per line, not per sale, because a sale can be
+  // partially refunded (2 of 5 units returned). Counting a refunded unit as
+  // sold would overstate container revenue, profit, ROI and sell-through.
   const soldQtyMap = useMemo(() => {
     const map: Record<string, number> = {}
     for (const sale of sales) {
       if (sale.status === 'voided') continue
       for (const si of sale.items ?? []) {
         if (!si.itemId) continue
-        map[si.itemId] = (map[si.itemId] ?? 0) + toNumber(si.quantity)
+        const netQty = toNumber(si.quantity) - toNumber(si.refundedQuantity)
+        if (netQty <= 0) continue
+        map[si.itemId] = (map[si.itemId] ?? 0) + netQty
       }
     }
     return map

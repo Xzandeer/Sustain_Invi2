@@ -1,5 +1,11 @@
 'use client'
 
+// Customers page - everyone who has bought or reserved, built from the
+// customer details captured on sales and reservations.
+//
+// There is no separate customer database. Walk-in sales have no name attached,
+// so they do not appear here.
+
 import { useEffect, useMemo, useState } from 'react'
 import { collection, getDocs } from 'firebase/firestore'
 import { db } from '@/lib/firebase'

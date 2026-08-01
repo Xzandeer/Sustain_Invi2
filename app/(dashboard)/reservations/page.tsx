@@ -1,5 +1,18 @@
 'use client'
 
+// Reservations page - hold stock for a customer until they collect.
+//
+// Reserving moves quantity from available into reserved. The stock stays on
+// the books but can no longer be sold or deducted, which is why reserved
+// quantity is blocked in the stock adjustment screen.
+//
+// A reservation ends one of four ways: Completed (collected and paid),
+// Cancelled (needs a reason), Expired (auto-released after the hold period,
+// see lib/reservations/reservationExpiration.ts), or still Active.
+//
+// A customer name is required. Without it a reservation cannot be matched back
+// to the person when they return for the item.
+
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { collection, onSnapshot, orderBy, query } from 'firebase/firestore'
 import {

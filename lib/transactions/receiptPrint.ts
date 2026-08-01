@@ -1,10 +1,40 @@
-// Print-formatted receipt/ticket - generates HTML for thermal printer output (80mm width)
+// Print-formatted receipt/ticket - generates HTML for thermal printer output.
+//
+// Supports the two common thermal roll widths, 58mm and 80mm. The width is a
+// property of the printer physically attached to a given computer, not of the
+// shop, so the choice is stored per browser in localStorage rather than in the
+// shared store settings - two terminals may well have different printers.
 import { CompletedTransactionDocument, formatCurrency, formatTransactionDateTime } from '@/lib/transactions/transactionDocuments'
 
+export type ReceiptPaperWidth = 58 | 80
+
+export const RECEIPT_WIDTH_STORAGE_KEY = 'sustain.receipt.paperWidth'
+
+// Roll width vs. printable width: thermal heads leave an unprinted margin at
+// each edge, so the usable area is a few millimetres narrower than the paper.
+const PAPER = {
+  58: { roll: '58mm', content: '54mm', body: 11, small: 9,  store: 13, total: 12, pad: '2mm' },
+  80: { roll: '80mm', content: '76mm', body: 13, small: 11, store: 16, total: 14, pad: '4mm' },
+} as const
+
+export const getReceiptPaperWidth = (): ReceiptPaperWidth => {
+  if (typeof window === 'undefined') return 80
+  return window.localStorage.getItem(RECEIPT_WIDTH_STORAGE_KEY) === '58' ? 58 : 80
+}
+
+export const setReceiptPaperWidth = (width: ReceiptPaperWidth) => {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(RECEIPT_WIDTH_STORAGE_KEY, String(width))
+}
+
 // Open receipt in new window with print dialog auto-opened
-export const openReceiptPrintWindow = (document: CompletedTransactionDocument) => {
+export const openReceiptPrintWindow = (
+  document: CompletedTransactionDocument,
+  paperWidth: ReceiptPaperWidth = getReceiptPaperWidth()
+) => {
   if (!document) return
 
+  const paper = PAPER[paperWidth]
   const isSale = document.type === 'sale'
 
   // Step 1: Build HTML document formatted for 80mm thermal receipts
@@ -37,7 +67,7 @@ export const openReceiptPrintWindow = (document: CompletedTransactionDocument) =
     }
 
     .receipt-container {
-      width: 80mm;
+      width: ${paper.roll};
       margin: 0 auto;
       padding: 20px 0;
       background: white;
@@ -207,19 +237,97 @@ export const openReceiptPrintWindow = (document: CompletedTransactionDocument) =
       color: #64748b;
     }
 
+    /* Page size for the printer.
+     *
+     * Without this the browser assumes a normal sheet (usually A4) and a
+     * thermal printer on continuous roll paper keeps feeding until it reaches
+     * what it thinks is the bottom of the page - around 297mm - leaving a long
+     * blank tail after every receipt.
+     *
+     * 80mm is the roll width; "auto" height makes the page exactly as tall as
+     * the receipt content and no taller. */
+    @page {
+      size: ${paper.roll} auto;
+      margin: 0;
+    }
+
     @media print {
-      body {
+      /* Percentage heights resolve against the full page when printing, which
+       * would pad the receipt out to a whole sheet again. */
+      html, body {
+        height: auto;
+        width: ${paper.roll};
         margin: 0;
         padding: 0;
       }
       .receipt-container {
-        width: 80mm;
+        width: ${paper.roll};
         margin: 0;
         padding: 0;
       }
       .receipt-content {
-        padding: 0;
+        padding: 0 ${paper.pad};
+        max-width: ${paper.content};
       }
+      /* Never split a receipt across two pages of roll paper. */
+      .receipt-container, .receipt-content {
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+
+      /* Thermal printers are 203 dpi and strictly black or white - there is no
+       * grey. Any grey text is reproduced by scattering dots, which reads as
+       * faint and blurry on paper. So for printing only, everything becomes
+       * pure black and slightly larger and heavier. The screen preview above
+       * keeps its softer styling. */
+      * {
+        color: #000 !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+        text-shadow: none !important;
+        -webkit-font-smoothing: none;
+      }
+
+      .receipt-content {
+        font-size: ${paper.body}px;
+        line-height: 1.45;
+        font-weight: 500;
+      }
+
+      /* Small print - labels, notes, timestamps - was 10px, which is under two
+       * millimetres tall at this resolution and loses stroke detail. */
+      .store-tagline,
+      .receipt-footer,
+      .receipt-meta,
+      .item-condition,
+      small {
+        font-size: ${paper.small}px !important;
+        font-weight: 500 !important;
+      }
+
+      .store-name { font-size: ${paper.store}px !important; font-weight: 800 !important; }
+      .total-row, .total-amount { font-weight: 800 !important; font-size: ${paper.total}px !important; }
+
+      /* Long item names must wrap rather than push the price column off the
+       * paper - much more likely at 58mm than 80mm. */
+      table { width: 100%; table-layout: fixed; }
+      td, th { overflow-wrap: anywhere; word-break: break-word; }
+
+      /* Solid black rules print cleanly; light dashed ones break up into
+       * intermittent dots. */
+      .receipt-header,
+      .receipt-divider,
+      .totals-section,
+      table, th, td {
+        border-color: #000 !important;
+      }
+      .receipt-header {
+        border-bottom-style: solid !important;
+        border-bottom-width: 1px !important;
+      }
+
+      /* Backgrounds waste ink-free paper coating and muddy the text on top. */
+      * { background: transparent !important; }
     }
   </style>
 </head>
@@ -307,10 +415,19 @@ export const openReceiptPrintWindow = (document: CompletedTransactionDocument) =
   </div>
 
   <script>
-    window.addEventListener('load', function() {
-      setTimeout(function() {
+    // Print once the layout has settled, then close the tab so repeated sales
+    // do not leave a pile of receipt windows open behind the app.
+    window.addEventListener('load', function () {
+      var printed = false;
+      function runPrint() {
+        if (printed) return;
+        printed = true;
         window.print();
-      }, 250);
+      }
+      window.addEventListener('afterprint', function () {
+        window.close();
+      });
+      setTimeout(runPrint, 250);
     });
   </script>
 </body>

@@ -1,3 +1,12 @@
+// Route guard for dashboard pages.
+//
+// Redirects to /login when nobody is signed in, and blocks the page when the
+// user lacks the permission named in `requirePermission`.
+//
+// This protects the SCREEN only. Any route that touches data must also call
+// checkPermission() from lib/server/authorize.ts, because a determined user
+// can call the API directly without ever loading the page.
+
 // Protected route wrapper - checks authentication and role-based permissions
 'use client'
 

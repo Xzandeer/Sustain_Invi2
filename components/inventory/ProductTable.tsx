@@ -1,5 +1,13 @@
 'use client'
 
+// The inventory table.
+//
+// Renders whatever rows and columns the Inventory page passes in - sorting and
+// column visibility are decided there, not here, so the user's saved table
+// preferences stay in one place.
+//
+// Exports the Product type used across the inventory screens.
+
 import { ArrowRightLeft, Pencil, Trash2 } from 'lucide-react'
 
 export interface Product {
@@ -21,6 +29,9 @@ export interface Product {
   voidedAt?: string | null
   voidedBy?: string | null
   voidReason?: string | null
+  // Total units written off this item. Present even when isVoided is false,
+  // because a partial void leaves the item active but still records the loss.
+  voidedUnits?: number | null
   createdAtMs?: number
 }
 

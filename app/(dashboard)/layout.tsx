@@ -1,3 +1,6 @@
+// Layout shared by every dashboard page - sidebar, top bar and the floating
+// AI assistant. Pages render inside this.
+
 import Sidebar from '@/components/layout/Sidebar'
 import FloatingChatBot from '@/components/chatbot/FloatingChatBot'
 

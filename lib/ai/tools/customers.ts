@@ -1,3 +1,8 @@
+// AI assistant tools - customer questions.
+//
+// Read-only lookups: the customer list, and one customer's purchase history.
+// Returns formatted strings for the chat answer. Cached via lib/ai/cache.
+
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { aiCache } from '@/lib/ai/cache'
 

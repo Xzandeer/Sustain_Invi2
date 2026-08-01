@@ -1,5 +1,7 @@
 'use client'
 
+// Top bar of the dashboard - page title, user menu and sign out.
+
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { signOut } from 'firebase/auth'

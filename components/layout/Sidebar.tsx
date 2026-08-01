@@ -1,5 +1,11 @@
 'use client'
 
+// Dashboard navigation.
+//
+// Links are filtered by the signed-in user's permissions, so staff only see
+// the sections they are allowed to open. This is a convenience only - the
+// real check happens in ProtectedRoute and again on the server.
+
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {

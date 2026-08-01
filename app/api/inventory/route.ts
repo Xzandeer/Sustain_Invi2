@@ -13,6 +13,7 @@ import {
 import { db } from '@/lib/firebase'
 import { getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { createInventoryVariant, createStockLog, findInventoryVariant, getProcessedByInfo } from '@/lib/server/inventory'
+import { guardProcessedBy } from '@/lib/server/authorize'
 
 interface InventoryPayload {
   name?: unknown
@@ -112,6 +113,12 @@ export async function POST(req: NextRequest) {
     const description = typeof body.description === 'string' ? body.description.trim() : ''
     const imageUrl = typeof body.imageUrl === 'string' ? body.imageUrl.trim() : ''
     const containerId = typeof body.containerId === 'string' && body.containerId.trim() ? body.containerId.trim() : null
+    // Permission check before any write. The UI hides the Add Item button for
+    // staff without this permission, but that only stops the button — not a
+    // request sent directly to this endpoint.
+    const denied = await guardProcessedBy(body.processedBy, 'canManageInventory')
+    if (denied) return denied
+
     const processedBy = await getProcessedByInfo(body.processedBy)
     const remarks = typeof body.remarks === 'string' ? body.remarks.trim() : ''
 

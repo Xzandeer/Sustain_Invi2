@@ -1,5 +1,8 @@
 'use client'
 
+// Analytics panel - categories with the weakest revenue in the selected range.
+// Helps the owner spot what is not worth reordering.
+
 interface LowPerformingRow {
   categoryId: string
   categoryName: string

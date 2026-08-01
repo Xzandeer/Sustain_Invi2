@@ -98,6 +98,11 @@ export async function POST(req: NextRequest) {
           quantity: typeof item.quantity === 'number' ? item.quantity : 1,
           price: typeof item.price === 'number' ? item.price : 0,
           condition: typeof item.condition === 'string' ? item.condition : undefined,
+          // Category must be carried through. The sale document is REWRITTEN
+          // from these lines further down, so any field dropped here is erased
+          // from the sale permanently - and Analytics groups by categoryId.
+          categoryId: typeof item.categoryId === 'string' ? item.categoryId : undefined,
+          categoryName: typeof item.categoryName === 'string' ? item.categoryName : undefined,
           refundedQuantity:
             typeof item.refundedQuantity === 'number' ? item.refundedQuantity : 0,
         }
@@ -269,6 +274,8 @@ export async function POST(req: NextRequest) {
         quantity: line.quantity,
         price: line.price,
         ...(line.condition ? { condition: line.condition } : {}),
+        ...(line.categoryId ? { categoryId: line.categoryId } : {}),
+        ...(line.categoryName ? { categoryName: line.categoryName } : {}),
         refundedQuantity: line.refundedQuantity + (refunded?.quantity ?? 0),
       }
     })

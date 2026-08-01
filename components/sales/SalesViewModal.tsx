@@ -1,5 +1,15 @@
 'use client'
 
+// Transaction detail dialog.
+//
+// Shows the receipt, the warranty status, and the refund controls. Refunds can
+// be partial: each line has its own quantity stepper, and the refund total is
+// previewed before anything is submitted.
+//
+// The warranty window shown here is the one stamped on the sale when it was
+// made, not the current store setting - changing the policy must never move
+// the window on past sales.
+
 import { useState } from 'react'
 import { X, RotateCcw } from 'lucide-react'
 import { toast } from 'sonner'

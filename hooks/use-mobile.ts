@@ -1,3 +1,6 @@
+// Reports whether the viewport is currently phone-sized.
+// Used by the sidebar to switch between the docked and drawer layouts.
+
 import * as React from 'react'
 
 const MOBILE_BREAKPOINT = 768

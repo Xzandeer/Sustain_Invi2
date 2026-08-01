@@ -1,5 +1,8 @@
 'use client'
 
+// Modal for creating a product category. Posts to /api/categories and calls
+// onSuccess so the parent can refresh its list.
+
 import { useState } from 'react'
 import { collection, addDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'

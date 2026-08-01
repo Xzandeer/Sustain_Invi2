@@ -1,3 +1,20 @@
+// Registry of the read-only tools the AI assistant may call.
+//
+// Two things live here and must stay in sync:
+//   TOOL_DEFINITIONS - the schemas sent to the model so it knows what exists
+//   TOOL_HANDLERS    - the actual functions, keyed by the same names
+//
+// Every tool is READ-ONLY. The assistant can look at inventory, sales,
+// reservations, containers and stock logs, but it can never write, delete or
+// modify anything. Adding a write tool here would let the model change store
+// data on its own, so don't.
+//
+// Which tools staff may use is filtered separately in app/api/chat/route.ts
+// (see STAFF_BLOCKED_TOOLS).
+//
+// To add a tool: write the function in ./tools/, add its schema to
+// TOOL_DEFINITIONS, then map the name to the function in TOOL_HANDLERS.
+
 import { getLowStockItems, getInventorySummary, getStockAging, searchInventory, getInventoryByCategory, getOutOfStockItems } from './tools/inventory'
 import { getActiveReservations, getOverdueReservations, getPendingReservations } from './tools/reservations'
 import { getTodaySales, getRecentSales, getTopCategories, getTrendData, getFrequentCustomers, getBasketAnalysis, getDashboardSummary, getRecommendations } from './tools/sales'
@@ -5,9 +22,14 @@ import { getStockLogs } from './tools/stockLogs'
 import { predictSales } from './tools/prediction'
 import { getAllCustomers, getCustomerHistory } from './tools/customers'
 import { getAllShipments, getActiveShipments, getDeliveredShipments, getPendingShipments } from './tools/containers'
-import { searchWebTrends } from './tools/webSearch'
 
-// Tool definitions sent to Gemini
+// Web trend search (lib/ai/tools/webSearch.ts) is intentionally NOT registered.
+// It returned general Philippine retail trends rather than results filtered to
+// this shop's product categories, so answers drifted away from actual stock.
+// The file is kept for future work; re-register it here once the query and the
+// inventory matching are driven by the store's real categories.
+
+// Tool definitions sent to the model
 export const TOOL_DEFINITIONS = [
 
   // ── Inventory ──────────────────────────────────────────────────────────────
@@ -172,19 +194,6 @@ export const TOOL_DEFINITIONS = [
     description: 'ALWAYS use this tool when the user asks about: predict, forecast, next week sales, how much will we earn, expected revenue, projection, will sales go up, estimate future sales. This is the ONLY tool that can answer prediction questions.',
     parameters: { type: 'object', properties: {}, required: [] },
   },
-
-  // ── Web Search ─────────────────────────────────────────────────────────────
-  {
-    name: 'searchWebTrends',
-    description: 'Search the web for trending products and items in the Philippines, then cross-reference with store inventory. Use when asked about: what is trending online, what is popular in PH right now, what should we stock based on trends, web trends, online trends, social media trends, popular items in Philippines.',
-    parameters: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Search query for trending items, e.g. "trending gadgets", "popular school items", "best selling Christmas gifts Philippines"' },
-      },
-      required: ['query'],
-    },
-  },
 ]
 
 // ── Execute a tool by name ─────────────────────────────────────────────────────
@@ -223,8 +232,6 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
     case 'getStockLogs':            return getStockLogs()
     // Prediction
     case 'predictSales':            return predictSales()
-    // Web Search
-    case 'searchWebTrends':         return searchWebTrends(String(args.query ?? ''))
     default:                        return `Unknown tool: ${name}`
   }
 }

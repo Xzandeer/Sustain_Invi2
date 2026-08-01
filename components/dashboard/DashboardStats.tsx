@@ -1,3 +1,6 @@
+// Dashboard KPI row - revenue, inventory value, item count and similar.
+// Values are computed server-side by /api/dashboard so they cannot drift.
+
 import { AlertTriangle, Boxes, ShoppingBag, TrendingUp } from 'lucide-react'
 import type { ComponentType } from 'react'
 

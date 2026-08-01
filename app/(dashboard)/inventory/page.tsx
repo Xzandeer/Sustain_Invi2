@@ -1,5 +1,21 @@
 'use client'
 
+// Inventory page - the item list, with add, edit, stock adjustment and voiding.
+//
+// Every item is stocked as New or Refurbished. In surplus retail the same
+// product sells at a different price depending on condition, so the two are
+// tracked as separate variants rather than one item with a note.
+//
+// Table behaviour the user controls:
+//   • Sorting        - 9 options; 'recent' is the default so newly added items
+//                      appear at the top, which is how staff actually work
+//   • Column visibility - toggled from the Table Options menu (the burger icon)
+// Both are saved to localStorage under 'sustain.inventory.tablePrefs', so each
+// person's layout survives a refresh.
+//
+// Actions are permission-gated: canManageInventory for add/edit/adjust,
+// canVoidItems for voiding. Staff without a permission never see the button.
+
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { collection, onSnapshot } from 'firebase/firestore'
@@ -130,6 +146,10 @@ function InventoryContent() {
   const [voidTab, setVoidTab] = useState<'active' | 'voided' | 'all'>('active')
   const [voidingProduct, setVoidingProduct] = useState<Product | null>(null)
   const [voidingId, setVoidingId] = useState<string | null>(null)
+  // Item currently being restored, plus how many of its voided units to bring
+  // back. Restoring is not all-or-nothing: some of a damaged batch may be fine.
+  const [restoringProduct, setRestoringProduct] = useState<Product | null>(null)
+  const [restoreQty, setRestoreQty] = useState(0)
 
   useEffect(() => {
     const unsubscribeCategories = onSnapshot(
@@ -183,6 +203,7 @@ function InventoryContent() {
               voidedAt: typeof data.voidedAt === 'string' ? data.voidedAt : null,
               voidedBy: typeof data.voidedBy === 'string' ? data.voidedBy : null,
               voidReason: typeof data.voidReason === 'string' ? data.voidReason : null,
+              voidedUnits: typeof data.voidedUnits === 'number' ? data.voidedUnits : null,
               createdAtMs: (() => {
                 const raw = data.createdAt as { seconds?: number } | string | undefined
                 if (raw && typeof raw === 'object' && typeof raw.seconds === 'number') return raw.seconds * 1000
@@ -230,8 +251,14 @@ function InventoryContent() {
     const maxPriceValue = maxPrice ? Number(maxPrice) : null
 
     const tabFiltered = inventory.filter((product) => {
+      // Active  = anything still sellable, including items that had SOME units
+      //           written off but still have stock left.
+      // Voided  = every item with a write-off on record, whether it was voided
+      //           entirely or only in part. A partially voided item therefore
+      //           appears under both tabs, which is correct: it is still on sale
+      //           and it still has units that were written off.
       if (voidTab === 'active') return !product.isVoided
-      if (voidTab === 'voided') return product.isVoided === true
+      if (voidTab === 'voided') return product.isVoided === true || (product.voidedUnits ?? 0) > 0
       return true // 'all'
     })
     return tabFiltered
@@ -377,7 +404,13 @@ function InventoryContent() {
     }
   }
 
-  const handleUnvoidProduct = async (productId: string) => {
+  // Opens the restore dialog, defaulting to bringing every voided unit back.
+  const openRestoreModal = (product: Product) => {
+    setRestoreQty(product.voidedUnits ?? 0)
+    setRestoringProduct(product)
+  }
+
+  const handleUnvoidProduct = async (productId: string, restoreQuantity: number) => {
     if (!isAdmin) return
     setError('')
     setVoidingId(productId)
@@ -387,6 +420,7 @@ function InventoryContent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'unvoid',
+          restoreQuantity,
           processedBy: {
             uid: auth.currentUser?.uid ?? '',
             email: auth.currentUser?.email ?? '',
@@ -394,9 +428,21 @@ function InventoryContent() {
           },
         }),
       })
-      const payload = (await response.json()) as { error?: string }
+      const payload = (await response.json()) as {
+        error?: string
+        restoreQuantity?: number
+        remainingVoidedUnits?: number
+      }
       if (!response.ok) throw new Error(payload.error || 'Failed to restore item.')
-      toast.success('Item restored successfully.')
+      const back = payload.restoreQuantity ?? restoreQuantity
+      const left = payload.remainingVoidedUnits ?? 0
+      toast.success(
+        back > 0
+          ? `${back} unit${back !== 1 ? 's' : ''} restored.` +
+              (left > 0 ? ` ${left} still voided.` : '')
+          : 'Item restored.'
+      )
+      setRestoringProduct(null)
     } catch (unvoidError) {
       const message = unvoidError instanceof Error ? unvoidError.message : 'Failed to restore item.'
       setError(message)
@@ -525,11 +571,21 @@ function InventoryContent() {
   )
 
   // ── KPI cards ─────────────────────────────────────
-  const kpiTotal        = inventory.length
-  const kpiAvailable    = inventory.filter((p) => p.stockStatus === 'Available').length
-  const kpiReserved     = inventory.filter((p) => p.reservedStock > 0).length
-  const kpiLowStock     = inventory.filter((p) => p.stockStatus === 'Low Stock').length
-  const kpiOutOfStock   = inventory.filter((p) => p.stockStatus === 'Out of Stock').length
+  //
+  // Counted from NON-VOIDED items only. A voided item cannot be sold or
+  // reserved - both /api/sales and /api/reservations reject it - so counting it
+  // under "Ready for sale" would state something the system itself refuses to
+  // do. The voided records still exist; they are just not sellable stock.
+  //
+  // The Voided tab has its own count below, so nothing is hidden.
+  const sellableInventory = useMemo(() => inventory.filter((p) => !p.isVoided), [inventory])
+
+  const kpiTotal        = sellableInventory.length
+  const kpiAvailable    = sellableInventory.filter((p) => p.stockStatus === 'Available').length
+  const kpiReserved     = sellableInventory.filter((p) => p.reservedStock > 0).length
+  const kpiLowStock     = sellableInventory.filter((p) => p.stockStatus === 'Low Stock').length
+  const kpiOutOfStock   = sellableInventory.filter((p) => p.stockStatus === 'Out of Stock').length
+  const kpiVoided       = inventory.filter((p) => p.isVoided).length
 
   // ── Export CSV ────────────────────────────────────
   const exportCSV = () => {
@@ -732,7 +788,9 @@ function InventoryContent() {
               <div>
                 <p className="text-xs font-medium text-slate-500">Total Items</p>
                 <p className="text-xl font-bold text-slate-900">{kpiTotal}</p>
-                <p className="text-xs text-slate-400">All inventory items</p>
+                <p className="text-xs text-slate-400">
+                  {kpiVoided > 0 ? `Excludes ${kpiVoided} voided` : 'All inventory items'}
+                </p>
               </div>
             </div>
           </div>
@@ -919,6 +977,8 @@ function InventoryContent() {
                     </th>)}
                     {visibleColumns.condition && <th className="px-3 py-2 text-left">Condition</th>}
                     {visibleColumns.status && <th className="px-3 py-2 text-left">Stock Status</th>}
+                    {/* Only on the Voided tab - the reason is meaningless for active items */}
+                    {voidTab === 'voided' && <th className="px-3 py-2 text-left">Void Reason</th>}
                     <th className="px-3 py-2 text-left">Actions</th>
                   </tr>
                 </thead>
@@ -968,10 +1028,40 @@ function InventoryContent() {
                           {product.stockStatus}
                         </span>
                       </td>)}
+                      {voidTab === 'voided' && (
+                      <td className="px-5 py-3.5">
+                        <span className={`inline-flex rounded-md px-2.5 py-0.5 text-xs font-semibold ${
+                          product.isVoided ? 'bg-red-50 text-red-700' : 'bg-orange-50 text-orange-700'
+                        }`}>
+                          {product.voidReason || 'No reason recorded'}
+                        </span>
+                        <p className="mt-1 text-xs font-medium text-slate-500">
+                          {product.isVoided
+                            ? `Fully voided · ${product.voidedUnits ?? 0} unit${(product.voidedUnits ?? 0) !== 1 ? 's' : ''}`
+                            : `Partly voided · ${product.voidedUnits ?? 0} of ${(product.quantity ?? 0) + (product.voidedUnits ?? 0)} unit${((product.quantity ?? 0) + (product.voidedUnits ?? 0)) !== 1 ? 's' : ''} · still on sale`}
+                        </p>
+                        {product.voidedBy && (
+                          <p className="mt-1 text-xs text-slate-400">
+                            by {product.voidedBy}
+                            {product.voidedAt
+                              ? ` · ${new Date(product.voidedAt).toLocaleDateString('en-PH', {
+                                  month: 'short', day: 'numeric', year: 'numeric',
+                                })}`
+                              : ''}
+                          </p>
+                        )}
+                      </td>)}
                       <td className="px-5 py-3.5">
                         {(canManageInventory || canVoid) ? (
                           <div className="flex items-center gap-2">
-                            {canManageInventory && (<>
+                            {/* The Voided tab is for managing write-offs, so it offers
+                                only Restore and Void. Editing and stock adjustment
+                                belong on Active, where the item is handled as live
+                                stock.
+                                Fully voided items never show them on any tab: adding
+                                stock to a written-off item would create units that
+                                cannot be sold, and the adjust API rejects it too. */}
+                            {canManageInventory && voidTab !== 'voided' && !product.isVoided && (<>
                             <button
                               onClick={() => openEditModal(product)}
                               title="Edit"
@@ -991,9 +1081,24 @@ function InventoryContent() {
                               </svg>
                             </button>
                             </>)}
+                            {/* Restore is offered whenever units have been written off,
+                                not only when the whole item was voided. A partly
+                                voided item keeps its Void button too, so more can
+                                be written off if needed. */}
+                            {canVoid && (product.voidedUnits ?? 0) > 0 && !product.isVoided && (
+                              <button
+                                onClick={() => openRestoreModal(product)}
+                                disabled={voidingId === product.id}
+                                title="Restore voided units"
+                                className="flex h-7 items-center gap-1 rounded-lg border border-slate-200 px-2 text-xs font-medium text-slate-500 transition hover:border-emerald-300 hover:text-emerald-600 disabled:opacity-40"
+                              >
+                                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                                Restore
+                              </button>
+                            )}
                             {canVoid && (product.isVoided ? (
                               <button
-                                onClick={() => handleUnvoidProduct(product.id)}
+                                onClick={() => openRestoreModal(product)}
                                 disabled={voidingId === product.id}
                                 title="Restore item"
                                 className="flex h-7 items-center gap-1 rounded-lg border border-slate-200 px-2 text-xs font-medium text-slate-500 transition hover:border-emerald-300 hover:text-emerald-600 disabled:opacity-40"
@@ -1138,6 +1243,75 @@ function InventoryContent() {
           onConfirm={(reason, qty) => handleVoidProduct(voidingProduct.id, reason, qty)}
         />
       )}
+
+      {/* ── Restore voided units ── */}
+      {restoringProduct && (() => {
+        const maxRestore = restoringProduct.voidedUnits ?? 0
+        const invalid = restoreQty < 1 || restoreQty > maxRestore
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+            <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl">
+              <h3 className="text-base font-semibold text-slate-900">Restore voided units</h3>
+              <p className="mt-1 text-sm text-slate-500">
+                {restoringProduct.name} · {restoringProduct.condition}
+              </p>
+
+              <div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm">
+                <div className="flex justify-between text-slate-600">
+                  <span>Currently in stock</span>
+                  <span className="font-semibold text-slate-900">{restoringProduct.quantity}</span>
+                </div>
+                <div className="mt-1 flex justify-between text-slate-600">
+                  <span>Voided units</span>
+                  <span className="font-semibold text-orange-600">{maxRestore}</span>
+                </div>
+                {restoringProduct.voidReason && (
+                  <div className="mt-1 flex justify-between text-slate-600">
+                    <span>Reason</span>
+                    <span className="font-medium text-slate-700">{restoringProduct.voidReason}</span>
+                  </div>
+                )}
+              </div>
+
+              <label className="mt-4 block text-sm font-medium text-slate-700">
+                How many units to restore?
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={maxRestore}
+                value={restoreQty}
+                onChange={(e) => setRestoreQty(Math.floor(Number(e.target.value)))}
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-emerald-400 focus:outline-none"
+              />
+              <p className="mt-1 text-xs text-slate-400">
+                {invalid
+                  ? `Enter a number between 1 and ${maxRestore}.`
+                  : `Stock will become ${restoringProduct.quantity + restoreQty}` +
+                    (maxRestore - restoreQty > 0
+                      ? ` · ${maxRestore - restoreQty} will stay voided.`
+                      : ' · nothing will stay voided.')}
+              </p>
+
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  onClick={() => setRestoringProduct(null)}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => handleUnvoidProduct(restoringProduct.id, restoreQty)}
+                  disabled={invalid || voidingId === restoringProduct.id}
+                  className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
+                >
+                  {voidingId === restoringProduct.id ? 'Restoring…' : 'Restore'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </main>
   )
 }

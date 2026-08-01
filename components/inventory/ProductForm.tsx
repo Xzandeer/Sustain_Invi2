@@ -1,5 +1,8 @@
 'use client'
 
+// The add / edit item form: name, category, condition, price, stock,
+// reorder point and container. Validation happens here before saving.
+
 import { useEffect, useMemo, useState } from 'react'
 
 export interface ProductFormValues {

@@ -1,5 +1,7 @@
 'use client'
 
+// next-themes provider. Wraps the app so theme classes are available.
+
 import * as React from 'react'
 import {
   ThemeProvider as NextThemesProvider,

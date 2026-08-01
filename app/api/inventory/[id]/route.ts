@@ -4,6 +4,7 @@ import { deleteDoc, doc, getDoc, updateDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { assertAdminUser, createStockLog, findInventoryVariant, getProcessedByInfo } from '@/lib/server/inventory'
+import { guardProcessedBy } from '@/lib/server/authorize'
 
 interface RouteContext {
   params: Promise<{ id: string }>
@@ -44,6 +45,11 @@ export async function PUT(req: Request, context: RouteContext) {
     // Step 2: Parse request and get user info
     const body = (await req.json()) as InventoryUpdatePayload
     const current = snapshot.data() as Record<string, unknown>
+
+    // Editing an item is a privileged action - check before reading further.
+    const denied = await guardProcessedBy(body.processedBy, 'canManageInventory')
+    if (denied) return denied
+
     const processedBy = await getProcessedByInfo(body.processedBy)
     const remarks = typeof body.remarks === 'string' ? body.remarks.trim() : ''
 
@@ -382,6 +388,17 @@ export async function PATCH(req: Request, context: RouteContext) {
       }
 
       const isFullVoid = voidQuantity >= currentStock
+      // Stored alongside stock so the cached status never disagrees with the
+      // quantity, matching what the stock-adjustment route does.
+      const voidMinStock = toNumber(snapshotData.minStock, 0)
+
+      // Running total of units written off this item, across every void.
+      // `isVoided` still means "entirely written off" and is what sales and
+      // reservations check. `voidedUnits` is the write-off HISTORY, which is
+      // what lets a partially voided item still appear under Voided even though
+      // it remains active and sellable.
+      const previousVoidedUnits = toNumber(snapshotData.voidedUnits, 0)
+      const nextVoidedUnits = previousVoidedUnits + voidQuantity
 
       // Check for active reservations (only block full voids)
       if (isFullVoid) {
@@ -407,13 +424,25 @@ export async function PATCH(req: Request, context: RouteContext) {
       const newStock = currentStock - voidQuantity
 
       if (isFullVoid) {
-        // Full void: mark item as voided and zero out stock
+        // Full void: mark the item voided and write the stock off.
+        //
+        // BOTH `stock` and `quantity` must be zeroed. Item documents carry both
+        // fields, and every reader resolves them as `stock ?? quantity` - so
+        // clearing only `quantity` leaves the old figure showing everywhere.
+        //
+        // `voidedQuantity` remembers what was written off, so restoring the
+        // item can hand the same amount back instead of making the user re-key
+        // it. See the 'unvoid' branch below.
         await updateDoc(docRef, {
           isVoided: true,
           voidedAt: new Date().toISOString(),
           voidedBy: processedBy.name ?? processedBy.email ?? 'Admin',
           voidReason,
+          voidedQuantity: voidQuantity,
+          voidedUnits: nextVoidedUnits,
+          stock: 0,
           quantity: 0,
+          stockStatus: getStockStatus({ stock: 0, minStock: voidMinStock }),
           updatedAt: new Date().toISOString(),
         })
         await createStockLog({
@@ -432,9 +461,23 @@ export async function PATCH(req: Request, context: RouteContext) {
           remarks: `Item fully voided (${voidQuantity} unit${voidQuantity !== 1 ? 's' : ''}). Reason: ${voidReason}`,
         })
       } else {
-        // Partial void: reduce stock only, item stays active
+        // Partial void: write off some units, the item stays active and
+        // sellable with what remains.
+        //
+        // As in the full-void branch above, BOTH `stock` and `quantity` must be
+        // written. Readers resolve them as `stock ?? quantity`, so updating
+        // only `quantity` leaves the original figure on screen and the units
+        // are never actually removed.
         await updateDoc(docRef, {
+          stock: newStock,
           quantity: newStock,
+          stockStatus: getStockStatus({ stock: newStock, minStock: voidMinStock }),
+          // Recorded so the write-off is visible on the Voided tab. The item is
+          // deliberately NOT flagged isVoided - it still has sellable stock.
+          voidedUnits: nextVoidedUnits,
+          voidReason,
+          voidedAt: new Date().toISOString(),
+          voidedBy: processedBy.name ?? processedBy.email ?? 'Admin',
           updatedAt: new Date().toISOString(),
         })
         await createStockLog({
@@ -458,11 +501,63 @@ export async function PATCH(req: Request, context: RouteContext) {
     }
 
     if (action === 'unvoid') {
+      // Restoring a voided item gives its stock back.
+      //
+      // In practice the restore button is used to undo a mistake - a duplicate
+      // entry or a wrong encoding - not to bring damaged goods back. Making the
+      // user re-key the quantity would also muddy the audit trail: a void of -5
+      // followed by a manual add of +5 reads as real stock movement, whereas a
+      // void followed by an un-void reads as the correction it actually was.
+      //
+      // The caller may restore ALL written-off units or only some of them - a
+      // shipment of 8 damaged units where 3 turned out to be fine, for example.
+      // Omitting restoreQuantity restores everything.
+      //
+      // `voidedUnits` is the ceiling: you can never restore more than was
+      // written off. It falls back to `voidedQuantity` for items voided before
+      // the running total existed, and to 0 for older records still - those
+      // simply come back with no stock, which is safe.
+      const maxRestorable = Math.max(
+        toNumber(snapshotData.voidedUnits, 0),
+        toNumber(snapshotData.voidedQuantity, 0)
+      )
+
+      const rawRestoreQty = (body as Record<string, unknown>).restoreQuantity
+      const restoreQuantity =
+        typeof rawRestoreQty === 'number' && rawRestoreQty >= 0
+          ? Math.floor(rawRestoreQty)
+          : maxRestorable
+
+      if (restoreQuantity > maxRestorable) {
+        return NextResponse.json(
+          {
+            error: `Cannot restore ${restoreQuantity} units — only ${maxRestorable} ${
+              maxRestorable === 1 ? 'was' : 'were'
+            } voided.`,
+          },
+          { status: 400 }
+        )
+      }
+
+      const restoredStock = currentStock + restoreQuantity
+
+      // Units left written off stay on record, so an item that is only partly
+      // restored still appears on the Voided tab with the remainder.
+      const remainingVoidedUnits = Math.max(0, maxRestorable - restoreQuantity)
+
       await updateDoc(docRef, {
         isVoided: false,
-        voidedAt: null,
-        voidedBy: null,
-        voidReason: null,
+        voidedAt: remainingVoidedUnits > 0 ? snapshotData.voidedAt ?? null : null,
+        voidedBy: remainingVoidedUnits > 0 ? snapshotData.voidedBy ?? null : null,
+        voidReason: remainingVoidedUnits > 0 ? snapshotData.voidReason ?? null : null,
+        voidedQuantity: null,
+        voidedUnits: remainingVoidedUnits > 0 ? remainingVoidedUnits : null,
+        stock: restoredStock,
+        quantity: restoredStock,
+        stockStatus: getStockStatus({
+          stock: restoredStock,
+          minStock: toNumber(snapshotData.minStock, 0),
+        }),
         updatedAt: new Date().toISOString(),
       })
       await createStockLog({
@@ -471,16 +566,24 @@ export async function PATCH(req: Request, context: RouteContext) {
         itemName,
         condition,
         quantityBefore: currentStock,
-        quantityChanged: 0,
-        quantityAfter: currentStock,
+        quantityChanged: restoreQuantity,
+        quantityAfter: restoredStock,
         stockBefore: currentStock,
-        stockAfter: currentStock,
+        stockAfter: restoredStock,
         reservedBefore: currentReservedStock,
         reservedAfter: currentReservedStock,
         user: processedBy,
-        remarks: 'Item restored from voided state.',
+        remarks: restoreQuantity > 0
+          ? `Restored ${restoreQuantity} of ${maxRestorable} voided unit${maxRestorable !== 1 ? 's' : ''}.` +
+            (remainingVoidedUnits > 0
+              ? ` ${remainingVoidedUnits} unit${remainingVoidedUnits !== 1 ? 's' : ''} remain voided.`
+              : ' Item fully restored.')
+          : 'Item restored from voided state. No stock was reinstated.',
       })
-      return NextResponse.json({ success: true }, { status: 200 })
+      return NextResponse.json(
+        { success: true, restoredStock, restoreQuantity, remainingVoidedUnits },
+        { status: 200 }
+      )
     }
 
     if (action === 'permanent-delete') {

@@ -1,3 +1,6 @@
+// Root layout - fonts, global styles, theme provider and the toast container.
+// Wraps every page in the app, including login and signup.
+
 import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'

@@ -1,3 +1,6 @@
+// Dashboard panel - low stock, out of stock and expiring reservation warnings.
+// This is the first thing the owner is meant to read after logging in.
+
 import { AlertTriangle, Info } from 'lucide-react'
 import { useMemo } from 'react'
 import type { LowStockItem } from '@/lib/server/salesInventoryMetrics'

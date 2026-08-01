@@ -1,3 +1,11 @@
+// Deletes a single category.
+//
+// DELETE → removes the category, but only if no inventory item still points
+//          at it. Deleting a category that is still in use would leave those
+//          items with a dangling categoryId, so we return 409 instead.
+//
+// To remove a category that is in use: move its items to another category first.
+
 import { NextResponse } from 'next/server'
 import { collection, deleteDoc, doc, getDoc, getDocs, limit, query, where } from 'firebase/firestore'
 import { db } from '@/lib/firebase'

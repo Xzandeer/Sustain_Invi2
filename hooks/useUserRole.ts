@@ -1,5 +1,25 @@
 'use client'
 
+// Reads the signed-in user's role and permissions.
+//
+// Returns:
+//   role                - 'admin' or 'staff'
+//   isAdmin             - convenience flag
+//   isDisabled          - account switched off by an admin
+//   permissions         - the resolved permission set
+//   can(permission)     - check a single permission
+//   loading             - true until the profile has been read
+//
+// Admins always resolve to every permission granted, so a permission check
+// never has to special-case them.
+//
+// If the account is disabled, this signs the user out immediately rather than
+// leaving them on screen with a broken session.
+//
+// This is the CLIENT-side check and only controls what the UI shows. The real
+// enforcement is checkPermission() in lib/server/authorize.ts, which every
+// sensitive API route calls. Never rely on this hook alone to protect data.
+
 import { useEffect, useState } from 'react'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'

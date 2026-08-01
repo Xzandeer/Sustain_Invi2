@@ -1,5 +1,24 @@
 'use client'
 
+// Analytics page - business intelligence over sales, inventory and reservations.
+//
+// Everything on this page is computed in the browser from a single read of four
+// collections (categories, sales, inventory, reservations). The only server
+// call is the AI forecast, fetched from /api/forecast/ai-enhanced.
+//
+// How to read this file, top to bottom:
+//   1. Types            - the shapes of the records and rows used below
+//   2. Formatting       - peso, percent and number formatters
+//   3. Date helpers     - start/end of day, week, month, year and date math
+//   4. Comparison       - percent change vs. previous period and last year
+//   5. Range presets    - turns "this month" etc. into a real start/end pair
+//   6. Series builders  - trend line, forecast line, per-category forecast
+//   7. Summarizers      - totals, top sellers, category performance
+//   8. AnalyticsContent - the component; all state and rendering lives here
+//
+// Debugging tip: if a number on screen looks wrong, it is almost always a date
+// range problem, not a math problem. Check getPresetRange() and inRange() first.
+
 import { useEffect, useMemo, useState } from 'react'
 import {
   Chart as ChartJS,
@@ -22,6 +41,7 @@ import type { InventoryRecord } from '@/lib/server/salesInventoryMetrics'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ArcElement, Tooltip, Legend)
 
+// ── 1. Types ──────────────────────────────────────────────────────────────────
 type SaleItemCondition = 'New' | 'Refurbished'
 type AnalyticsModalType = 'top' | null
 type TimeRangePreset = 'this-week' | 'this-month' | 'last-month' | 'last-6-months' | 'this-year' | 'custom'
@@ -150,6 +170,7 @@ const toDate = (value: unknown): Date | null => {
   return null
 }
 
+// ── 2. Formatting helpers ─────────────────────────────────────────────────────
 const currency = (value: number) =>
   value.toLocaleString('en-PH', {
     style: 'currency',
@@ -165,6 +186,7 @@ const percentFormatter = new Intl.NumberFormat('en-PH', {
 
 const compactNumber = new Intl.NumberFormat('en-PH')
 
+// ── 3. Date helpers ───────────────────────────────────────────────────────────
 const startOfDay = (date: Date) => {
   const next = new Date(date)
   next.setHours(0, 0, 0, 0)
@@ -254,6 +276,7 @@ const getRangeLabel = (preset: TimeRangePreset) => {
   }
 }
 
+// ── 4. Period comparison ──────────────────────────────────────────────────────
 const calculatePercentChange = (current: number, previous: number) => {
   if (previous === 0) {
     if (current === 0) return 0
@@ -282,6 +305,7 @@ const formatPeso = (value: number) =>
     maximumFractionDigits: 2,
   })}`
 
+// ── 5. Range presets ──────────────────────────────────────────────────────────
 const getPresetRange = (preset: TimeRangePreset, referenceDate: Date) => {
   const baseDate = startOfDay(referenceDate)
 
@@ -325,6 +349,7 @@ const inRange = (date: Date | null, start: Date, end: Date) => {
   return date >= start && date <= end
 }
 
+// ── 6. Chart series builders ──────────────────────────────────────────────────
 const buildTrendSeries = (sales: SaleRecord[], start: Date, end: Date) => {
   const diffDays = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)))
   const useDailyGrouping = diffDays <= 31
@@ -544,6 +569,7 @@ const buildCategoryForecast = (
   }
 }
 
+// ── 7. Summarizers ────────────────────────────────────────────────────────────
 const summarizeSales = (sales: SaleRecord[], categoryNameMap: Record<string, string>) => {
   const categoryMap = new Map<string, CategoryPerformanceRow>()
   let totalSales = 0
@@ -613,6 +639,7 @@ const generateSummary = ({
   return `${firstSentence} ${secondSentence}`.trim()
 }
 
+// ── 8. Page component ─────────────────────────────────────────────────────────
 export default function AnalyticsPage() {
   return (
     <ProtectedRoute requirePermission="canViewAnalytics">
@@ -622,6 +649,7 @@ export default function AnalyticsPage() {
 }
 
 function AnalyticsContent() {
+  // ── State: raw data, active filters, forecast status ──────────────────────
   const [sales, setSales] = useState<SaleRecord[]>([])
   const [inventory, setInventory] = useState<InventoryRecord[]>([])
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([])
@@ -636,6 +664,10 @@ function AnalyticsContent() {
   const [aiForecast, setAiForecast] = useState<AIForecastData | null>(null)
   const [forecastLoading, setForecastLoading] = useState(false)
   const [forecastError, setForecastError] = useState<string | null>(null)
+
+  // ── Load everything once on mount ─────────────────────────────────────────
+  // Read once instead of using live listeners. Analytics does not need
+  // real-time updates, and four open listeners on large collections is slow.
 
   useEffect(() => {
     let cancelled = false
@@ -728,6 +760,8 @@ function AnalyticsContent() {
   }, [])
 
   // Resolve the selected category ID to its display name for the forecast API
+
+  // ── AI forecast (the only server-side call on this page) ──────────────────
   const forecastCategoryName = useMemo(() => {
     if (selectedCategory === 'All Categories') return null
     const match = categories.find((c) => c.id === selectedCategory)
@@ -794,6 +828,9 @@ function AnalyticsContent() {
     return Array.from(ids).sort((a, b) => (categoryNameMap[a] ?? a).localeCompare(categoryNameMap[b] ?? b))
   }, [sales, categoryNameMap])
 
+
+  // ── Date range: presets, custom range and validation ──────────────────────
+  // activeRange is the single source of truth for every filtered number below.
   const activeRange = useMemo(() => {
     const now = new Date()
 
@@ -870,6 +907,8 @@ function AnalyticsContent() {
     setDateRangeError('')
   }
 
+
+  // ── Filtering and per-period summaries ────────────────────────────────────
   const filterSaleItems = (sale: SaleRecord) =>
     sale.items.filter((item) => {
       const categoryMatch = selectedCategory === 'All Categories' || item.categoryId === selectedCategory
@@ -945,6 +984,8 @@ function AnalyticsContent() {
     [activeRange.end, activeRange.start, categoryNameMap, filteredSales, trendSeries.granularity]
   )
 
+
+  // ── Derived values for the KPI cards and panels ───────────────────────────
   const predictiveSummary = useMemo(() => {
     const topCategory = categoryForecast.topCategory
     const forecastWindow =
@@ -1129,6 +1170,8 @@ function AnalyticsContent() {
     URL.revokeObjectURL(url)
   }
 
+
+  // ── Table rows and modal contents ─────────────────────────────────────────
   const topCategoryRows = useMemo(
     () =>
       currentSummary.categories.slice(0, 6).map((row, index) => ({
@@ -1256,6 +1299,8 @@ function AnalyticsContent() {
     return Math.max(0, Math.min(...allVals) * 0.75)         // 25% breathing room below min
   }, [trendSeries.rows, mergedChartData])
 
+
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <main className="min-h-screen bg-[#F8FAFC] px-4 py-3">
       <div className="mx-auto max-w-[1440px] space-y-3">
@@ -1554,46 +1599,15 @@ function AnalyticsContent() {
             {/* Chart area — fixed compact height */}
             <div className="relative h-[355px] px-3 pb-2 pt-2">
               <Line
-                plugins={[{
-                  id: 'forecastMarker',
-                  afterDraw(chart: any) {
-                    const fStartIdx = trendSeries.rows.length
-                    if (fStartIdx <= 0 || forecastSeries.labels.length <= fStartIdx) return
-                    const actualDsIdx = mergedChartData.hasAI ? 2 : 0
-                    const meta = chart.getDatasetMeta(actualDsIdx)
-                    if (!meta?.data?.[fStartIdx]) return
-                    const pt = meta.data[fStartIdx]
-                    if (typeof pt.x !== 'number') return
-                    const { top, bottom, right } = chart.chartArea
-                    const ctx2: CanvasRenderingContext2D = chart.ctx
-                    ctx2.save()
-                    // Shaded forecast region
-                    ctx2.fillStyle = 'rgba(139,92,246,0.04)'
-                    ctx2.fillRect(pt.x, top, right - pt.x, bottom - top)
-                    // Vertical dashed marker
-                    ctx2.setLineDash([4, 3])
-                    ctx2.strokeStyle = 'rgba(124,58,237,0.45)'
-                    ctx2.lineWidth = 1.5
-                    ctx2.beginPath()
-                    ctx2.moveTo(pt.x, top)
-                    ctx2.lineTo(pt.x, bottom)
-                    ctx2.stroke()
-                    ctx2.setLineDash([])
-                    // Label
-                    ctx2.font = '600 9.5px Inter, system-ui, sans-serif'
-                    const label = 'Forecast Starts'
-                    const tw = ctx2.measureText(label).width
-                    const lx = Math.min(pt.x + 6, right - tw - 8)
-                    const ly = top + 16
-                    ctx2.fillStyle = 'rgba(237,233,254,0.92)'
-                    ctx2.fillRect(lx - 4, ly - 11, tw + 8, 15)
-                    ctx2.fillStyle = 'rgb(109,40,217)'
-                    ctx2.textAlign = 'left'
-                    ctx2.textBaseline = 'alphabetic'
-                    ctx2.fillText(label, lx, ly)
-                    ctx2.restore()
-                  },
-                } as any]}
+                // The forecast region used to be marked with a shaded band, a
+                // vertical divider and a "Forecast Starts" label. It was drawn at
+                // the wrong index and sat several days left of where the forecast
+                // actually begins, so it has been removed rather than left wrong.
+                //
+                // Nothing is lost by dropping it: the solid blue line is recorded
+                // sales and the dashed purple line is the projection, which the
+                // legend above the chart already states.
+                plugins={[]}
                 data={{
                   labels: forecastSeries.labels,
                   datasets: [

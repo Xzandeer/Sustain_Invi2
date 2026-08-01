@@ -9,6 +9,7 @@ import {
   getProcessedByInfo,
 } from '@/lib/server/inventory'
 import { InventoryCondition, getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
+import { guardProcessedBy } from '@/lib/server/authorize'
 
 interface RouteContext {
   params: Promise<{ id: string }>
@@ -31,6 +32,12 @@ export async function POST(req: Request, context: RouteContext) {
     const action = typeof body.action === 'string' ? body.action.trim().toLowerCase() : ''
     const quantity = Math.floor(toNumber(body.quantity, Number.NaN))
     const remarks = typeof body.remarks === 'string' ? body.remarks.trim() : ''
+
+    // Adjusting stock changes the books, so it needs the same permission as
+    // editing an item. Checked before anything is read or written.
+    const denied = await guardProcessedBy(body.processedBy, 'canManageInventory')
+    if (denied) return denied
+
     const processedBy = await getProcessedByInfo(body.processedBy)
 
     // Step 2: Validate action and quantity
@@ -49,6 +56,24 @@ export async function POST(req: Request, context: RouteContext) {
     }
 
     const data = snapshot.data() as Record<string, unknown>
+
+    // A voided or trashed item must not take stock movements. Both are excluded
+    // from sales and reservations, so adding stock here would produce units that
+    // exist on the books but can never be sold. The UI hides the button; this is
+    // the check that actually enforces it.
+    if (data.isVoided === true) {
+      return NextResponse.json(
+        { error: 'This item is voided. Restore it before adjusting stock.' },
+        { status: 400 }
+      )
+    }
+    if (data.isDeleted === true) {
+      return NextResponse.json(
+        { error: 'This item is in the trash. Restore it before adjusting stock.' },
+        { status: 400 }
+      )
+    }
+
     const sourceCondition = normalizeInventoryCondition(data.condition)
     const itemName = typeof data.name === 'string' ? data.name.trim() : ''
     const categoryId = typeof data.categoryId === 'string' ? data.categoryId.trim() : ''

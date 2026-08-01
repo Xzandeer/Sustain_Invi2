@@ -1,3 +1,13 @@
+// Outbound email for customer copies.
+//
+// POST { type: 'sale' | 'reservation', ... } → sends either a sale invoice or
+// a reservation ticket. The actual templates and SMTP transport live in
+// lib/server/email.ts; this route only validates the type and shapes the payload.
+//
+// Returns 200 when the message was accepted by the mail server, 500 when it
+// was not. A failed email never blocks the sale itself — the sale is already
+// saved by the time this is called.
+
 import { NextRequest, NextResponse } from 'next/server'
 import { sendInvoiceEmail, sendReservationTicketEmail } from '@/lib/server/email'
 

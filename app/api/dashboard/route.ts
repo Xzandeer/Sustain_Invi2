@@ -1,3 +1,11 @@
+// Dashboard summary numbers.
+//
+// GET → reads sales and inventory, drops soft-deleted items, and hands both
+//       to computeDashboardMetrics() in lib/server/salesInventoryMetrics.
+//
+// All the arithmetic lives in that helper so the dashboard page and this
+// endpoint can never disagree about how a figure is calculated.
+
 import { NextResponse } from 'next/server'
 import { collection, getDocs } from 'firebase/firestore'
 import { db } from '@/lib/firebase'

@@ -1,3 +1,5 @@
+// One-line plain-language summary shown at the top of the dashboard.
+
 interface SummaryBannerProps {
   message: string
 }

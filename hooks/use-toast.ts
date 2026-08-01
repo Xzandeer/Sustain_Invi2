@@ -1,5 +1,11 @@
 'use client'
 
+// Toast state store (shadcn/ui).
+//
+// Note: most of the app uses `toast` from 'sonner' instead. This hook is kept
+// because some shadcn components import it. Prefer sonner for new code so all
+// notifications look the same.
+
 // Inspired by react-hot-toast library
 import * as React from 'react'
 

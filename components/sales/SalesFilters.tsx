@@ -1,5 +1,7 @@
 'use client'
 
+// Filter bar for the sales history - date range, status and search.
+
 import { useEffect, useState } from 'react'
 
 interface SalesFiltersProps {

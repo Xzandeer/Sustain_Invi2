@@ -1,5 +1,10 @@
 'use client'
 
+// Modal for adding a stock condition option.
+//
+// Every item is stocked as New or Refurbished, because in surplus retail the
+// same product sells at a different price depending on its condition.
+
 import { useState } from 'react'
 import { collection, addDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'

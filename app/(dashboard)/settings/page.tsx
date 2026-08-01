@@ -1,5 +1,14 @@
 'use client'
 
+// Settings page - store-wide policy.
+//
+// Currently holds the warranty / refund window in days (0-365). Saved to
+// Firestore at storeSettings/general through /api/settings.
+//
+// Changing this affects FUTURE sales only. Each sale stores the warranty days
+// that applied on the day it was made, so past transactions keep the window
+// the customer was actually promised.
+
 import { useState, useEffect } from 'react'
 import {
   EmailAuthProvider,
@@ -11,6 +20,11 @@ import {
 import { doc, getDoc, updateDoc } from 'firebase/firestore'
 import { auth, db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
+import {
+  getReceiptPaperWidth,
+  setReceiptPaperWidth,
+  type ReceiptPaperWidth,
+} from '@/lib/transactions/receiptPrint'
 
 type Section = 'profile' | 'password' | 'policy'
 
@@ -118,6 +132,10 @@ function SettingsContent() {
       setPwLoading(false)
     }
   }
+
+  // Receipt paper width, read from this browser's saved preference.
+  const [paperWidth, setPaperWidth] = useState<ReceiptPaperWidth>(80)
+  useEffect(() => { setPaperWidth(getReceiptPaperWidth()) }, [])
 
   // Load the current store policy
   useEffect(() => {
@@ -408,6 +426,36 @@ function SettingsContent() {
                       </button>
                     </div>
                   </form>
+
+                  {/* Receipt paper width.
+                      Saved per browser, not store-wide, because it describes the
+                      printer plugged into THIS computer - two terminals may have
+                      different printers. */}
+                  <div className="mt-8 max-w-md border-t border-slate-100 pt-6">
+                    <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                      Receipt Paper Width
+                    </label>
+                    <div className="flex gap-2">
+                      {([58, 80] as const).map((w) => (
+                        <button
+                          key={w}
+                          type="button"
+                          onClick={() => { setReceiptPaperWidth(w); setPaperWidth(w) }}
+                          className={`rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
+                            paperWidth === w
+                              ? 'border-blue-500 bg-blue-50 text-blue-700'
+                              : 'border-slate-300 text-slate-600 hover:bg-slate-50'
+                          }`}
+                        >
+                          {w}mm
+                        </button>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Match this to the paper roll in your receipt printer. This setting
+                      applies to this computer only — each terminal keeps its own.
+                    </p>
+                  </div>
                 </div>
               </section>
             )}

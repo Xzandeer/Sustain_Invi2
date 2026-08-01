@@ -1,5 +1,8 @@
 'use client'
 
+// Category list with add and delete. Deleting is refused by the API when any
+// inventory item still uses the category (see app/api/categories/[id]).
+
 import { useState } from 'react'
 import { Plus, X } from 'lucide-react'
 

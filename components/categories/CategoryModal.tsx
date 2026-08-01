@@ -1,5 +1,7 @@
 'use client'
 
+// Dialog wrapper around CategoryManager, opened from the Inventory page.
+
 import { useState } from 'react'
 import { Trash2, X } from 'lucide-react'
 

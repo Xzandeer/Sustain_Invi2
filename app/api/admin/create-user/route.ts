@@ -1,3 +1,16 @@
+// Creates a staff or administrator account.
+//
+// POST → creates the Firebase Auth user, then writes the matching profile
+//        document in the `users` collection. Both must exist: Auth handles
+//        the password, Firestore holds the role and permissions.
+//
+// New accounts start with canViewStockLogs = false. The admin grants the rest
+// from Users → Permissions after the account is created.
+//
+// Note: this uses the Admin SDK so the current admin is NOT signed out. Using
+// the client SDK to create a user would switch the active session to the new
+// account, which is why this lives on the server.
+
 import { NextRequest, NextResponse } from 'next/server'
 import { getApps, initializeApp, cert, getApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'

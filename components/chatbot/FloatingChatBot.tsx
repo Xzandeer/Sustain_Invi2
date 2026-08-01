@@ -1,5 +1,8 @@
 'use client'
 
+// The floating chat bubble in the corner of every dashboard page.
+// Handles open/close and positioning; the conversation itself lives in ChatBot.
+
 import React, { useEffect, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { useUserRole } from '@/hooks/useUserRole'

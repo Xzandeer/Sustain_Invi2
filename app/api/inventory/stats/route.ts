@@ -1,3 +1,8 @@
+// Inventory counters for the dashboard cards.
+//
+// GET → total items, total stock value, low-stock and out-of-stock counts.
+// The counting logic lives in lib/inventory/inventoryStats.ts.
+
 import { NextResponse } from 'next/server'
 import { getInventoryStats } from '@/lib/inventory/inventoryStats'
 

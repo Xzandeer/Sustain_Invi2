@@ -1,5 +1,8 @@
 'use client'
 
+// Generic table used by the Analytics panels. Takes column definitions and
+// rows, and renders an empty-state message when there is nothing to show.
+
 import type { ReactNode } from 'react'
 
 interface AnalyticsTableProps {

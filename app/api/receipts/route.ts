@@ -1,3 +1,12 @@
+// Receipt lookup.
+//
+// GET ?status=active&limit=1 → most recent receipts, newest first.
+// Used to pull the last receipt back up for reprinting or emailing.
+//
+// Requires a Firestore composite index on (status, createdAt desc). If this
+// returns a 500 mentioning an index, the error message contains a link that
+// creates it.
+
 import { NextRequest, NextResponse } from 'next/server'
 import { collection, getDocs, query, where, orderBy, limit } from 'firebase/firestore'
 import { db } from '@/lib/firebase'

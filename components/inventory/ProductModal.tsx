@@ -1,5 +1,8 @@
 'use client'
 
+// Dialog wrapper around the add / edit item form, opened from Inventory.
+// Exports ProductFormValues, the shape the Inventory page saves.
+
 import { useEffect, useMemo, useState } from 'react'
 import { X } from 'lucide-react'
 import { DEFAULT_WARRANTY_DAYS } from '@/lib/constants/warranty'

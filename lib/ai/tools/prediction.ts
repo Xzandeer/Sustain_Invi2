@@ -1,3 +1,11 @@
+// AI assistant tool - short sales outlook.
+//
+// Returns a plain-language sentence about where sales are heading, for use in
+// chat answers. This is deliberately simple and is NOT the forecasting engine
+// behind the Analytics page - that is lib/ai/forecast/weightedForecast.ts.
+//
+// Results are cached (lib/ai/cache) so repeated questions don't re-read Firestore.
+
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { aiCache } from '@/lib/ai/cache'
 

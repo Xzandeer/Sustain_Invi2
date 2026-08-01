@@ -1,3 +1,9 @@
+// AI assistant tools - inventory questions.
+//
+// Read-only lookups: low stock, out of stock, stock aging, category breakdown,
+// name search, and the overall summary. Each returns a formatted string that
+// goes straight into the chat answer. Cached via lib/ai/cache.
+
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { aiCache } from '@/lib/ai/cache'
 

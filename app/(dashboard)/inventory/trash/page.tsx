@@ -1,5 +1,16 @@
 'use client'
 
+// Inventory trash - voided and soft-deleted items.
+//
+// Deleting an item does not remove it. It is flagged isDeleted and moved here,
+// where it can be restored, or permanently deleted by an admin.
+//
+// An item can only be deleted when its stock and reserved quantity are both
+// zero, so stock never silently disappears from the books.
+//
+// Voiding is different from deleting: a voided item stays in inventory but is
+// taken out of circulation, and the reason is recorded (see VOID_REASONS).
+
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { collection, getDocs } from 'firebase/firestore'

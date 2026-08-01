@@ -1,5 +1,10 @@
 'use client'
 
+// The sales history table.
+//
+// Shows transaction number, customer, total, status and the refunded quantity.
+// Fully refunded rows are struck through so they read differently at a glance.
+
 import { Eye, X } from 'lucide-react'
 
 export interface SaleTransaction {

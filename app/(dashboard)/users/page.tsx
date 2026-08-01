@@ -1,5 +1,20 @@
 'use client'
 
+// Users page - staff accounts and what each one is allowed to do.
+//
+// Admin only. Supports:
+//   • Creating accounts (via /api/admin/create-user)
+//   • Granting or revoking each permission individually
+//   • Disabling an account without deleting it - the person is signed out
+//     immediately and cannot sign back in, but their history stays intact
+//   • Deleting an account permanently - requires typing CONFIRM
+//
+// Guards live on the server: you cannot delete yourself, and you cannot delete
+// the last remaining administrator. See app/api/admin/delete-user.
+//
+// Disabling is almost always the right choice over deleting. Deleting removes
+// the login, not the records - past sales keep the name captured at the time.
+
 import { useEffect, useState } from 'react'
 import { doc, getDocs, updateDoc, collection } from 'firebase/firestore'
 import { sendPasswordResetEmail, reauthenticateWithCredential, EmailAuthProvider } from 'firebase/auth'

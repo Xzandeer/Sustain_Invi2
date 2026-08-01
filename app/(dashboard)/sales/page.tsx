@@ -1,5 +1,24 @@
 'use client'
 
+// Sales page - the point of sale and the transaction history.
+//
+// Two halves:
+//   • New Sale     - search items, build a cart, take customer details, check out
+//   • Transactions - history, receipt reprint/email, and refunds
+//
+// Refunds can be full or partial. Each line has its own quantity stepper, and
+// a sale ends up 'completed', 'partially_refunded', 'refunded' or 'voided'.
+// The actual refund is processed server-side by /api/sales/refund - this page
+// only builds the request and shows the result.
+//
+// Warranty: the window shown for a transaction is the one stamped on that sale
+// when it was made (selectedTransaction.warrantyDays), NOT the current store
+// setting. Changing the policy in Settings must never move the window on sales
+// that already happened.
+//
+// Walk-in vs. named customer: for walk-ins the customer fields stay hidden,
+// because typing a name for every counter sale slowed the staff down.
+
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { collection, onSnapshot } from 'firebase/firestore'
 import { toPng } from 'html-to-image'
@@ -21,6 +40,11 @@ import { openReceiptPrintWindow } from '@/lib/transactions/receiptPrint'
 import { DEFAULT_WARRANTY_DAYS, REFUND_REASONS } from '@/lib/constants/warranty'
 import { useUserRole } from '@/hooks/useUserRole'
 
+
+// A Philippine mobile number is 11 digits (09 followed by nine more).
+// Reservations require one so the customer can be contacted when their hold is
+// about to expire - a reservation nobody can be reached about just freezes stock.
+const isValidContactNumber = (value: string) => /^\d{11}$/.test(value.trim())
 
 // Status badge styling and label, including partial refunds
 const statusBadgeClass = (status: string) =>
@@ -854,8 +878,8 @@ function SalesContent() {
       setError('Customer name is required for reservations.')
       return
     }
-    if (!customerContactNumber.trim()) {
-      setError('Customer contact number is required for reservations.')
+    if (!isValidContactNumber(customerContactNumber)) {
+      setError('Enter an 11-digit contact number for reservations.')
       return
     }
 
@@ -1397,7 +1421,16 @@ function SalesContent() {
                 <button
                   type="button"
                   onClick={reserveOrder}
-                  disabled={submitting || cart.length === 0 || isCompletedMode}
+                  // Once the reservation form is open, Confirm stays disabled
+                  // until a name and a full 11-digit contact number are present.
+                  // Before that the button just opens the form, so it is enabled.
+                  disabled={
+                    submitting ||
+                    cart.length === 0 ||
+                    isCompletedMode ||
+                    (showReserveForm &&
+                      (!customerFullName.trim() || !isValidContactNumber(customerContactNumber)))
+                  }
                   className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1455,12 +1488,29 @@ function SalesContent() {
                       <label className="mb-1 block text-xs font-medium text-slate-600">Phone <span className="font-semibold text-rose-500">*</span></label>
                       <input
                         type="tel"
+                        inputMode="numeric"
+                        maxLength={11}
                         value={customerContactNumber}
-                        onChange={(e) => setCustomerContactNumber(e.target.value)}
+                        // Digits only, capped at 11 - a Philippine mobile number
+                        // is 09 followed by nine digits. Stripping non-digits as
+                        // the user types avoids spaces and dashes reaching the
+                        // database in inconsistent formats.
+                        onChange={(e) =>
+                          setCustomerContactNumber(e.target.value.replace(/\D/g, '').slice(0, 11))
+                        }
                         placeholder="09XXXXXXXXX"
                         disabled={isCompletedMode}
-                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none disabled:opacity-60"
+                        className={`w-full rounded-lg border px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none disabled:opacity-60 ${
+                          customerContactNumber && !isValidContactNumber(customerContactNumber)
+                            ? 'border-rose-300 focus:border-rose-400'
+                            : 'border-slate-200 focus:border-blue-400'
+                        }`}
                       />
+                      {customerContactNumber && !isValidContactNumber(customerContactNumber) && (
+                        <p className="mt-1 text-xs text-rose-500">
+                          Must be 11 digits ({customerContactNumber.length}/11)
+                        </p>
+                      )}
                     </div>
                     <div>
                       <label className="mb-1 block text-xs font-medium text-slate-600">Email <span className="font-normal text-slate-400">(Optional)</span></label>

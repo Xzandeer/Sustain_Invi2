@@ -5,6 +5,7 @@ import { db } from '@/lib/firebase'
 import { createStockLog, getProcessedByInfo } from '@/lib/server/inventory'
 import { toNumber } from '@/lib/server/salesInventoryMetrics'
 import { isCancellationReasonValid, SYSTEM_CANCELLATION_REASON, type CancellationReasonType } from '@/lib/reservations/cancellationReasons'
+import { guardProcessedBy } from '@/lib/server/authorize'
 
 interface RouteContext {
   params: Promise<{ id: string }>
@@ -68,6 +69,12 @@ export async function PATCH(req: Request, context: RouteContext) {
     const { id } = await context.params
     const body = (await req.json()) as ReservationActionPayload
     const action = typeof body.action === 'string' ? body.action.trim().toLowerCase() : ''
+
+    // Completing, cancelling or expiring a reservation releases or consumes
+    // reserved stock, so the same permission applies as creating one.
+    const denied = await guardProcessedBy(body.processedBy, 'canManageReservations')
+    if (denied) return denied
+
     const processedBy = await getProcessedByInfo(body.processedBy)
 
     // Step 2: Validate cancellation reason if cancelling

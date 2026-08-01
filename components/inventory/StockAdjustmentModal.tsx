@@ -1,5 +1,11 @@
 'use client'
 
+// Stock adjustment dialog: add, deduct, or transfer between New and Refurbished.
+//
+// Every adjustment writes a stock log entry, so the audit trail records who
+// changed what and why. Reserved stock cannot be deducted - that quantity is
+// already promised to a customer.
+
 import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import type { Product } from './ProductTable'

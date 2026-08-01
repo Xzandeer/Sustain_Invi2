@@ -18,6 +18,7 @@ import {
   ReservationTicketDocument,
   ReceiptRecord,
 } from '@/lib/transactions/transactionDocuments'
+import { guardProcessedBy } from '@/lib/server/authorize'
 
 interface ReservationPayload {
   items?: unknown
@@ -96,12 +97,34 @@ export async function POST(req: NextRequest) {
     console.log('[reservations POST] step 1: parsing body')
     const body = (await req.json()) as ReservationPayload
     const customerDetails = parseCustomerDetails(body.customerDetails)
+
+    // Creating a reservation moves stock into reserved, so it is gated.
+    const denied = await guardProcessedBy(body.processedBy, 'canManageReservations')
+    if (denied) return denied
+
     const processedBy = await getProcessedByInfo(body.processedBy)
     const items = Array.isArray(body.items) ? body.items : []
 
     if (!customerDetails) {
       return NextResponse.json(
         { error: 'Invalid customer details.' },
+        { status: 400 }
+      )
+    }
+
+    // A reservation holds stock for a named person. Without a name it cannot be
+    // matched to anyone at collection, and without a contact number nobody can
+    // be told the hold is about to expire - the stock would just sit frozen.
+    // The form enforces this too; this is the check that cannot be bypassed.
+    if (!customerDetails.fullName) {
+      return NextResponse.json(
+        { error: 'A customer name is required for reservations.' },
+        { status: 400 }
+      )
+    }
+    if (!/^\d{11}$/.test(customerDetails.contactNumber)) {
+      return NextResponse.json(
+        { error: 'An 11-digit contact number is required for reservations.' },
         { status: 400 }
       )
     }

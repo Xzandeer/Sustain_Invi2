@@ -1,3 +1,8 @@
+// AI assistant tools - reservation questions.
+//
+// Read-only lookups: active, pending and overdue reservations.
+// Returns formatted strings for the chat answer. Cached via lib/ai/cache.
+
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { aiCache } from '@/lib/ai/cache'
 

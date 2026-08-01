@@ -1,5 +1,17 @@
 'use client'
 
+// Stock logs - the audit trail.
+//
+// Every movement of stock is recorded here: additions, deductions, transfers
+// between New and Refurbished, sales, reservations, edits, voids and deletions.
+// Each entry keeps who did it, when, the quantity before and after, and why.
+//
+// Tabs group the actions (see matchesTab below). The action names themselves
+// are defined in lib/inventory/stockLogActions.ts.
+//
+// Nothing here is editable by design - an audit trail that can be edited is
+// not an audit trail. Viewing requires the canViewStockLogs permission.
+
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { collection, getDocs, orderBy, query, limit } from 'firebase/firestore'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'

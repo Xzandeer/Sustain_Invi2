@@ -1,5 +1,8 @@
 'use client'
 
+// Small coloured pill used on the Analytics page to show whether a figure went
+// up, down or stayed flat compared with the previous period.
+
 interface AnalyticsBadgeProps {
   children: string
   variant: 'low' | 'ok' | 'neutral'
