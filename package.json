@@ -6,7 +6,10 @@
     "build": "next build",
     "dev": "next dev --webpack",
     "lint": "eslint .",
-    "start": "next start"
+    "start": "next start",
+    "env:test": "node scripts/use-env.js test",
+    "env:demo": "node scripts/use-env.js demo",
+    "env:main": "node scripts/use-env.js main"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

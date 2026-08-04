@@ -1,10 +1,15 @@
 'use client'
 
-// Signup page.
+// Signup route - redirects to /login.
 //
-// Note: staff accounts are normally created by an admin from the Users page,
-// which sets the role and permissions at the same time. This route exists for
-// the first account and for testing.
+// There is deliberately no public sign-up form: accounts are created by an
+// administrator from the Users page, which sets the role and permissions at the
+// same time. Self-registration would let anyone create a login for the shop.
+//
+// The route is kept so old links and bookmarks land somewhere sensible.
+//
+// First account on a fresh database: POST to /api/admin/create-user with
+// role 'admin', since there is no administrator yet to create it through the UI.
 
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'

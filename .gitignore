@@ -146,3 +146,12 @@ vite.config.ts.timestamp-*
 
 # Dev-only seeder (no auth guard - never deploy)
 app/api/dev/
+
+# Per-environment Firebase credentials (test / demo / main).
+# Real keys live here - never commit them. Use .env.local.example as the template.
+.env.local*
+!.env.local.example
+
+# Folder of per-environment configs kept for copy-pasting into .env.local.
+# Contains live credentials - never commit.
+envs/

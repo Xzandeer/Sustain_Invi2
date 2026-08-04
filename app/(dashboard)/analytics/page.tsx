@@ -1273,14 +1273,34 @@ function AnalyticsContent() {
       aiForecast.aiForecast.forecast.length >= forecastLen
     )
     if (!hasAI || actualLen === 0) {
-      return { hasAI: false as const, aiValues: null, confUpper: null, confLower: null }
+      return {
+        hasAI: false as const,
+        aiValues: null,
+        baseValues: null,
+        confUpper: null,
+        confLower: null,
+      }
     }
     const bridge = trendSeries.rows[actualLen - 1]?.total ?? 0
     const forecast = aiForecast!.aiForecast!.forecast.slice(0, forecastLen)
     const leadNulls = Math.max(0, actualLen - 1)
+
+    // The statistical baseline the AI was actually bounded against.
+    //
+    // Taken from the same API response rather than recomputed in the browser.
+    // A browser-side recalculation would use the selected date range, while the
+    // server uses a 28-day window - so the two lines would be drawn from
+    // different data and the ±15% relationship between them would not hold.
+    const base = aiForecast!.baseForecast?.forecast?.slice(0, forecastLen) ?? []
+    const baseValues =
+      base.length === forecastLen
+        ? [...Array<null>(leadNulls).fill(null), bridge, ...base.map((d) => d.weighted)]
+        : null
+
     return {
       hasAI: true as const,
       aiValues: [...Array<null>(leadNulls).fill(null), bridge, ...forecast.map((d) => d.ai)],
+      baseValues,
       confUpper: [...Array<null>(actualLen).fill(null), ...forecast.map((d) => d.ai * 1.12)],
       confLower: [...Array<null>(actualLen).fill(null), ...forecast.map((d) => d.ai * 0.88)],
     }
@@ -1584,13 +1604,16 @@ function AnalyticsContent() {
                 <span className="flex items-center gap-1 text-[10px] text-slate-500">
                   <span className="inline-block h-0.5 w-4 rounded-full bg-blue-600"/>Actual
                 </span>
-                {mergedChartData.hasAI ? (
+                {/* Statistical baseline is always drawn. When AI refinement is
+                    active it sits beside the AI line, so the ±15% bound between
+                    them is visible rather than merely claimed. */}
+                <span className="flex items-center gap-1 text-[10px] text-slate-500">
+                  <svg width="16" height="4" viewBox="0 0 16 4"><line x1="0" y1="2" x2="16" y2="2" stroke={mergedChartData.hasAI ? '#cbd5e1' : '#94a3b8'} strokeWidth="2" strokeDasharray="4 3"/></svg>
+                  {mergedChartData.hasAI ? 'EWMA baseline' : 'Forecast'}
+                </span>
+                {mergedChartData.hasAI && (
                   <span className="flex items-center gap-1 text-[10px] text-slate-500">
-                    <svg width="16" height="4" viewBox="0 0 16 4"><line x1="0" y1="2" x2="16" y2="2" stroke="#7c3aed" strokeWidth="2" strokeDasharray="4 3"/></svg>AI
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-1 text-[10px] text-slate-500">
-                    <svg width="16" height="4" viewBox="0 0 16 4"><line x1="0" y1="2" x2="16" y2="2" stroke="#94a3b8" strokeWidth="2" strokeDasharray="4 3"/></svg>Forecast
+                    <svg width="16" height="4" viewBox="0 0 16 4"><line x1="0" y1="2" x2="16" y2="2" stroke="#7c3aed" strokeWidth="2" strokeDasharray="4 3"/></svg>AI refined
                   </span>
                 )}
               </div>
@@ -1645,19 +1668,28 @@ function AnalyticsContent() {
                       pointHoverRadius: 5,
                       tension: 0.3,
                     },
-                    // Statistical forecast (no AI)
-                    ...(!mergedChartData.hasAI ? [{
-                      label: 'Forecast',
-                      data: forecastSeries.forecastValues,
-                      borderColor: '#94a3b8',
+                    // Statistical baseline (EWMA) - always drawn.
+                    //
+                    // This is the forecast before any AI involvement. It is shown
+                    // alongside the AI line so the bounded refinement is visible:
+                    // the two can never diverge by more than 15%, which is the
+                    // whole basis of the hybrid model. Drawn thin and grey so it
+                    // reads as a reference line rather than a competing forecast.
+                    {
+                      label: mergedChartData.hasAI ? 'Statistical baseline' : 'Forecast',
+                      // Prefer the server's own baseline when the AI layer ran, so
+                      // both lines come from one computation. Falls back to the
+                      // browser-side forecast when the API is unavailable.
+                      data: mergedChartData.baseValues ?? forecastSeries.forecastValues,
+                      borderColor: mergedChartData.hasAI ? '#cbd5e1' : '#94a3b8',
                       backgroundColor: 'transparent',
-                      borderWidth: 2,
+                      borderWidth: mergedChartData.hasAI ? 1.5 : 2,
                       borderDash: [6, 4],
-                      pointRadius: 0,
+                      pointRadius: mergedChartData.hasAI ? 0 : 0,
                       pointHoverRadius: 4,
                       tension: 0.3,
                       spanGaps: true,
-                    }] : []),
+                    },
                     // AI Forecast line
                     ...(mergedChartData.hasAI ? [{
                       label: 'AI Forecast',

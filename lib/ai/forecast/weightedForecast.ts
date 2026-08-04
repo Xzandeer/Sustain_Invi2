@@ -57,7 +57,20 @@ export function buildWeightedForecast(daily: DailyStat[]): WeightedForecastResul
 
   // Dampen the trend factor so projections stay conservative
   // Raw trend: avg7 / avgPrior7, then blend with 1.0 (60% trend, 40% neutral)
-  const rawTrend = avgPrior7 > 0 ? avg7 / avgPrior7 : 1.0
+  // The raw ratio must be bounded before it is used, because it compounds.
+  //
+  // A small category can easily have a quiet week followed by a busy one -
+  // ₱150/day then ₱900/day gives a ratio of 6. Raised to the power below, day 7
+  // would be multiplied by roughly 128, turning a ₱500 forecast into ₱64,000.
+  //
+  // The cap is chosen from the OUTPUT we are willing to accept, not from the
+  // input. Over a 7-day horizon the compounding exponent is 3.5, so a ratio
+  // capped at 1.2 gives trendFactor 1.12 and a day-7 multiplier of 1.12^3.5,
+  // which is about 1.5. In other words the forecast may move at most ~50% over
+  // the week in either direction - enough to show a real trend, never enough to
+  // produce a figure the shop would not recognise.
+  const rawTrendUnbounded = avgPrior7 > 0 ? avg7 / avgPrior7 : 1.0
+  const rawTrend = Math.min(1.2, Math.max(0.8, rawTrendUnbounded))
   const trendFactor = 0.6 * rawTrend + 0.4 * 1.0
   const trendPct = parseFloat(((trendFactor - 1) * 100).toFixed(1))
   const trendDirection: 'increasing' | 'decreasing' | 'stable' =
