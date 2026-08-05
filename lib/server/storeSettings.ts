@@ -3,29 +3,53 @@
 
 import { doc, getDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
-import { DEFAULT_WARRANTY_DAYS, SETTINGS_COLLECTION, SETTINGS_DOC } from '@/lib/constants/warranty'
+import {
+  DEFAULT_WARRANTY_DAYS,
+  DEFAULT_SELLER_ADDRESS,
+  DEFAULT_SELLER_REGISTERED_NAME,
+  DEFAULT_SELLER_TIN,
+  SETTINGS_COLLECTION,
+  SETTINGS_DOC,
+} from '@/lib/constants/warranty'
 
 export interface StoreSettings {
   warrantyDays: number
+  /** Seller details printed on the sales invoice. See constants/warranty.ts. */
+  sellerRegisteredName: string
+  sellerTin: string
+  sellerAddress: string
+}
+
+const str = (value: unknown, fallback: string) =>
+  typeof value === 'string' && value.trim() ? value.trim() : fallback
+
+const FALLBACK: StoreSettings = {
+  warrantyDays: DEFAULT_WARRANTY_DAYS,
+  sellerRegisteredName: DEFAULT_SELLER_REGISTERED_NAME,
+  sellerTin: DEFAULT_SELLER_TIN,
+  sellerAddress: DEFAULT_SELLER_ADDRESS,
 }
 
 export async function getStoreSettings(): Promise<StoreSettings> {
   try {
     const snap = await getDoc(doc(db, SETTINGS_COLLECTION, SETTINGS_DOC))
-    if (!snap.exists()) return { warrantyDays: DEFAULT_WARRANTY_DAYS }
+    if (!snap.exists()) return { ...FALLBACK }
 
     const data = snap.data() as Record<string, unknown>
     const raw = data.warrantyDays
     const parsed =
       typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : Number.NaN
 
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      return { warrantyDays: DEFAULT_WARRANTY_DAYS }
+    return {
+      warrantyDays:
+        Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_WARRANTY_DAYS,
+      sellerRegisteredName: str(data.sellerRegisteredName, DEFAULT_SELLER_REGISTERED_NAME),
+      sellerTin: str(data.sellerTin, DEFAULT_SELLER_TIN),
+      sellerAddress: str(data.sellerAddress, DEFAULT_SELLER_ADDRESS),
     }
-    return { warrantyDays: Math.floor(parsed) }
   } catch {
-    // Firestore unavailable — fail safe to the default policy
-    return { warrantyDays: DEFAULT_WARRANTY_DAYS }
+    // Firestore unavailable — fail safe to the built-in defaults
+    return { ...FALLBACK }
   }
 }
 

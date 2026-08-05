@@ -44,7 +44,7 @@ export const openReceiptPrintWindow = (
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${isSale ? 'Sales Receipt' : 'Reservation Ticket'}</title>
+  <title>${isSale ? 'Sales Invoice' : 'Reservation Ticket'}</title>
   <style>
     * {
       margin: 0;
@@ -97,6 +97,21 @@ export const openReceiptPrintWindow = (
       font-size: 10px;
       color: #64748b;
       margin-bottom: 8px;
+    }
+
+    /* Seller details required on a sales invoice (RR 7-2024). Small but must
+       stay legible on thermal paper, so they inherit the print colour rules. */
+    .seller-name {
+      font-size: 10px;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+
+    .seller-line {
+      font-size: 9px;
+      color: #475569;
+      margin-bottom: 2px;
+      line-height: 1.3;
     }
 
     .receipt-number {
@@ -297,6 +312,7 @@ export const openReceiptPrintWindow = (
       /* Small print - labels, notes, timestamps - was 10px, which is under two
        * millimetres tall at this resolution and loses stroke detail. */
       .store-tagline,
+      .seller-line,
       .receipt-footer,
       .receipt-meta,
       .item-condition,
@@ -337,6 +353,9 @@ export const openReceiptPrintWindow = (
       <div class="receipt-header">
         <div class="store-name">${document.storeName}</div>
         ${!isSale ? `<div class="store-tagline">${document.storeTagline}</div>` : ''}
+        ${isSale && document.sellerRegisteredName ? `<div class="seller-name">${document.sellerRegisteredName}</div>` : ''}
+        ${isSale && document.sellerAddress ? `<div class="seller-line">${document.sellerAddress}</div>` : ''}
+        ${isSale && document.sellerTin ? `<div class="seller-line">TIN: ${document.sellerTin}</div>` : ''}
         <div class="receipt-number">${isSale ? document.receiptNumber : document.reservationCode}</div>
         <div class="receipt-date">${formatTransactionDateTime(isSale ? document.transactionDate : document.reservationDate)}</div>
       </div>

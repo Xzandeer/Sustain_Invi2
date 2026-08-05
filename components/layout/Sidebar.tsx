@@ -25,7 +25,7 @@ const mainNav = [
   { name: 'Inventory',    href: '/inventory',        icon: Package },
   { name: 'Reservations', href: '/reservations',     icon: Calendar },
   { name: 'Customers',    href: '/customers',        icon: UserCheck },
-  { name: 'Containers',   href: '/containers',       icon: Package2 },
+  { name: 'Shipments',    href: '/containers',       icon: Package2 },
 ]
 
 const managementNav = [
@@ -97,7 +97,7 @@ export default function Sidebar() {
           <Package className="h-4 w-4 text-white" />
         </div>
         <div className="min-w-0">
-          <p className="text-[13px] font-bold leading-tight text-white tracking-tight">JMGS JAPON</p>
+          <p className="text-[13px] font-bold leading-tight text-white tracking-tight">JMGs JAPAN</p>
           <p className="text-[10px] font-semibold tracking-widest text-blue-400">SURPLUS</p>
         </div>
       </div>

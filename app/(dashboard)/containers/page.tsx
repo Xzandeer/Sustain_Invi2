@@ -47,6 +47,7 @@ import {
   ShoppingBag,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { openLabelPrintWindow } from '@/lib/transactions/labelPrint'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -70,6 +71,7 @@ interface InventoryItem {
   quantity: number
   condition: string
   containerId?: string
+  barcode?: string
 }
 
 interface Category {
@@ -157,12 +159,12 @@ function ContainerModal({ isOpen, onClose, onSubmit, initialValues, submitting }
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl">
         <div className="flex items-center justify-between border-b px-6 py-4">
-          <h2 className="text-lg font-semibold text-gray-800">{initialValues?.id ? 'Edit Container' : 'Add Container'}</h2>
+          <h2 className="text-lg font-semibold text-gray-800">{initialValues?.id ? 'Edit Shipment' : 'Add Shipment'}</h2>
           <button onClick={onClose} className="rounded-lg p-1 hover:bg-gray-100"><X className="h-5 w-5 text-gray-500" /></button>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4 px-6 py-5">
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">Container Name / Number <span className="text-red-500">*</span></label>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Shipment Name / Number <span className="text-red-500">*</span></label>
             <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Container #001 – Jan 2025"
               className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100" />
           </div>
@@ -200,7 +202,7 @@ function ContainerModal({ isOpen, onClose, onSubmit, initialValues, submitting }
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={onClose} className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
             <button type="submit" disabled={submitting} className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60">
-              {submitting ? 'Saving…' : initialValues?.id ? 'Save Changes' : 'Add Container'}
+              {submitting ? 'Saving…' : initialValues?.id ? 'Save Changes' : 'Add Shipment'}
             </button>
           </div>
         </form>
@@ -257,7 +259,7 @@ function AddItemModal({ isOpen, containerName, categories, onClose, onSubmit, su
       <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl">
         <div className="flex items-center justify-between border-b px-6 py-4">
           <div>
-            <h2 className="text-lg font-semibold text-gray-800">Add Item to Container</h2>
+            <h2 className="text-lg font-semibold text-gray-800">Add Item to Shipment</h2>
             <p className="text-xs text-gray-500 mt-0.5">{containerName}</p>
           </div>
           <button onClick={onClose} className="rounded-lg p-1 hover:bg-gray-100"><X className="h-5 w-5 text-gray-500" /></button>
@@ -402,7 +404,7 @@ function ContainerCard({ container, inventory, soldQtyMap, onEdit, onAddItem }: 
             </div>
           </div>
 
-          <button onClick={onEdit} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600" title="Edit container">
+          <button onClick={onEdit} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600" title="Edit shipment">
             <Pencil className="h-4 w-4" />
           </button>
           <button onClick={() => setExpanded(v => !v)} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600">
@@ -471,7 +473,36 @@ function ContainerCard({ container, inventory, soldQtyMap, onEdit, onAddItem }: 
 
           {/* Add item button */}
           <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-gray-700">Items in this Container</h3>
+            <h3 className="text-sm font-semibold text-gray-700">Items in this Shipment</h3>
+            <div className="flex items-center gap-2">
+            {linkedItems.length > 0 && (
+              <button
+                onClick={() => {
+                  // One label per unit, for every item in the shipment. This is
+                  // the arrival workflow: unpack, print the sheet, label as you go.
+                  const withCodes = linkedItems.filter((i) => i.barcode)
+                  if (withCodes.length === 0) {
+                    toast.error('No barcodes assigned yet. Run Assign Barcodes in Inventory first.')
+                    return
+                  }
+                  withCodes.forEach((i) =>
+                    openLabelPrintWindow(
+                      {
+                        name: i.name,
+                        barcode: i.barcode as string,
+                        price: i.price,
+                        condition: i.condition,
+                        categoryName: i.categoryName,
+                      },
+                      Math.max(1, i.quantity)
+                    )
+                  )
+                }}
+                className="flex items-center gap-1.5 rounded-xl border border-violet-200 px-3 py-1.5 text-xs font-semibold text-violet-700 hover:bg-violet-50"
+              >
+                Print Labels
+              </button>
+            )}
             <button
               onClick={onAddItem}
               className="flex items-center gap-1.5 rounded-xl bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
@@ -479,13 +510,14 @@ function ContainerCard({ container, inventory, soldQtyMap, onEdit, onAddItem }: 
               <Plus className="h-3.5 w-3.5" />
               Add Item
             </button>
+            </div>
           </div>
 
           {linkedItems.length === 0 ? (
             <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-gray-200 py-10 text-center">
               <BoxesIcon className="h-8 w-8 text-gray-200" />
-              <p className="text-sm text-gray-400 font-medium">No items added to this container yet.</p>
-              <p className="text-xs text-gray-400 max-w-xs">Click <span className="font-semibold">Add Item</span> above to log items from this container into Inventory.</p>
+              <p className="text-sm text-gray-400 font-medium">No items added to this shipment yet.</p>
+              <p className="text-xs text-gray-400 max-w-xs">Click <span className="font-semibold">Add Item</span> above to log items from this shipment into Inventory.</p>
               <button
                 onClick={onAddItem}
                 className="mt-1 flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
@@ -634,6 +666,7 @@ function ContainersContent() {
             price: toNumber(data.price),
             quantity: toNumber(data.stock ?? data.quantity),
             condition: String(data.condition ?? 'New'),
+            barcode: typeof data.barcode === 'string' ? data.barcode : undefined,
             containerId: data.containerId ? String(data.containerId) : undefined,
           }
         }))
@@ -716,7 +749,7 @@ function ContainersContent() {
       }
       setContainerModal(false); setEditingContainer(null)
     } catch (err) {
-      console.error(err); toast.error('Failed to save container.')
+      console.error(err); toast.error('Failed to save shipment.')
     } finally {
       setSavingContainer(false)
     }
@@ -764,8 +797,8 @@ function ContainersContent() {
       {/* Header */}
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Containers</h1>
-          <p className="mt-0.5 text-sm text-gray-500">Track Japan container batches, add items directly, and monitor profit per container.</p>
+          <h1 className="text-2xl font-bold text-gray-900">Shipments</h1>
+          <p className="mt-0.5 text-sm text-gray-500">Each shipment from a supplier. Add items directly and see the profit each one made.</p>
         </div>
         <button onClick={openAdd} className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-blue-700">
           <Plus className="h-4 w-4" /> Add Container
@@ -775,7 +808,7 @@ function ContainersContent() {
       {/* Summary cards */}
       <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
         {[
-          { label: 'Containers', value: String(containers.length), color: 'text-gray-800' },
+          { label: 'Shipments', value: String(containers.length), color: 'text-gray-800' },
           { label: 'Total Invested', value: fmt(summary.totalCost), color: 'text-gray-800' },
           { label: 'Total Revenue', value: fmt(summary.totalRevenue), color: 'text-blue-600' },
           { label: 'Net Profit', value: (summary.totalProfit >= 0 ? '+' : '') + fmt(summary.totalProfit), color: summary.totalProfit > 0 ? 'text-green-600' : summary.totalProfit < 0 ? 'text-red-500' : 'text-gray-500' },
@@ -791,7 +824,7 @@ function ContainersContent() {
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search containers…"
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search shipments…"
             className="w-full rounded-xl border border-gray-200 bg-white py-2 pl-9 pr-3 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100" />
         </div>
         <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
@@ -811,7 +844,7 @@ function ContainersContent() {
       ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-gray-200 bg-white py-16 text-center">
           <Package2 className="h-12 w-12 text-gray-200" />
-          <p className="font-medium text-gray-400">{containers.length === 0 ? 'No containers yet.' : 'No containers match your search.'}</p>
+          <p className="font-medium text-gray-400">{containers.length === 0 ? 'No shipments yet.' : 'No shipments match your search.'}</p>
           {containers.length === 0 && (
             <button onClick={openAdd} className="mt-1 flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">
               <Plus className="h-4 w-4" /> Add your first container

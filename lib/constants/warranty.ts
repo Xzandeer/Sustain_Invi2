@@ -23,3 +23,22 @@ export const REFUND_REASONS = [
 ] as const
 
 export type RefundReason = (typeof REFUND_REASONS)[number]
+
+// ── Seller details printed on the sales invoice ───────────────────────────────
+//
+// Under RA 11976 (Ease of Paying Taxes Act) and RR 7-2024, the INVOICE is the
+// primary document for sales of both goods and services; the Official Receipt
+// became a supplementary document. A registered invoice must carry the seller's
+// registered name, TIN and business address alongside the date and the
+// quantity, unit cost and description of each item.
+//
+// These are stored in Firestore at storeSettings/general so the owner enters
+// them once in Settings. They are blank by default rather than guessed, because
+// printing a wrong TIN is worse than printing none.
+//
+// NOTE: carrying the required fields does not make the document tax-valid. That
+// requires the system to be BIR-registered as a Computerized Accounting System
+// with a Permit to Use, which is outside the scope of this project.
+export const DEFAULT_SELLER_TIN = ''
+export const DEFAULT_SELLER_ADDRESS = ''
+export const DEFAULT_SELLER_REGISTERED_NAME = ''

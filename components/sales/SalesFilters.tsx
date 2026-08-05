@@ -94,8 +94,69 @@ export default function SalesFilters({
     onEndDateChange(value)
   }
 
+  // Quick date ranges. Typing two dates for "this week" is the common case, so
+  // these set both at once. The manual pickers stay for anything else.
+  const applyPreset = (preset: 'today' | 'week' | 'month' | 'lastMonth' | 'year' | 'all') => {
+    const now = new Date()
+    const iso = (d: Date) => {
+      const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+      return local.toISOString().slice(0, 10)
+    }
+    let from = ''
+    let to = iso(now)
+
+    if (preset === 'today') {
+      from = iso(now)
+    } else if (preset === 'week') {
+      // Week starts Monday, which is how the shop counts a trading week
+      const day = (now.getDay() + 6) % 7
+      from = iso(new Date(now.getFullYear(), now.getMonth(), now.getDate() - day))
+    } else if (preset === 'month') {
+      from = iso(new Date(now.getFullYear(), now.getMonth(), 1))
+    } else if (preset === 'lastMonth') {
+      from = iso(new Date(now.getFullYear(), now.getMonth() - 1, 1))
+      to = iso(new Date(now.getFullYear(), now.getMonth(), 0))
+    } else if (preset === 'year') {
+      from = iso(new Date(now.getFullYear(), 0, 1))
+    } else {
+      from = ''
+      to = ''
+    }
+
+    setError('')
+    setLocalStartDate(from)
+    setLocalEndDate(to)
+    onStartDateChange(from)
+    onEndDateChange(to)
+  }
+
+  const PRESETS = [
+    { key: 'today', label: 'Today' },
+    { key: 'week', label: 'This Week' },
+    { key: 'month', label: 'This Month' },
+    { key: 'lastMonth', label: 'Last Month' },
+    { key: 'year', label: 'This Year' },
+    { key: 'all', label: 'All Time' },
+  ] as const
+
   return (
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <div className="md:col-span-2 xl:col-span-5">
+        <label className="mb-1.5 block text-sm font-medium text-slate-700">Quick Range</label>
+        <div className="flex flex-wrap gap-2">
+          {PRESETS.map((p) => (
+            <button
+              key={p.key}
+              type="button"
+              onClick={() => applyPreset(p.key)}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-500 hover:text-slate-900"
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="md:col-span-2 xl:col-span-2">
         <label className="mb-1 block text-sm font-medium text-slate-700">
           Search Sales Records

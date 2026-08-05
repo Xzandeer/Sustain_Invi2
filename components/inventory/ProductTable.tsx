@@ -32,6 +32,12 @@ export interface Product {
   // Total units written off this item. Present even when isVoided is false,
   // because a partial void leaves the item active but still records the loss.
   voidedUnits?: number | null
+  // The shipment this item arrived in. Null for items encoded directly into
+  // inventory rather than through a container.
+  containerId?: string | null
+  // Short scannable code, one per variant. Assigned on creation; older items
+  // get one from the Assign Barcodes action.
+  barcode?: string | null
   createdAtMs?: number
 }
 

@@ -29,6 +29,7 @@ import StockAdjustmentModal from '@/components/inventory/StockAdjustmentModal'
 import CategoryModal from '@/components/categories/CategoryModal'
 import { useUserRole } from '@/hooks/useUserRole'
 import { getStockStatus, normalizeInventoryCondition } from '@/lib/server/salesInventoryMetrics'
+import { openLabelPrintWindow } from '@/lib/transactions/labelPrint'
 
 interface Category {
   id: string
@@ -45,7 +46,7 @@ type SortOption =
   | 'name' | 'name_desc'
   | 'price_low' | 'price_high'
   | 'stock_low' | 'stock_high'
-  | 'category'
+  | 'category' | 'category_desc'
 
 const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'recent',     label: 'Recently Added' },
@@ -59,7 +60,7 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'category',   label: 'Category (A\u2013Z)' },
 ]
 
-type ColumnKey = 'category' | 'price' | 'stock' | 'reserved' | 'available' | 'condition' | 'status'
+type ColumnKey = 'category' | 'price' | 'stock' | 'reserved' | 'available' | 'condition' | 'status' | 'shipment' | 'barcode'
 
 const COLUMN_LABELS: { key: ColumnKey; label: string }[] = [
   { key: 'category',  label: 'Category' },
@@ -69,11 +70,16 @@ const COLUMN_LABELS: { key: ColumnKey; label: string }[] = [
   { key: 'available', label: 'Available' },
   { key: 'condition', label: 'Condition' },
   { key: 'status',    label: 'Stock Status' },
+  { key: 'shipment',  label: 'Shipment' },
+  { key: 'barcode',   label: 'Barcode' },
 ]
 
 const DEFAULT_COLUMNS: Record<ColumnKey, boolean> = {
   category: true, price: true, stock: true,
-  reserved: true, available: true, condition: true, status: true,
+  reserved: true, available: true, condition: true, status: true, shipment: true,
+  // Off by default - useful for staff and for testing, but most days it is
+  // noise. Turned on from Table Options.
+  barcode: false,
 }
 
 const toNumber = (value: unknown, fallback = 0) => {
@@ -120,7 +126,17 @@ function InventoryContent() {
       if (!raw) return
       const saved = JSON.parse(raw) as { sortBy?: SortOption; columns?: Record<string, boolean> }
       if (saved.sortBy) setSortBy(saved.sortBy)
-      if (saved.columns) setVisibleColumns(prev => ({ ...prev, ...saved.columns }))
+      if (saved.columns) {
+        // Keep only known columns with boolean values. Preferences saved by an
+        // older build may be missing newer columns or carry ones since removed;
+        // merging blindly would leave gaps in the object.
+        const clean: Partial<Record<ColumnKey, boolean>> = {}
+        for (const { key } of COLUMN_LABELS) {
+          const value = saved.columns[key]
+          if (typeof value === 'boolean') clean[key] = value
+        }
+        setVisibleColumns(prev => ({ ...prev, ...clean }))
+      }
     } catch { /* ignore malformed preferences */ }
   }, [])
 
@@ -204,6 +220,10 @@ function InventoryContent() {
               voidedBy: typeof data.voidedBy === 'string' ? data.voidedBy : null,
               voidReason: typeof data.voidReason === 'string' ? data.voidReason : null,
               voidedUnits: typeof data.voidedUnits === 'number' ? data.voidedUnits : null,
+              // Which shipment this item arrived in. Resolved to a name below;
+              // items encoded outside a shipment simply have none.
+              containerId: typeof data.containerId === 'string' ? data.containerId : null,
+              barcode: typeof data.barcode === 'string' ? data.barcode : null,
               createdAtMs: (() => {
                 const raw = data.createdAt as { seconds?: number } | string | undefined
                 if (raw && typeof raw === 'object' && typeof raw.seconds === 'number') return raw.seconds * 1000
@@ -288,7 +308,8 @@ function InventoryContent() {
           case 'price_high': return b.price - a.price
           case 'stock_low':  return a.quantity - b.quantity
           case 'stock_high': return b.quantity - a.quantity
-          case 'category':   return a.category.localeCompare(b.category) || a.name.localeCompare(b.name)
+          case 'category':      return a.category.localeCompare(b.category) || a.name.localeCompare(b.name)
+          case 'category_desc': return b.category.localeCompare(a.category) || a.name.localeCompare(b.name)
           default:           return 0
         }
       })
@@ -578,6 +599,74 @@ function InventoryContent() {
   // do. The voided records still exist; they are just not sellable stock.
   //
   // The Voided tab has its own count below, so nothing is hidden.
+  // Click-to-sort column headers.
+  //
+  // Each sortable column owns an ascending/descending pair of SortOption values.
+  // Clicking cycles asc -> desc -> asc; clicking a different column starts at
+  // ascending. The dropdown still works and stays in sync, since both write to
+  // the same `sortBy` state.
+  const SORT_PAIRS: Partial<Record<ColumnKey | 'name', [SortOption, SortOption]>> = {
+    name:     ['name', 'name_desc'],
+    category: ['category', 'category_desc'],
+    price:    ['price_low', 'price_high'],
+    stock:    ['stock_low', 'stock_high'],
+  }
+
+  const toggleSort = (col: keyof typeof SORT_PAIRS) => {
+    const pair = SORT_PAIRS[col]
+    if (!pair) return
+    setSortBy(sortBy === pair[0] ? pair[1] : pair[0])
+  }
+
+  // '' = not sorted by this column, 'asc' / 'desc' = current direction
+  const sortDir = (col: keyof typeof SORT_PAIRS): '' | 'asc' | 'desc' => {
+    const pair = SORT_PAIRS[col]
+    if (!pair) return ''
+    return sortBy === pair[0] ? 'asc' : sortBy === pair[1] ? 'desc' : ''
+  }
+
+  // Assigns barcodes to stock encoded before barcoding existed.
+  //
+  // Items created from now on get one automatically. Safe to run repeatedly -
+  // the endpoint skips anything that already carries a code, so a label already
+  // stuck to a physical item never becomes wrong.
+  const [assigningBarcodes, setAssigningBarcodes] = useState(false)
+  const handleAssignBarcodes = async () => {
+    if (!isAdmin || assigningBarcodes) return
+    setAssigningBarcodes(true)
+    try {
+      const res = await fetch('/api/inventory/barcodes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          processedBy: {
+            uid: auth.currentUser?.uid ?? '',
+            email: auth.currentUser?.email ?? '',
+            name: auth.currentUser?.displayName ?? auth.currentUser?.email ?? '',
+          },
+        }),
+      })
+      const payload = (await res.json()) as { assigned?: number; alreadyHadCode?: number; error?: string }
+      if (!res.ok) throw new Error(payload.error || 'Failed to assign barcodes.')
+      toast.success(
+        payload.assigned
+          ? `${payload.assigned} barcode${payload.assigned === 1 ? '' : 's'} assigned.`
+          : 'Every item already has a barcode.'
+      )
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to assign barcodes.')
+    } finally {
+      setAssigningBarcodes(false)
+    }
+  }
+
+  // Shipment name lookup, so the inventory table can show where each item came
+  // from. Items store only containerId; the names live in the containers list.
+  const containerNameById = useMemo(
+    () => Object.fromEntries(containers.map((c) => [c.id, c.name])) as Record<string, string>,
+    [containers]
+  )
+
   const sellableInventory = useMemo(() => inventory.filter((p) => !p.isVoided), [inventory])
 
   const kpiTotal        = sellableInventory.length
@@ -734,6 +823,19 @@ function InventoryContent() {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a2 2 0 012-2z" />
                 </svg>
                 Manage Categories
+              </button>
+            )}
+            {isAdmin && (
+              <button
+                onClick={handleAssignBarcodes}
+                disabled={assigningBarcodes}
+                title="Give a barcode to any item that does not have one yet"
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-violet-300 hover:text-violet-700 disabled:opacity-50"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v16M8 4v16M12 4v16M16 4v16M20 4v16" />
+                </svg>
+                {assigningBarcodes ? 'Assigning…' : 'Assign Barcodes'}
               </button>
             )}
             <button
@@ -916,7 +1018,10 @@ function InventoryContent() {
                           >
                             <input
                               type="checkbox"
-                              checked={visibleColumns[key]}
+                              // ?? false: a preference saved before this column
+                              // existed has no entry for it, and an undefined
+                              // `checked` makes React treat the box as uncontrolled.
+                              checked={visibleColumns[key] ?? false}
                               onChange={(e) => setVisibleColumns(prev => ({ ...prev, [key]: e.target.checked }))}
                               className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-400"
                             />
@@ -941,27 +1046,39 @@ function InventoryContent() {
                 <thead className="border-b border-slate-100 bg-slate-50 text-xs font-medium text-slate-500">
                   <tr>
                     <th className="px-3 py-2 text-left">
-                      <span className="flex items-center gap-1">Item Name
-                        <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4" /></svg>
-                      </span>
+                      {(() => { const d = sortDir('name'); return (
+                        <button type="button" onClick={() => toggleSort('name')}
+                          className={`flex items-center gap-1 rounded transition hover:text-slate-900 ${d ? 'text-blue-700 font-semibold' : ''}`} title="Sort by item name">
+                          Item Name
+                          <svg className={`h-3 w-3 transition ${d ? 'text-blue-600' : 'text-slate-300'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d={d === 'desc' ? "M19 14l-7 7m0 0l-7-7m7 7V3" : "M5 10l7-7m0 0l7 7m-7-7v18"} /></svg>
+                        </button>) })()}
                     </th>
                     {visibleColumns.category && (
                     <th className="px-3 py-2 text-left">
-                      <span className="flex items-center gap-1">Category
-                        <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4" /></svg>
-                      </span>
+                      {(() => { const d = sortDir('category'); return (
+                        <button type="button" onClick={() => toggleSort('category')}
+                          className={`flex items-center gap-1 rounded transition hover:text-slate-900 ${d ? 'text-blue-700 font-semibold' : ''}`} title="Sort by category">
+                          Category
+                          <svg className={`h-3 w-3 transition ${d ? 'text-blue-600' : 'text-slate-300'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d={d === 'desc' ? "M19 14l-7 7m0 0l-7-7m7 7V3" : "M5 10l7-7m0 0l7 7m-7-7v18"} /></svg>
+                        </button>) })()}
                     </th>)}
                     {visibleColumns.price && (
                     <th className="px-3 py-2 text-left">
-                      <span className="flex items-center gap-1">Price
-                        <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4" /></svg>
-                      </span>
+                      {(() => { const d = sortDir('price'); return (
+                        <button type="button" onClick={() => toggleSort('price')}
+                          className={`flex items-center gap-1 rounded transition hover:text-slate-900 ${d ? 'text-blue-700 font-semibold' : ''}`} title="Sort by price">
+                          Price
+                          <svg className={`h-3 w-3 transition ${d ? 'text-blue-600' : 'text-slate-300'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d={d === 'desc' ? "M19 14l-7 7m0 0l-7-7m7 7V3" : "M5 10l7-7m0 0l7 7m-7-7v18"} /></svg>
+                        </button>) })()}
                     </th>)}
                     {visibleColumns.stock && (
                     <th className="px-3 py-2 text-left">
-                      <span className="flex items-center gap-1">Stock
-                        <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                      </span>
+                      {(() => { const d = sortDir('stock'); return (
+                        <button type="button" onClick={() => toggleSort('stock')}
+                          className={`flex items-center gap-1 rounded transition hover:text-slate-900 ${d ? 'text-blue-700 font-semibold' : ''}`} title="Sort by stock">
+                          Stock
+                          <svg className={`h-3 w-3 transition ${d ? 'text-blue-600' : 'text-slate-300'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d={d === 'desc' ? "M19 14l-7 7m0 0l-7-7m7 7V3" : "M5 10l7-7m0 0l7 7m-7-7v18"} /></svg>
+                        </button>) })()}
                     </th>)}
                     {visibleColumns.reserved && (
                     <th className="px-3 py-2 text-left">
@@ -977,6 +1094,8 @@ function InventoryContent() {
                     </th>)}
                     {visibleColumns.condition && <th className="px-3 py-2 text-left">Condition</th>}
                     {visibleColumns.status && <th className="px-3 py-2 text-left">Stock Status</th>}
+                    {visibleColumns.shipment && <th className="px-3 py-2 text-left">Shipment</th>}
+                    {visibleColumns.barcode && <th className="px-3 py-2 text-left">Barcode</th>}
                     {/* Only on the Voided tab - the reason is meaningless for active items */}
                     {voidTab === 'voided' && <th className="px-3 py-2 text-left">Void Reason</th>}
                     <th className="px-3 py-2 text-left">Actions</th>
@@ -1028,6 +1147,26 @@ function InventoryContent() {
                           {product.stockStatus}
                         </span>
                       </td>)}
+                      {visibleColumns.shipment && (
+                      <td className="px-5 py-3.5">
+                        {containerNameById[product.containerId ?? ''] ? (
+                          <span className="inline-flex rounded-md bg-sky-50 px-2.5 py-0.5 text-xs font-medium text-sky-700">
+                            {containerNameById[product.containerId ?? '']}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-400">—</span>
+                        )}
+                      </td>)}
+                      {visibleColumns.barcode && (
+                      <td className="px-5 py-3.5">
+                        {product.barcode ? (
+                          <span className="font-mono text-xs tracking-wider text-slate-700">
+                            {product.barcode}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-400">—</span>
+                        )}
+                      </td>)}
                       {voidTab === 'voided' && (
                       <td className="px-5 py-3.5">
                         <span className={`inline-flex rounded-md px-2.5 py-0.5 text-xs font-semibold ${
@@ -1069,6 +1208,32 @@ function InventoryContent() {
                             >
                               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                              </svg>
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (!product.barcode) {
+                                  toast.error('This item has no barcode yet. Run Assign Barcodes first.')
+                                  return
+                                }
+                                // One label per unit in stock - every physical
+                                // item needs its own, and they share a code.
+                                openLabelPrintWindow(
+                                  {
+                                    name: product.name,
+                                    barcode: product.barcode,
+                                    price: product.price,
+                                    condition: product.condition,
+                                    categoryName: product.category,
+                                  },
+                                  Math.max(1, product.quantity)
+                                )
+                              }}
+                              title="Print barcode labels"
+                              className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-violet-300 hover:text-violet-600"
+                            >
+                              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a1 1 0 001-1v-4a1 1 0 00-1-1H9a1 1 0 00-1 1v4a1 1 0 001 1zM7 7V4a1 1 0 011-1h8a1 1 0 011 1v3" />
                               </svg>
                             </button>
                             <button

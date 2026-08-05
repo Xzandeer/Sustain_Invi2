@@ -31,15 +31,31 @@ const TransactionDocument = forwardRef<HTMLDivElement, TransactionDocumentProps>
       <div className="flex flex-wrap items-start justify-between gap-5 border-b border-dashed border-slate-200 pb-5">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-700/90">
-            {isSale ? 'Sales Receipt' : 'Reservation Ticket'}
+            {isSale ? 'Sales Invoice' : 'Reservation Ticket'}
           </p>
           <h2 className="mt-2.5 text-[1.7rem] font-bold tracking-tight text-slate-900 sm:text-[1.55rem]">
             {document.storeName}
           </h2>
           {!isSale ? <p className="mt-1 text-xs text-slate-400">{document.storeTagline}</p> : null}
+          {/* Seller details required on an invoice under RR 7-2024. Rendered
+              only when the shop has entered them, so a blank Settings field
+              leaves the invoice clean rather than showing empty labels. */}
+          {isSale && document.sellerRegisteredName ? (
+            <p className="mt-1.5 text-[12px] font-medium text-slate-600">
+              {document.sellerRegisteredName}
+            </p>
+          ) : null}
+          {isSale && document.sellerAddress ? (
+            <p className="mt-0.5 max-w-[18rem] text-[11px] leading-snug text-slate-500">
+              {document.sellerAddress}
+            </p>
+          ) : null}
+          {isSale && document.sellerTin ? (
+            <p className="mt-0.5 text-[11px] text-slate-500">TIN: {document.sellerTin}</p>
+          ) : null}
         </div>
         <div className="min-w-[210px] text-left sm:text-right">
-          <p className={labelClassName}>{isSale ? 'Receipt No.' : 'Reservation Code'}</p>
+          <p className={labelClassName}>{isSale ? 'Invoice No.' : 'Reservation Code'}</p>
           <p className="mt-1.5 text-base font-bold tracking-tight text-slate-900 sm:text-lg">
             {isSale ? document.receiptNumber : document.reservationCode}
           </p>
@@ -60,7 +76,7 @@ const TransactionDocument = forwardRef<HTMLDivElement, TransactionDocumentProps>
           <p className={labelClassName}>Processed By</p>
           <p className="pt-1 font-semibold text-slate-900">{document.processedBy}</p>
           <p className={valueClassName}>
-            {isSale ? 'Completed transaction receipt' : 'Reservation claim stub'}
+            {isSale ? 'Completed transaction invoice' : 'Reservation claim stub'}
           </p>
         </div>
       </div>

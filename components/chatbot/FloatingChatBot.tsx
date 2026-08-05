@@ -248,7 +248,7 @@ export default function FloatingChatBot() {
     const map: Record<string, string> = {
       dashboard: 'Dashboard', inventory: 'Inventory', sales: 'Sales',
       reservations: 'Reservations', analytics: 'Analytics', customers: 'Customers',
-      containers: 'Containers', users: 'Users', logs: 'Stock Logs', trash: 'Trash',
+      containers: 'Shipments', users: 'Users', logs: 'Stock Logs', trash: 'Trash',
     }
     return map[last] ?? last
   })()

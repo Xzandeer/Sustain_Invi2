@@ -8,7 +8,7 @@ import {
   getProcessedByInfo,
 } from '@/lib/server/inventory'
 import { createTransactionNumber } from '@/lib/server/transactionNumbers'
-import { getWarrantyDays } from '@/lib/server/storeSettings'
+import { getStoreSettings } from '@/lib/server/storeSettings'
 import { parseDateRange, toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import {
   SALES_THANK_YOU_NOTE,
@@ -253,8 +253,11 @@ export async function POST(req: NextRequest) {
     const totalAmount = saleLines.reduce((sum, item) => sum + item.quantity * item.price, 0)
     const categoryNames = Array.from(new Set(saleLines.map((item) => item.categoryName)))
 
-    // Snapshot the store's warranty policy onto this sale
-    const saleWarrantyDays = await getWarrantyDays()
+    // Snapshot the store's warranty policy and seller details onto this sale.
+    // Read once here so an invoice reprinted months later shows the terms and
+    // the registered details that applied on the day it was issued.
+    const storeSettings = await getStoreSettings()
+    const saleWarrantyDays = storeSettings.warrantyDays
 
     // Step 11: Create sale document reference and generate unique receipt number
     const saleRef = doc(collection(db, 'sales'))
@@ -342,6 +345,9 @@ export async function POST(req: NextRequest) {
       transactionDate: nowIso,
       processedBy: processedBy.name,
       note: SALES_THANK_YOU_NOTE,
+      sellerRegisteredName: storeSettings.sellerRegisteredName,
+      sellerTin: storeSettings.sellerTin,
+      sellerAddress: storeSettings.sellerAddress,
     }
 
 

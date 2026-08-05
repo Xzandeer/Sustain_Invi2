@@ -11,6 +11,7 @@ import {
   where,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { createItemBarcode } from '@/lib/server/barcodes'
 import { normalizeStockLogActionForStorage, ResolvedStockLogAction } from '@/lib/inventory/stockLogActions'
 import { InventoryCondition, getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
 
@@ -305,6 +306,8 @@ export const createInventoryVariant = async (input: {
   const now = new Date().toISOString()
   const stockStatus = getStockStatus({ stock: input.quantity, minStock: input.minStock })
   const sku = await generateSku(input.categoryName, input.condition)
+  // Short scannable code, one per variant. See lib/server/barcodes.ts.
+  const barcode = await createItemBarcode()
 
   // Step 1: Create inventory document
   const docRef = await addDoc(collection(db, 'inventory'), {
@@ -316,6 +319,7 @@ export const createInventoryVariant = async (input: {
     quantity: input.quantity,
     stock: input.quantity,
     reservedStock: 0,
+    barcode,
     minStock: input.minStock,
     condition: input.condition,
     status: input.condition,

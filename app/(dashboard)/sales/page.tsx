@@ -39,6 +39,11 @@ import { normalizeInventoryCondition, toDate, toNumber } from '@/lib/server/sale
 import { openReceiptPrintWindow } from '@/lib/transactions/receiptPrint'
 import { DEFAULT_WARRANTY_DAYS, REFUND_REASONS } from '@/lib/constants/warranty'
 import { useUserRole } from '@/hooks/useUserRole'
+import dynamic from 'next/dynamic'
+import { isBarcodeScanSupported } from '@/components/sales/BarcodeScanner'
+
+// Loaded on demand: the camera component is only needed when someone taps Scan.
+const BarcodeScanner = dynamic(() => import('@/components/sales/BarcodeScanner'), { ssr: false })
 
 
 // A Philippine mobile number is 11 digits (09 followed by nine more).
@@ -169,6 +174,11 @@ function SalesContent() {
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [inventorySearch, setInventorySearch] = useState('')
+  // Camera scanning is Chrome/Edge only and needs HTTPS, so the button is
+  // hidden where it cannot work rather than failing when tapped.
+  const [scannerOpen, setScannerOpen] = useState(false)
+  const [canScanWithCamera, setCanScanWithCamera] = useState(false)
+  useEffect(() => { setCanScanWithCamera(isBarcodeScanSupported()) }, [])
   const [inventoryCategoryFilter, setInventoryCategoryFilter] = useState('all')
   const [inventoryConditionFilter, setInventoryConditionFilter] = useState<'all' | 'New' | 'Refurbished'>('all')
   const [inventoryStockStatusFilter, setInventoryStockStatusFilter] = useState<'all' | 'Available' | 'Low Stock' | 'Out of Stock'>('all')
@@ -710,6 +720,38 @@ function SalesContent() {
     setSuccessMessage('')
   }
 
+  // Scanning a barcode adds the item straight to the cart.
+  //
+  // A USB scanner behaves like a keyboard: it types the code and presses Enter,
+  // so this fires from the search box's onKeyDown. Immediate add is what makes
+  // scanning faster than searching - the counter never leaves the keyboard.
+  //
+  // Anything that is not a plain 4+ digit code falls through to normal text
+  // search, so typing a product name still works in the same box.
+  const handleBarcodeScan = async (raw: string) => {
+    const code = raw.replace(/\D/g, '')
+    if (code.length < 4) return false
+
+    try {
+      const res = await fetch(`/api/inventory/barcodes?code=${encodeURIComponent(code)}`)
+      const payload = (await res.json()) as { item?: InventoryItem; error?: string }
+
+      if (!res.ok || !payload.item) {
+        setError(payload.error || `No item found for barcode ${code}.`)
+        toast.error(payload.error || `No item found for barcode ${code}.`)
+        return true
+      }
+
+      addToCart(payload.item)
+      setInventorySearch('')
+      toast.success(`${payload.item.name} added.`)
+      return true
+    } catch {
+      setError('Could not look up that barcode.')
+      return true
+    }
+  }
+
   const addToCart = (item: InventoryItem) => {
     if (isCompletedMode) return
     setError('')
@@ -1014,9 +1056,28 @@ function SalesContent() {
                     type="text"
                     value={inventorySearch}
                     onChange={(e) => setInventorySearch(e.target.value)}
-                    placeholder="Search products..."
+                    onKeyDown={(e) => {
+                      // Scanners send Enter after the code. Nothing else in this
+                      // box uses Enter, so it is safe to claim it.
+                      if (e.key !== 'Enter') return
+                      e.preventDefault()
+                      void handleBarcodeScan(inventorySearch)
+                    }}
+                    placeholder="Search products, or scan a barcode..."
                     className="w-full bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400"
                   />
+                  {canScanWithCamera && !isCompletedMode && (
+                    <button
+                      type="button"
+                      onClick={() => setScannerOpen(true)}
+                      title="Scan with camera"
+                      className="shrink-0 rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                    >
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 7V5a2 2 0 012-2h2m10 0h2a2 2 0 012 2v2m0 10v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2M7 12h10" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <select
@@ -1314,7 +1375,7 @@ function SalesContent() {
                 <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
                   <div className="border-b border-slate-100 bg-slate-50 px-4 py-2.5">
                     <p className="text-xs font-semibold text-slate-600">
-                      {completedDocument.type === 'sale' ? 'Official Receipt' : 'Reservation Ticket'}
+                      {completedDocument.type === 'sale' ? 'Sales Invoice' : 'Reservation Ticket'}
                     </p>
                   </div>
                   <div className="overflow-y-auto" style={{ maxHeight: 'calc(100vh - 320px)' }}>
@@ -1858,7 +1919,7 @@ function SalesContent() {
           <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl">
             <div className="border-b border-slate-200 px-5 py-4">
               <h2 className="font-semibold text-slate-900">Send Receipt</h2>
-              <p className="mt-0.5 text-xs text-slate-500">Enter the customer email to send the receipt from JMGS Japon Surplus.</p>
+              <p className="mt-0.5 text-xs text-slate-500">Enter the customer email to send the invoice from JMGs Japan Surplus.</p>
             </div>
             <div className="px-5 py-4 space-y-3">
               <div>
@@ -1899,6 +1960,15 @@ function SalesContent() {
           </div>
         </div>
       ) : null}
+      {scannerOpen && (
+        <BarcodeScanner
+          onDetected={(code) => {
+            setScannerOpen(false)
+            void handleBarcodeScan(code)
+          }}
+          onClose={() => setScannerOpen(false)}
+        />
+      )}
     </main>
   )
 }

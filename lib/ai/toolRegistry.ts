@@ -29,7 +29,12 @@ import { getAllShipments, getActiveShipments, getDeliveredShipments, getPendingS
 // The file is kept for future work; re-register it here once the query and the
 // inventory matching are driven by the store's real categories.
 
-// Tool definitions sent to the model
+// Tool definitions sent to the model (OpenAI GPT-4o-mini).
+//
+// Gemini was evaluated first, but its free tier rate-limited after only a few
+// calls and the assistant became unavailable. GPT-4o-mini gave reliable
+// throughput at a cost low enough to run per request. The schema below follows
+// OpenAI's function-calling format; another provider would need it reshaped.
 export const TOOL_DEFINITIONS = [
 
   // ── Inventory ──────────────────────────────────────────────────────────────

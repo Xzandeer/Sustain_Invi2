@@ -1,6 +1,6 @@
 // Transaction document types and helpers - generates receipts and reservation tickets
 // Constants for receipt/ticket generation
-export const STORE_NAME = 'JMGS JAPON SURPLUS'
+export const STORE_NAME = 'JMGs JAPAN SURPLUS'
 export const STORE_TAGLINE = 'Sales & Inventory'
 export const SALES_THANK_YOU_NOTE = 'Thank you for your purchase.'
 export const RESERVATION_NOTICE = 'Please present this ticket when claiming your reserved item.'
@@ -23,7 +23,23 @@ export interface TransactionLineItem {
   subtotal: number
 }
 
-export interface SaleReceiptDocument {
+// Seller details required on a sales invoice.
+//
+// Under RA 11976 (Ease of Paying Taxes Act) and RR 7-2024 the invoice is the
+// primary document for sales of goods, and must show the seller's registered
+// name, TIN and business address. These are entered once by the owner in
+// Settings and stamped onto each sale, so an invoice reprinted later still
+// carries the details that applied when it was issued.
+//
+// Optional because they are blank until the shop enters them, and a sale must
+// never fail because a settings field is empty.
+export interface SellerDetails {
+  sellerRegisteredName?: string
+  sellerTin?: string
+  sellerAddress?: string
+}
+
+export interface SaleReceiptDocument extends SellerDetails {
   type: 'sale'
   receiptNumber: string
   storeName: string
@@ -113,14 +129,14 @@ const formatReservationItemLines = (items: TransactionLineItem[]) =>
 // Build email subject line based on transaction type
 export const buildManualEmailSubject = (document: CompletedTransactionDocument) =>
   document.type === 'sale'
-    ? `Sales Receipt ${document.receiptNumber} - ${document.storeName}`
+    ? `Sales Invoice ${document.receiptNumber} - ${document.storeName}`
     : `Reservation Ticket ${document.reservationCode} - ${document.storeName}`
 
 // Build email body with full transaction details
 export const buildManualEmailBody = (document: CompletedTransactionDocument) => {
   const greeting = `Hello ${document.customer.fullName},`
 
-  // Format for sales receipt
+  // Format for sales invoice
   if (document.type === 'sale') {
     return [
       greeting,
