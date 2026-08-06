@@ -15,6 +15,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getApps, initializeApp, cert, getApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
 import { getAdminDb } from '@/lib/firebaseAdmin'
+import { noAdminExists, requireAdmin } from '@/lib/server/authorize'
 
 function getAdminAuth() {
   const privateKey = process.env.FIREBASE_ADMIN_PRIVATE_KEY
@@ -38,11 +39,24 @@ function getAdminAuth() {
 
 export async function POST(req: NextRequest) {
   try {
-    const { name, email, password, role } = (await req.json()) as {
+    const body = (await req.json()) as {
       name: string
       email: string
       password: string
       role: 'admin' | 'staff'
+      requestedByUid?: string
+    }
+    const { name, email, password, role } = body
+
+    // Creating accounts is an administrator action.
+    //
+    // The exception is a database with no administrator in it yet: the first
+    // admin has to be created by someone who is not one. That window closes the
+    // moment the first admin exists, so it cannot be used to grant yourself
+    // access to a running shop.
+    if (!(await noAdminExists())) {
+      const denied = await requireAdmin(body.requestedByUid)
+      if (denied) return denied
     }
 
     if (!name?.trim() || !email?.trim() || !password || !role) {

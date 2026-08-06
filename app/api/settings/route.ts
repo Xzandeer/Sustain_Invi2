@@ -6,6 +6,7 @@ import { doc, setDoc, serverTimestamp } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { getStoreSettings } from '@/lib/server/storeSettings'
 import { SETTINGS_COLLECTION, SETTINGS_DOC } from '@/lib/constants/warranty'
+import { requireAdmin } from '@/lib/server/authorize'
 
 export const dynamic = 'force-dynamic'
 
@@ -17,6 +18,11 @@ export async function GET() {
 export async function PUT(req: NextRequest) {
   try {
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
+
+    // Store-wide policy. The warranty window governs every future refund, so
+    // this is an administrator action rather than a staff one.
+    const denied = await requireAdmin(body.requestedByUid)
+    if (denied) return denied
 
     const raw = body.warrantyDays
     const parsed =

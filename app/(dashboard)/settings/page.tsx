@@ -137,12 +137,6 @@ function SettingsContent() {
   const [paperWidth, setPaperWidth] = useState<ReceiptPaperWidth>(80)
   useEffect(() => { setPaperWidth(getReceiptPaperWidth()) }, [])
 
-  // Seller details printed on the sales invoice. Required on a registered
-  // invoice under RR 7-2024; entered once here rather than hardcoded.
-  const [sellerRegisteredName, setSellerRegisteredName] = useState('')
-  const [sellerTin, setSellerTin] = useState('')
-  const [sellerAddress, setSellerAddress] = useState('')
-
   // Load the current store policy
   useEffect(() => {
     let cancelled = false
@@ -151,9 +145,6 @@ function SettingsContent() {
       .then((d) => {
         if (!cancelled && d) {
           if (typeof d.warrantyDays === 'number') setWarrantyDays(String(d.warrantyDays))
-          if (typeof d.sellerRegisteredName === 'string') setSellerRegisteredName(d.sellerRegisteredName)
-          if (typeof d.sellerTin === 'string') setSellerTin(d.sellerTin)
-          if (typeof d.sellerAddress === 'string') setSellerAddress(d.sellerAddress)
         }
       })
       .catch(() => {})
@@ -169,9 +160,7 @@ function SettingsContent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           warrantyDays: Number(warrantyDays),
-          sellerRegisteredName,
-          sellerTin,
-          sellerAddress,
+          requestedByUid: auth.currentUser?.uid ?? '',
           updatedByEmail: auth.currentUser?.email ?? '',
         }),
       })
@@ -428,59 +417,6 @@ function SettingsContent() {
                       </p>
                     </div>
 
-                    {/* Seller details required on a sales invoice.
-                        Under RA 11976 and RR 7-2024 the invoice is the primary
-                        document for sales of goods, and must carry the seller's
-                        registered name, TIN and business address. */}
-                    <div className="border-t border-slate-100 pt-5">
-                      <p className="text-sm font-semibold text-slate-800">Invoice Details</p>
-                      <p className="mt-0.5 text-xs text-slate-500">
-                        Printed on every sales invoice. Required by BIR under RR 7-2024.
-                      </p>
-
-                      <label className="mt-3 mb-1.5 block text-sm font-medium text-slate-700">
-                        Registered Business Name
-                      </label>
-                      <input
-                        type="text"
-                        value={sellerRegisteredName}
-                        onChange={(e) => setSellerRegisteredName(e.target.value)}
-                        placeholder="As registered with BIR"
-                        className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                      />
-
-                      <label className="mt-3 mb-1.5 block text-sm font-medium text-slate-700">
-                        TIN
-                      </label>
-                      <input
-                        type="text"
-                        value={sellerTin}
-                        onChange={(e) => setSellerTin(e.target.value)}
-                        placeholder="000-000-000-000"
-                        className="w-56 rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                      />
-
-                      <label className="mt-3 mb-1.5 block text-sm font-medium text-slate-700">
-                        Business Address
-                      </label>
-                      <textarea
-                        value={sellerAddress}
-                        onChange={(e) => setSellerAddress(e.target.value)}
-                        rows={2}
-                        placeholder="Street, Barangay, City, Province"
-                        className="w-full resize-none rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                      />
-
-                      <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
-                        <p className="text-xs text-slate-600">
-                          <span className="font-semibold">Note:</span> these fields put the
-                          required information on the invoice, but the document is only valid
-                          for tax purposes once the system is BIR-registered as a Computerized
-                          Accounting System.
-                        </p>
-                      </div>
-                    </div>
-
                     <div className="pt-1">
                       <button
                         type="submit"
@@ -492,13 +428,13 @@ function SettingsContent() {
                     </div>
                   </form>
 
-                  {/* Receipt paper width.
+                  {/* Invoice paper width.
                       Saved per browser, not store-wide, because it describes the
                       printer plugged into THIS computer - two terminals may have
                       different printers. */}
                   <div className="mt-8 max-w-md border-t border-slate-100 pt-6">
                     <label className="mb-1.5 block text-sm font-medium text-slate-700">
-                      Receipt Paper Width
+                      Invoice Paper Width
                     </label>
                     <div className="flex gap-2">
                       {([58, 80] as const).map((w) => (
@@ -517,7 +453,7 @@ function SettingsContent() {
                       ))}
                     </div>
                     <p className="mt-2 text-xs text-slate-500">
-                      Match this to the paper roll in your receipt printer. This setting
+                      Match this to the paper roll in your invoice printer. This setting
                       applies to this computer only — each terminal keeps its own.
                     </p>
                   </div>

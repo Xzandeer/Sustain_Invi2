@@ -360,6 +360,7 @@ export const openReceiptPrintWindow = (
         <div class="receipt-date">${formatTransactionDateTime(isSale ? document.transactionDate : document.reservationDate)}</div>
       </div>
 
+      ${!isSale ? `
       <div class="section customer-info">
         <div class="section-label">Customer</div>
         <div class="customer-name">${document.customer.fullName}</div>
@@ -370,7 +371,7 @@ export const openReceiptPrintWindow = (
       <div class="section">
         <div class="section-label">Processed By</div>
         <div class="section-content">${document.processedBy}</div>
-      </div>
+      </div>` : ''}
 
       <table class="items-table">
         <thead>

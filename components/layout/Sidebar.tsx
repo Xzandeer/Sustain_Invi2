@@ -24,7 +24,6 @@ const mainNav = [
   { name: 'Sales',        href: '/sales',            icon: ShoppingCart },
   { name: 'Inventory',    href: '/inventory',        icon: Package },
   { name: 'Reservations', href: '/reservations',     icon: Calendar },
-  { name: 'Customers',    href: '/customers',        icon: UserCheck },
   { name: 'Shipments',    href: '/containers',       icon: Package2 },
 ]
 

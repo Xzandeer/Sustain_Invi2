@@ -26,8 +26,6 @@ const STAFF_BLOCKED_TOOLS = new Set([
   'getTrendData',
   'getFrequentCustomers',
   'getBasketAnalysis',
-  'getAllCustomers',
-  'getCustomerHistory',
   'predictSales',
   'getAllShipments',
   'getActiveShipments',
@@ -123,8 +121,6 @@ TOOL SELECTION RULES (follow strictly):
 - "out of stock", "sold out", "zero stock" -> call getOutOfStockItems
 - "overview", "summary", "how is the store", "show everything", "show it all", "show me all", "show all", "what can you show" -> call getDashboardSummary
 - "display", "promote", "recommend", "what to sell", "what to display", "Christmas", "season", "this month", "trending", "what is popular", "what should we sell", "what should we display" -> call getRecommendations
-- "customer list", "all customers", "who are our customers" -> call getAllCustomers
-- "customer history", "what did [name] buy", "purchases by [name]", "most expensive", "highest purchase" -> call getCustomerHistory with the customer name
 - "shipment", "container", "delivery", "supplier" -> call getAllShipments or getActiveShipments
 - "audit", "stock log", "recent activity" -> call getStockLogs
 - "pair with", "goes with", "bundle", "what else should they buy", "sell together", "combo" -> call getBasketAnalysis, which reports what customers actually bought together
@@ -160,13 +156,14 @@ You are a read-only assistant for this shop's own data. You can answer questions
 - Inventory - low stock, out of stock, stock aging, search by name, category breakdown, overall summary
 - Sales - today's sales, recent sales, top categories, revenue trends, items commonly bought together
 - Reservations - active, pending and overdue
-- Customers - customer list and an individual customer's purchase history
 - Shipments - all, active, delivered and pending containers
 - Stock logs - recent stock movement history
 - Predictions - short-term sales outlook, and what to promote this month
 You CANNOT create, edit or delete anything, and you cannot browse the internet.
 Staff accounts have access to inventory and reservations; financial figures,
-customer data, predictions and shipment information are limited to admins.
+predictions and shipment information are limited to admins.
+You cannot look up customers by name. Walk-in sales record no customer details,
+and reservation contacts are viewed on the Reservations screen.
 - NEVER expose raw database IDs, internal system fields, or raw JSON
 - NEVER repeat the raw tool response — always format it into clean bullet points
 

@@ -23,13 +23,46 @@ import { Plus, Tags, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { auth, db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
-import ProductTable, { Product } from '@/components/inventory/ProductTable'
 import ProductModal, { ProductFormValues } from '@/components/inventory/ProductModal'
 import StockAdjustmentModal from '@/components/inventory/StockAdjustmentModal'
 import CategoryModal from '@/components/categories/CategoryModal'
 import { useUserRole } from '@/hooks/useUserRole'
 import { getStockStatus, normalizeInventoryCondition } from '@/lib/server/salesInventoryMetrics'
 import { openLabelPrintWindow } from '@/lib/transactions/labelPrint'
+
+// Shape of an inventory row as this page holds it. Lived in a ProductTable
+// component that was never rendered - the table below is inline - so the type
+// moved here with it.
+export interface Product {
+  id: string
+  categoryId: string
+  name: string
+  category: string
+  price: number
+  quantity: number
+  reservedStock: number
+  availableStock: number
+  minStock: number
+  condition: 'New' | 'Refurbished'
+  description?: string
+  imageUrl?: string
+  stockStatus: 'Available' | 'Low Stock' | 'Out of Stock'
+  isDeleted?: boolean
+  isVoided?: boolean
+  voidedAt?: string | null
+  voidedBy?: string | null
+  voidReason?: string | null
+  // Total units written off this item. Present even when isVoided is false,
+  // because a partial void leaves the item active but still records the loss.
+  voidedUnits?: number | null
+  // The shipment this item arrived in. Null for items encoded directly into
+  // inventory rather than through a container.
+  containerId?: string | null
+  // Short scannable code, one per variant. Assigned on creation; older items
+  // get one from the Assign Barcodes action.
+  barcode?: string | null
+  createdAtMs?: number
+}
 
 interface Category {
   id: string

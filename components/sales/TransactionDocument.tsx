@@ -65,21 +65,26 @@ const TransactionDocument = forwardRef<HTMLDivElement, TransactionDocumentProps>
         </div>
       </div>
 
-      <div className="mt-5 grid gap-5 sm:grid-cols-2">
-        <div className="space-y-1">
-          <p className={labelClassName}>Customer</p>
-          <p className="pt-1 font-semibold text-slate-900">{document.customer.fullName}</p>
-          <p className={valueClassName}>{document.customer.email || 'No email provided'}</p>
-          <p className={valueClassName}>{document.customer.contactNumber}</p>
+      {/* Customer details appear on reservation tickets only.
+          A sales invoice carries no customer name and no staff name: a walk-in
+          buyer gives no details, and printing who served them puts a staff
+          member's name in a stranger's pocket for no operational benefit. Both
+          are still recorded against the transaction for the audit trail. */}
+      {!isSale && (
+        <div className="mt-5 grid gap-5 sm:grid-cols-2">
+          <div className="space-y-1">
+            <p className={labelClassName}>Customer</p>
+            <p className="pt-1 font-semibold text-slate-900">{document.customer.fullName}</p>
+            <p className={valueClassName}>{document.customer.email || 'No email provided'}</p>
+            <p className={valueClassName}>{document.customer.contactNumber}</p>
+          </div>
+          <div className="space-y-1">
+            <p className={labelClassName}>Processed By</p>
+            <p className="pt-1 font-semibold text-slate-900">{document.processedBy}</p>
+            <p className={valueClassName}>Reservation claim stub</p>
+          </div>
         </div>
-        <div className="space-y-1">
-          <p className={labelClassName}>Processed By</p>
-          <p className="pt-1 font-semibold text-slate-900">{document.processedBy}</p>
-          <p className={valueClassName}>
-            {isSale ? 'Completed transaction invoice' : 'Reservation claim stub'}
-          </p>
-        </div>
-      </div>
+      )}
 
       <div className="mt-5 overflow-hidden rounded-xl border border-slate-200">
         <table className="min-w-full divide-y divide-slate-200">

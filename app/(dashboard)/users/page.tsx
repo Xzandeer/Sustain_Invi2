@@ -260,7 +260,7 @@ function UsersContent() {
       const res = await fetch('/api/admin/create-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, requestedByUid: auth.currentUser?.uid ?? '' }),
       })
       const data = await res.json()
       if (!res.ok) { setFormError(data.error ?? 'Failed to create account.'); return }

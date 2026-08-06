@@ -34,8 +34,6 @@ import { Line, Doughnut } from 'react-chartjs-2'
 import { collection, getDocs } from 'firebase/firestore'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { db } from '@/lib/firebase'
-import AnalyticsCard from '@/components/analytics/AnalyticsCard'
-import AnalyticsBadge from '@/components/analytics/AnalyticsBadge'
 import AnalyticsTable from '@/components/analytics/AnalyticsTable'
 import type { InventoryRecord } from '@/lib/server/salesInventoryMetrics'
 

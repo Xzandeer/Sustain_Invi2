@@ -6,7 +6,7 @@
 // server as well.
 
 import { NextResponse } from 'next/server'
-import { doc, getDoc } from 'firebase/firestore'
+import { collection, doc, getDoc, getDocs, limit, query, where } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { Permission, resolvePermissions } from '@/lib/auth/permissions'
 
@@ -54,6 +54,58 @@ export async function checkPermission(
   } catch {
     // Fail closed — if we cannot verify, deny.
     return { allowed: false, reason: 'Unable to verify permissions.' }
+  }
+}
+
+/**
+ * Guard for routes that must be performed by an administrator.
+ *
+ * Takes the uid directly rather than a `processedBy` object, for routes whose
+ * payload does not carry one. Returns null when allowed, or a ready-made error
+ * response when not.
+ */
+export async function requireAdmin(uid: unknown): Promise<NextResponse | null> {
+  const id = typeof uid === 'string' && uid.trim() ? uid.trim() : ''
+  if (!id) {
+    return NextResponse.json({ error: 'You must be signed in.' }, { status: 401 })
+  }
+
+  try {
+    const snap = await getDoc(doc(db, 'users', id))
+    if (!snap.exists()) {
+      return NextResponse.json({ error: 'User account not found.' }, { status: 403 })
+    }
+    const data = snap.data() as Record<string, unknown>
+    if (data.isDisabled === true) {
+      return NextResponse.json({ error: 'This account has been disabled.' }, { status: 403 })
+    }
+    if (data.role !== 'admin') {
+      return NextResponse.json(
+        { error: 'Only an administrator can perform this action.' },
+        { status: 403 }
+      )
+    }
+    return null
+  } catch {
+    // Fail closed - if the role cannot be verified, deny.
+    return NextResponse.json({ error: 'Unable to verify permissions.' }, { status: 403 })
+  }
+}
+
+/**
+ * True when the users collection contains no administrator.
+ *
+ * Used only by account creation, so a brand new database can be bootstrapped:
+ * the first admin has to be created by someone who is not yet an admin. Once one
+ * exists this returns false forever and normal authorisation applies.
+ */
+export async function noAdminExists(): Promise<boolean> {
+  try {
+    const snap = await getDocs(query(collection(db, 'users'), where('role', '==', 'admin'), limit(1)))
+    return snap.empty
+  } catch {
+    // Cannot confirm the database is empty, so assume it is not.
+    return false
   }
 }
 

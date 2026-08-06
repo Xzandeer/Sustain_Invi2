@@ -8,7 +8,17 @@
 
 import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
-import type { Product } from './ProductTable'
+// Only the fields this modal actually reads. Declared here rather than importing
+// a page-level type, so the component stays independent of where it is used.
+interface Product {
+  id: string
+  name: string
+  condition: 'New' | 'Refurbished'
+  quantity: number
+  reservedStock: number
+  availableStock: number
+  minStock: number
+}
 
 type StockAction = 'add' | 'deduct' | 'transfer'
 

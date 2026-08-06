@@ -21,28 +21,36 @@ export type ResolvedStockLogAction =
   | 'item_unvoided'
   | 'unmapped_action'
 
-// Human-readable labels for each action type (displayed in audit trail)
+// Labels shown in the audit trail.
+//
+// Written in the language of the shop, not the database. Staff reading this
+// screen want to know what happened to the stock - "Sold", "Refunded",
+// "Written off" - not which internal action fired. Terms like "Sale Deduction"
+// and "Item Unvoided" described the code rather than the event, and readers had
+// to translate them.
+//
+// The stored action VALUES are unchanged, so existing logs still resolve.
 const STOCK_LOG_ACTION_LABELS: Record<ResolvedStockLogAction, string> = {
-  item_added: 'Item Created',
-  stock_increased: 'Stock Added',
-  stock_decreased: 'Stock Deducted',
-  stock_adjust: 'Stock Adjusted',
-  item_edited: 'Item Edited',
-  condition_changed: 'Condition Changed',
-  stock_transferred_out: 'Transfer Out',
-  stock_transferred_in: 'Transfer In',
-  transfer: 'Stock Transfer',
-  sale_deduction: 'Sale Deduction',
-  sale_refund: 'Sale Refund',
-  reservation_deduction: 'Reservation Deduction',
-  reservation_claim: 'Reservation Claim',
-  reservation_release: 'Reservation Release',
-  item_deleted: 'Item Deleted',
-  item_restored: 'Item Restored',
-  item_deleted_permanently: 'Item Deleted Permanently',
-  item_voided: 'Item Voided',
-  item_unvoided: 'Item Restored (Unvoided)',
-  unmapped_action: 'Unmapped Action',
+  item_added: 'Item added',
+  stock_increased: 'Stock added',
+  stock_decreased: 'Stock removed',
+  stock_adjust: 'Stock adjusted',
+  item_edited: 'Details edited',
+  condition_changed: 'Condition changed',
+  stock_transferred_out: 'Moved out',
+  stock_transferred_in: 'Moved in',
+  transfer: 'Moved between conditions',
+  sale_deduction: 'Sold',
+  sale_refund: 'Refunded',
+  reservation_deduction: 'Reserved',
+  reservation_claim: 'Reservation collected',
+  reservation_release: 'Reservation released',
+  item_deleted: 'Moved to trash',
+  item_restored: 'Restored from trash',
+  item_deleted_permanently: 'Deleted permanently',
+  item_voided: 'Written off',
+  item_unvoided: 'Write-off reversed',
+  unmapped_action: 'Other',
 }
 
 // Maps old or alternate action names to standardized action types

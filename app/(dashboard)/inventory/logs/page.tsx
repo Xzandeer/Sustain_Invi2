@@ -229,14 +229,24 @@ function InventoryLogsContent() {
   }, [])
 
   // Show every action type the system supports, with a count of how many logs
-  // currently match. Types with no records stay visible (greyed, count 0) so the
-  // filter reflects the system's full capability, not just today's data.
+  // currently match.
+  //
+  // Only actions that have actually occurred are listed. Showing all twenty with
+  // "(0)" beside most of them made the reader scroll a long list to find the
+  // three that existed, which is exactly the extra step to avoid. An action with
+  // no records filters to an empty screen, so offering it is not useful.
+  //
+  // Sorted by frequency: the thing that happens most is the thing most likely
+  // to be looked for.
   const actionOptions = useMemo(() => {
     const counts = logs.reduce<Record<string, number>>((acc, l) => {
       acc[l.resolvedAction] = (acc[l.resolvedAction] ?? 0) + 1
       return acc
     }, {})
-    return ALL_STOCK_LOG_ACTIONS.map(a => ({ action: a, count: counts[a] ?? 0 }))
+    return ALL_STOCK_LOG_ACTIONS
+      .map(a => ({ action: a, count: counts[a] ?? 0 }))
+      .filter(o => o.count > 0)
+      .sort((a, b) => b.count - a.count)
   }, [logs])
 
   const filteredLogs = useMemo(() => {

@@ -7,7 +7,11 @@
 //   • Transactions - history, receipt reprint/email, and refunds
 //
 // Refunds can be full or partial. Each line has its own quantity stepper, and
-// a sale ends up 'completed', 'partially_refunded', 'refunded' or 'voided'.
+// a sale ends up 'completed', 'partially_refunded' or 'refunded'.
+//
+// 'voided' is still recognised so historical records keep rendering, but nothing
+// sets it: a mistaken sale is corrected with a refund and a reason category,
+// which records what happened rather than erasing the transaction.
 // The actual refund is processed server-side by /api/sales/refund - this page
 // only builds the request and shows the result.
 //
@@ -26,9 +30,6 @@ import { Download, Mail, Minus, Plus, Printer, Search, ShoppingCart, Trash2 } fr
 import { toast } from 'sonner'
 import { auth, db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
-import SalesFilters from '@/components/sales/SalesFilters'
-import SalesTable from '@/components/sales/SalesTable'
-import SalesViewModal from '@/components/sales/SalesViewModal'
 import TransactionDocument from '@/components/sales/TransactionDocument'
 import {
   buildGmailComposeLink,
@@ -50,6 +51,15 @@ const BarcodeScanner = dynamic(() => import('@/components/sales/BarcodeScanner')
 // Reservations require one so the customer can be contacted when their hold is
 // about to expire - a reservation nobody can be reached about just freezes stock.
 const isValidContactNumber = (value: string) => /^\d{11}$/.test(value.trim())
+
+const DATE_RANGES = [
+  { key: 'today', label: 'Today' },
+  { key: 'week', label: 'This Week' },
+  { key: 'month', label: 'This Month' },
+  { key: 'lastMonth', label: 'Last Month' },
+  { key: 'year', label: 'This Year' },
+  { key: 'all', label: 'All Time' },
+] as const
 
 // Status badge styling and label, including partial refunds
 const statusBadgeClass = (status: string) =>
@@ -169,11 +179,22 @@ function SalesContent() {
   const [successMessage, setSuccessMessage] = useState('')
 
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'voided' | 'refunded' | 'partially_refunded'>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'voided' | 'refunded' | 'partially_refunded' | 'refunds'>('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
+  // One control replaces the row of range buttons plus two date pickers. The
+  // native date input cannot host preset buttons, so the presets and the custom
+  // fields live together in a dropdown instead of competing beside it.
+  const [rangeOpen, setRangeOpen] = useState(false)
+  const [rangePreset, setRangePreset] = useState<
+    'today' | 'week' | 'month' | 'lastMonth' | 'year' | 'all' | 'custom'
+  >('all')
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [inventorySearch, setInventorySearch] = useState('')
+  // A USB scanner types wherever the cursor happens to be, so the product
+  // search must already hold focus or the first scan of a sale goes nowhere.
+  // Focused on load and returned there after every checkout.
+  const inventorySearchRef = useRef<HTMLInputElement | null>(null)
   // Camera scanning is Chrome/Edge only and needs HTTPS, so the button is
   // hidden where it cannot work rather than failing when tapped.
   const [scannerOpen, setScannerOpen] = useState(false)
@@ -200,7 +221,15 @@ function SalesContent() {
   const [emailModalError, setEmailModalError] = useState('')
   // Pagination for products table and discount for cart
   const [inventoryPage, setInventoryPage] = useState(1)
-  const [discount, setDiscount] = useState(0)
+  // Discount can be entered either as a peso amount or as a percentage of the
+  // subtotal. `discount` always holds the resolved PESO value, because that is
+  // what the total, the invoice and the stored sale all use - the percentage is
+  // only an input convenience and is converted immediately.
+  // Held as a STRING so the field can be genuinely empty. A numeric state
+  // renders "0", and typing then appends to it - "0123" - which cannot be
+  // cleared. The value is parsed only where it is used.
+  const [discountMode, setDiscountMode] = useState<'peso' | 'percent'>('peso')
+  const [discountInput, setDiscountInput] = useState('')
   const [showAllSalesModal, setShowAllSalesModal] = useState(false)
   const [showRefundConfirm, setShowRefundConfirm] = useState(false)
   const [refundReason, setRefundReason] = useState('')
@@ -442,7 +471,14 @@ function SalesContent() {
       .filter(({ transaction, categoryNames, searchIndex }) => {
         const matchesSearch = !searchTerm || searchIndex.includes(searchTerm)
 
-        const matchesStatus = statusFilter === 'all' ? true : transaction.status === statusFilter
+        // 'refunds' is a combined view: a partially refunded sale is still a
+        // refund, and staff looking for "what did we give back" want both.
+        const matchesStatus =
+          statusFilter === 'all'
+            ? true
+            : statusFilter === 'refunds'
+              ? transaction.status === 'refunded' || transaction.status === 'partially_refunded'
+              : transaction.status === statusFilter
 
         const matchesCategory =
           categoryFilter === 'all' ? true : categoryNames.includes(categoryFilter)
@@ -515,6 +551,18 @@ function SalesContent() {
     () => cart.reduce((sum, item) => sum + item.price * item.quantity, 0),
     [cart]
   )
+  // A percentage discount is resolved against the current subtotal, so adding an
+  // item after entering 10% keeps it at 10% rather than freezing the peso value.
+  // Capped at the subtotal so a total can never go negative.
+  const discount = Math.min(
+    cartSubtotal,
+    Math.max(
+      0,
+      discountMode === 'percent'
+        ? (cartSubtotal * (Number(discountInput) || 0)) / 100
+        : Number(discountInput) || 0
+    )
+  )
   const cartTotal = Math.max(0, cartSubtotal - discount)
   const isCompletedMode = completedDocument !== null
   const completedDocumentEmail = completedDocument?.customer.email.trim() ?? ''
@@ -546,6 +594,70 @@ function SalesContent() {
   }, [selectedTransaction])
 
   // ── Export the currently filtered sales as CSV (one row per line item) ────
+  // A range cannot run backwards.
+  //
+  // Picking a start after the current end, or an end before the current start,
+  // drags the other date along rather than rejecting the input. Silently
+  // allowing it would show an empty list with no explanation of why.
+  const setStartDateSafe = (value: string) => {
+    setStartDate(value)
+    setRangePreset('custom')
+    if (value && endDate && value > endDate) setEndDate(value)
+  }
+  const setEndDateSafe = (value: string) => {
+    setEndDate(value)
+    setRangePreset('custom')
+    if (value && startDate && value < startDate) setStartDate(value)
+  }
+
+  // "Jul 30 - Aug 6" reads better on a button than two ISO dates.
+  const shortDate = (iso: string) =>
+    iso
+      ? new Date(`${iso}T00:00:00`).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })
+      : 'any'
+
+  // Quick date ranges. One click sets both dates, which is the point: typing two
+  // dates to answer "what did we sell this month" was the friction the panel
+  // flagged as too many steps.
+  const applyRange = (preset: 'today' | 'week' | 'month' | 'lastMonth' | 'year' | 'all') => {
+    const now = new Date()
+    const iso = (d: Date) =>
+      new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+
+    setRangePreset(preset)
+    setRangeOpen(false)
+    if (preset === 'all') { setStartDate(''); setEndDate(''); return }
+
+    let from = iso(now)
+    let to = iso(now)
+    if (preset === 'week') {
+      // Monday start - a shop counts its week from Monday, and a Sunday start
+      // would push yesterday's takings into "last week" every Sunday.
+      const day = (now.getDay() + 6) % 7
+      from = iso(new Date(now.getFullYear(), now.getMonth(), now.getDate() - day))
+    } else if (preset === 'month') {
+      from = iso(new Date(now.getFullYear(), now.getMonth(), 1))
+    } else if (preset === 'lastMonth') {
+      from = iso(new Date(now.getFullYear(), now.getMonth() - 1, 1))
+      to = iso(new Date(now.getFullYear(), now.getMonth(), 0))
+    } else if (preset === 'year') {
+      from = iso(new Date(now.getFullYear(), 0, 1))
+    }
+    setStartDate(from)
+    setEndDate(to)
+  }
+
+  // Refund totals for the current filter selection. Derived from the same
+  // filtered list the table shows, so the figures always match what is on screen.
+  const refundSummary = useMemo(() => {
+    const rows = filteredTransactions.filter(
+      (t) => t.status === 'refunded' || t.status === 'partially_refunded'
+    )
+    const amount = rows.reduce((sum, t) => sum + (t.refundedAmount ?? 0), 0)
+    const full = rows.filter((t) => t.status === 'refunded').length
+    return { count: rows.length, amount, full, partial: rows.length - full }
+  }, [filteredTransactions])
+
   const exportSalesCsv = () => {
     const esc = (v: unknown) => {
       const str = String(v ?? '')
@@ -744,6 +856,8 @@ function SalesContent() {
 
       addToCart(payload.item)
       setInventorySearch('')
+      // Straight back to the box so the next item can be scanned immediately
+      inventorySearchRef.current?.focus()
       toast.success(`${payload.item.name} added.`)
       return true
     } catch {
@@ -996,9 +1110,12 @@ function SalesContent() {
   }
 
 
+  // Wide screens keep the fixed two-pane layout so the cart stays visible while
+  // scrolling products. On a phone the panes stack, so the page must grow and
+  // scroll normally - a locked height would clip the cart out of reach.
   return (
-    <main className="h-[calc(100vh-64px)] overflow-hidden bg-slate-50 flex flex-col">
-      <div className="mx-auto w-full max-w-[1400px] flex flex-col h-full px-4 pt-4 pb-3 gap-3">
+    <main className="flex min-h-screen flex-col bg-slate-50 xl:h-[calc(100vh-64px)] xl:overflow-hidden">
+      <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-3 px-3 pb-3 pt-4 sm:px-4 xl:h-full">
 
         {/* ── Header ── */}
         <div className="flex flex-wrap items-center justify-between gap-2 shrink-0">
@@ -1034,7 +1151,7 @@ function SalesContent() {
         ) : null}
 
         {/* ── Two-column layout — fills remaining viewport ── */}
-        <div className="grid grid-cols-1 xl:grid-cols-[1fr_370px] gap-3 flex-1 min-h-0 overflow-hidden">
+        <div className="grid grid-cols-1 gap-3 xl:min-h-0 xl:flex-1 xl:grid-cols-[1fr_370px] xl:overflow-hidden">
 
           {/* ══ LEFT COLUMN ══ */}
           <div className="flex flex-col gap-3 min-h-0 overflow-hidden">
@@ -1063,6 +1180,8 @@ function SalesContent() {
                       e.preventDefault()
                       void handleBarcodeScan(inventorySearch)
                     }}
+                    ref={inventorySearchRef}
+                    autoFocus
                     placeholder="Search products, or scan a barcode..."
                     className="w-full bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400"
                   />
@@ -1400,7 +1519,7 @@ function SalesContent() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => { setCart([]); setDiscount(0) }}
+                  onClick={() => { setCart([]); setDiscountInput(''); setDiscountMode('peso') }}
                   disabled={cart.length === 0 || isCompletedMode}
                   className="flex items-center gap-1 text-xs font-medium text-red-500 hover:text-red-600 disabled:opacity-40"
                 >
@@ -1449,13 +1568,42 @@ function SalesContent() {
                   <span className="font-medium">{currency(cartSubtotal)}</span>
                 </div>
                 <div className="flex items-center justify-between text-xs text-slate-600">
-                  <span>Discount</span>
+                  <span className="flex items-center gap-1.5">
+                    Discount
+                    <span className="inline-flex overflow-hidden rounded border border-slate-200">
+                      {(['peso', 'percent'] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => setDiscountMode(mode)}
+                          disabled={isCompletedMode}
+                          className={`px-1.5 py-0.5 text-[10px] font-semibold transition disabled:opacity-60 ${
+                            discountMode === mode
+                              ? 'bg-slate-800 text-white'
+                              : 'bg-white text-slate-500 hover:bg-slate-50'
+                          }`}
+                        >
+                          {mode === 'peso' ? '₱' : '%'}
+                        </button>
+                      ))}
+                    </span>
+                    {discountMode === 'percent' && discount > 0 && (
+                      <span className="text-[10px] text-slate-400">= {currency(discount)}</span>
+                    )}
+                  </span>
                   <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={discount}
-                    onChange={(e) => setDiscount(Math.max(0, Number(e.target.value)))}
+                    // type="text" with a numeric keypad, not type="number":
+                    // a number input rejects intermediate states like "12." and
+                    // reintroduces the leading-zero behaviour we are avoiding.
+                    type="text"
+                    inputMode="decimal"
+                    value={discountInput}
+                    onChange={(e) => {
+                      // Digits and one decimal point only; empty stays empty.
+                      const raw = e.target.value
+                      if (raw === '' || /^\d*\.?\d*$/.test(raw)) setDiscountInput(raw)
+                    }}
+                    placeholder="0"
                     disabled={isCompletedMode}
                     className="w-20 rounded border border-slate-200 px-2 py-1 text-right text-xs text-slate-700 focus:outline-none disabled:opacity-60"
                   />
@@ -1511,40 +1659,39 @@ function SalesContent() {
               </div>
             </div>
 
-            {/* Customer Information — walk-in: name only (optional). Reservation: full details required. */}
+            {/* Reservation details. Not shown for walk-in sales, which collect
+                nothing about the buyer. */}
+            {showReserveForm && (
             <div className="rounded-2xl border border-slate-200 bg-white shadow-sm shrink-0">
               <div className="border-b border-slate-100 px-4 py-3">
                 <div className="flex items-center gap-2">
                   <svg className="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                   </svg>
-                  <span className="text-sm font-semibold text-slate-900">
-                    {showReserveForm ? 'Reservation Details' : 'Customer'}
-                  </span>
-                  {showReserveForm && (
-                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700">Required</span>
-                  )}
+                  <span className="text-sm font-semibold text-slate-900">Reservation Details</span>
+                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700">Required</span>
                 </div>
               </div>
               <div className="px-4 py-3 space-y-2.5">
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-600">
-                    Name{' '}
-                    {showReserveForm
-                      ? <span className="font-semibold text-rose-500">*</span>
-                      : <span className="font-normal text-slate-400">(Optional — printed on receipt)</span>}
-                  </label>
-                  <input
-                    type="text"
-                    value={customerFullName}
-                    onChange={(e) => setCustomerFullName(e.target.value)}
-                    placeholder="Customer name"
-                    disabled={isCompletedMode}
-                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none disabled:opacity-60"
-                  />
-                </div>
+                {/* The name field belongs to reservations only. A walk-in buyer
+                    is asked for nothing: the sale needs no identity, and not
+                    collecting a name is a stronger privacy position than
+                    collecting one and choosing not to print it. */}
                 {showReserveForm && (
                   <>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-600">
+                        Name <span className="font-semibold text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={customerFullName}
+                        onChange={(e) => setCustomerFullName(e.target.value)}
+                        placeholder="Customer name"
+                        disabled={isCompletedMode}
+                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none disabled:opacity-60"
+                      />
+                    </div>
                     <div>
                       <label className="mb-1 block text-xs font-medium text-slate-600">Phone <span className="font-semibold text-rose-500">*</span></label>
                       <input
@@ -1588,6 +1735,7 @@ function SalesContent() {
                 )}
               </div>
             </div>
+            )}
 
 
 
@@ -1824,8 +1972,8 @@ function SalesContent() {
       {/* ── View all sales modal ── */}
       {showAllSalesModal ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
-            <div className="border-b border-slate-200 p-4 shrink-0 space-y-3">
+          <div className="flex max-h-[85vh] min-h-[420px] w-full max-w-4xl flex-col rounded-2xl bg-white shadow-xl">
+            <div className="relative z-20 rounded-t-2xl border-b border-slate-200 bg-white p-4 shrink-0 space-y-3">
               <div className="flex items-center justify-between">
                 <h2 className="font-semibold text-slate-900">All Sales</h2>
                 <div className="flex items-center gap-2">
@@ -1860,20 +2008,108 @@ function SalesContent() {
                     </button>
                   )}
                 </div>
-                <select
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value as 'all' | 'completed' | 'voided' | 'refunded' | 'partially_refunded')}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:outline-none"
-                >
-                  <option value="all">All Status</option>
-                  <option value="completed">Completed</option>
-                  <option value="refunded">Refunded</option>
-                  <option value="partially_refunded">Partially Refunded</option>
-                  <option value="voided">Voided</option>
-                </select>
+                <div className="inline-flex overflow-hidden rounded-lg border border-slate-200">
+                  {([
+                    { key: 'all', label: 'All' },
+                    { key: 'completed', label: 'Completed' },
+                    { key: 'refunds', label: 'Refunds' },
+                  ] as const).map((tab) => (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      onClick={() => setStatusFilter(tab.key)}
+                      className={`px-3 py-1.5 text-sm font-medium transition ${
+                        statusFilter === tab.key
+                          ? 'bg-slate-800 text-white'
+                          : 'bg-white text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                <span className="mx-1 h-5 w-px bg-slate-200" />
+
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setRangeOpen((open) => !open)}
+                    className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:border-slate-400"
+                  >
+                    <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    {rangePreset === 'custom'
+                      ? `${shortDate(startDate)} to ${shortDate(endDate)}`
+                      : DATE_RANGES.find((r) => r.key === rangePreset)?.label ?? 'All Time'}
+                    <svg className="h-3 w-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+
+                  {rangeOpen && (
+                    <>
+                      {/* Click anywhere else to dismiss. */}
+                      <div className="fixed inset-0 z-10" onClick={() => setRangeOpen(false)} />
+                      <div className="absolute right-0 z-20 mt-1 w-60 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg">
+                        {DATE_RANGES.map((r) => (
+                          <button
+                            key={r.key}
+                            type="button"
+                            onClick={() => applyRange(r.key)}
+                            className={`block w-full rounded-lg px-3 py-1.5 text-left text-sm transition ${
+                              rangePreset === r.key
+                                ? 'bg-slate-800 text-white'
+                                : 'text-slate-700 hover:bg-slate-50'
+                            }`}
+                          >
+                            {r.label}
+                          </button>
+                        ))}
+
+                        <div className="mt-1.5 border-t border-slate-100 px-2 pb-1 pt-2">
+                          <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                            Custom range
+                          </p>
+                          <div className="space-y-1.5">
+                            <input
+                              type="date"
+                              value={startDate}
+                              max={endDate || undefined}
+                              onChange={(e) => setStartDateSafe(e.target.value)}
+                              className="w-full rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 focus:outline-none"
+                            />
+                            <input
+                              type="date"
+                              value={endDate}
+                              min={startDate || undefined}
+                              onChange={(e) => setEndDateSafe(e.target.value)}
+                              className="w-full rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
-            <div className="overflow-y-auto flex-1">
+            {statusFilter === 'refunds' && (
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-1 border-b border-amber-100 bg-amber-50 px-4 py-2.5 text-xs">
+                <span className="text-amber-900">
+                  <span className="font-semibold">{refundSummary.count}</span> refund
+                  {refundSummary.count === 1 ? '' : 's'} in this period
+                </span>
+                <span className="text-amber-900">
+                  Total returned <span className="font-semibold">{currency(refundSummary.amount)}</span>
+                </span>
+                <span className="text-amber-800/80">
+                  {refundSummary.full} full · {refundSummary.partial} partial
+                </span>
+              </div>
+            )}
+            <div className="flex-1 overflow-y-auto rounded-b-2xl">
               <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-slate-50 text-xs font-medium text-slate-500">
                   <tr>
@@ -1887,6 +2123,16 @@ function SalesContent() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
+                  {filteredTransactions.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-12 text-center">
+                        <p className="text-sm text-slate-500">No sales match these filters.</p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          Try a wider date range, or select All Time.
+                        </p>
+                      </td>
+                    </tr>
+                  )}
                   {filteredTransactions.map((tx) => (
                     <tr key={tx.id} className="hover:bg-slate-50">
                       <td className="px-4 py-3 font-medium text-slate-800">{tx.receiptNumber || tx.id.slice(0, 12)}</td>

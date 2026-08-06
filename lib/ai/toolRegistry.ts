@@ -20,9 +20,13 @@ import { getActiveReservations, getOverdueReservations, getPendingReservations }
 import { getTodaySales, getRecentSales, getTopCategories, getTrendData, getFrequentCustomers, getBasketAnalysis, getDashboardSummary, getRecommendations } from './tools/sales'
 import { getStockLogs } from './tools/stockLogs'
 import { predictSales } from './tools/prediction'
-import { getAllCustomers, getCustomerHistory } from './tools/customers'
 import { getAllShipments, getActiveShipments, getDeliveredShipments, getPendingShipments } from './tools/containers'
 
+// Customer lookup tools (lib/ai/tools/customers.ts) are intentionally NOT
+// registered. Browsing customers by name is a privacy exposure the shop does not
+// need: walk-in sales capture no details at all, and reservation contacts are
+// visible on the Reservations screen where they are actually used.
+//
 // Web trend search (lib/ai/tools/webSearch.ts) is intentionally NOT registered.
 // It returned general Philippine retail trends rather than results filtered to
 // this shop's product categories, so answers drifted away from actual stock.
@@ -146,24 +150,6 @@ export const TOOL_DEFINITIONS = [
     parameters: { type: 'object', properties: {}, required: [] },
   },
 
-  // ── Customers ──────────────────────────────────────────────────────────────
-  {
-    name: 'getAllCustomers',
-    description: 'Get a list of all customers derived from sales and reservation records, including total spent and order count.',
-    parameters: { type: 'object', properties: {}, required: [] },
-  },
-  {
-    name: 'getCustomerHistory',
-    description: 'Get the full purchase and reservation history for a specific customer by name or email.',
-    parameters: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'The customer name or email to look up' },
-      },
-      required: ['name'],
-    },
-  },
-
   // ── Shipments / Containers ─────────────────────────────────────────────────
   {
     name: 'getAllShipments',
@@ -225,9 +211,6 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
     case 'getActiveReservations':   return getActiveReservations()
     case 'getOverdueReservations':  return getOverdueReservations()
     case 'getPendingReservations':  return getPendingReservations()
-    // Customers
-    case 'getAllCustomers':         return getAllCustomers()
-    case 'getCustomerHistory':      return getCustomerHistory(String(args.name ?? ''))
     // Shipments
     case 'getAllShipments':         return getAllShipments()
     case 'getActiveShipments':      return getActiveShipments()

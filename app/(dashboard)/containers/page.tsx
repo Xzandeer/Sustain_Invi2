@@ -736,6 +736,47 @@ function ContainersContent() {
     return { totalCost, totalRevenue, totalProfit: totalRevenue - totalCost }
   }, [containers, inventory, soldQtyMap])
 
+  // Performance per SUPPLIER, not just per shipment.
+  //
+  // An individual shipment is a record of what happened. A supplier is a
+  // decision: it answers "who should we buy from next time", which is the one
+  // question the shop's paper records can never answer no matter how carefully
+  // they are kept.
+  //
+  // Capital still tied up is tracked alongside profit because a supplier can
+  // look profitable while leaving stock sitting unsold for months.
+  const supplierStats = useMemo(() => {
+    const bySupplier: Record<
+      string,
+      { supplier: string; shipments: number; cost: number; revenue: number; unsoldValue: number }
+    > = {}
+
+    for (const c of containers) {
+      const name = c.supplier.trim() || 'Unspecified'
+      if (!bySupplier[name]) {
+        bySupplier[name] = { supplier: name, shipments: 0, cost: 0, revenue: 0, unsoldValue: 0 }
+      }
+      const row = bySupplier[name]
+      row.shipments += 1
+      row.cost += c.purchaseCost
+
+      for (const item of inventory.filter((i) => i.containerId === c.id)) {
+        row.revenue += (soldQtyMap[item.id] ?? 0) * toNumber(item.price)
+        // Retail value of what has not sold yet - the capital still on the shelf
+        row.unsoldValue += toNumber(item.quantity) * toNumber(item.price)
+      }
+    }
+
+    return Object.values(bySupplier)
+      .map((r) => ({
+        ...r,
+        profit: r.revenue - r.cost,
+        roi: r.cost > 0 ? ((r.revenue - r.cost) / r.cost) * 100 : 0,
+      }))
+      // Best return first, so the answer to "who should we buy from" is the top row
+      .sort((a, b) => b.roi - a.roi)
+  }, [containers, inventory, soldQtyMap])
+
   // Handlers
   const handleSaveContainer = async (values: Omit<ContainerDoc, 'id' | 'createdAt'>) => {
     setSavingContainer(true)
@@ -819,6 +860,70 @@ function ContainersContent() {
           </div>
         ))}
       </div>
+
+      {/* Supplier performance.
+          The shipment cards below answer "did this container make money".
+          This answers "who should we buy from next time", which is the decision
+          the shop actually has to make each time it restocks. */}
+      {supplierStats.length > 0 && (
+        <div className="mb-6 rounded-2xl bg-white p-5 shadow-sm">
+          <div className="mb-3 flex items-baseline justify-between">
+            <h2 className="text-sm font-semibold text-gray-800">Supplier Performance</h2>
+            <p className="text-xs text-gray-400">Ranked by return on investment</p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b border-gray-100 text-xs font-medium uppercase tracking-wide text-gray-400">
+                <tr>
+                  <th className="py-2 text-left">Supplier</th>
+                  <th className="py-2 text-right">Shipments</th>
+                  <th className="py-2 text-right">Invested</th>
+                  <th className="py-2 text-right">Revenue</th>
+                  <th className="py-2 text-right">Profit</th>
+                  <th className="py-2 text-right">ROI</th>
+                  <th className="py-2 text-right">Still Unsold</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {supplierStats.map((row, i) => (
+                  <tr key={row.supplier} className={i === 0 ? 'bg-green-50/40' : ''}>
+                    <td className="py-2.5 font-medium text-gray-800">
+                      {row.supplier}
+                      {i === 0 && supplierStats.length > 1 && (
+                        <span className="ml-2 rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700">
+                          Best return
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-2.5 text-right text-gray-600">{row.shipments}</td>
+                    <td className="py-2.5 text-right text-gray-600">{fmt(row.cost)}</td>
+                    <td className="py-2.5 text-right text-gray-600">{fmt(row.revenue)}</td>
+                    <td className={`py-2.5 text-right font-medium ${row.profit >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                      {(row.profit >= 0 ? '+' : '') + fmt(row.profit)}
+                    </td>
+                    <td className={`py-2.5 text-right font-semibold ${row.roi >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                      {row.roi >= 0 ? '+' : ''}{row.roi.toFixed(1)}%
+                    </td>
+                    {/* Capital still on the shelf. A supplier can show a profit
+                        while leaving stock unsold for months. */}
+                    <td className="py-2.5 text-right text-amber-600">{fmt(row.unsoldValue)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {supplierStats.length > 1 && (
+            <p className="mt-3 text-xs text-gray-500">
+              {supplierStats[0].supplier} returns{' '}
+              <span className="font-semibold text-gray-700">
+                {(supplierStats[0].roi - supplierStats[supplierStats.length - 1].roi).toFixed(1)} points
+              </span>{' '}
+              more than {supplierStats[supplierStats.length - 1].supplier} across{' '}
+              {supplierStats[0].shipments} shipment{supplierStats[0].shipments === 1 ? '' : 's'}.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Filters */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
