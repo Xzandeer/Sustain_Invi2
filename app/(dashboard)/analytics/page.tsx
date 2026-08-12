@@ -31,7 +31,7 @@ import {
   Legend,
 } from 'chart.js'
 import { Line, Doughnut } from 'react-chartjs-2'
-import { collection, getDocs } from 'firebase/firestore'
+import { collection, getDocs, orderBy, query, Timestamp, where } from 'firebase/firestore'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { db } from '@/lib/firebase'
 import AnalyticsTable from '@/components/analytics/AnalyticsTable'
@@ -656,6 +656,8 @@ function AnalyticsContent() {
   const [customStartDate, setCustomStartDate] = useState('')
   const [customEndDate, setCustomEndDate] = useState('')
   const [dateRangeError, setDateRangeError] = useState('')
+  const [dataError, setDataError] = useState('')
+  const [salesLoading, setSalesLoading] = useState(true)
   const [selectedCategory, setSelectedCategory] = useState<string>('All Categories')
   const [selectedCondition, setSelectedCondition] = useState<SaleItemCondition | 'All Conditions'>('All Conditions')
   const [openModal, setOpenModal] = useState<AnalyticsModalType>(null)
@@ -663,17 +665,20 @@ function AnalyticsContent() {
   const [forecastLoading, setForecastLoading] = useState(false)
   const [forecastError, setForecastError] = useState<string | null>(null)
 
-  // ── Load everything once on mount ─────────────────────────────────────────
+  // ── Load reference data once on mount ─────────────────────────────────────
   // Read once instead of using live listeners. Analytics does not need
-  // real-time updates, and four open listeners on large collections is slow.
+  // real-time updates, and open listeners on large collections are slow.
+  //
+  // Sales are NOT loaded here. That collection is the only one that grows with
+  // every transaction, so it is fetched separately and bounded to the selected
+  // date range - see the effect below activeRange.
 
   useEffect(() => {
     let cancelled = false
     async function loadData() {
       try {
-        const [catSnap, salesSnap, invSnap, resSnap] = await Promise.all([
+        const [catSnap, invSnap, resSnap] = await Promise.all([
           getDocs(collection(db, 'categories')),
-          getDocs(collection(db, 'sales')),
           getDocs(collection(db, 'inventory')),
           getDocs(collection(db, 'reservations')),
         ])
@@ -689,37 +694,6 @@ function AnalyticsContent() {
           })
           .sort((a, b) => a.name.localeCompare(b.name))
         setCategories(catRows)
-
-        const salesRows: SaleRecord[] = salesSnap.docs.map((saleDoc) => {
-          const data = saleDoc.data() as Record<string, unknown>
-          return {
-            id: saleDoc.id,
-            items: Array.isArray(data.items)
-              ? data.items
-                  .map((item) => {
-                    const saleItem = item as Record<string, unknown>
-                    const name =
-                      typeof saleItem.name === 'string' && saleItem.name.trim()
-                        ? saleItem.name
-                        : 'Unnamed Item'
-                    return {
-                      name,
-                      quantity: Math.max(0, toNumber(saleItem.quantity, 0)),
-                      price: Math.max(0, toNumber(saleItem.price, 0)),
-                      categoryId:
-                        typeof saleItem.categoryId === 'string' && saleItem.categoryId.trim()
-                          ? saleItem.categoryId
-                          : '',
-                      condition: (saleItem.condition === 'Refurbished' ? 'Refurbished' : 'New') as SaleItemCondition,
-                    }
-                  })
-                  .filter((item) => item.quantity > 0 || item.price > 0)
-              : [],
-            totalAmount: Math.max(0, toNumber(data.totalAmount, toNumber(data.total, toNumber(data.amount, 0)))),
-            createdAt: toDate(data.createdAt),
-          }
-        })
-        setSales(salesRows)
 
         const invRows: InventoryRecord[] = invSnap.docs
           .map((itemDoc) => {
@@ -751,7 +725,11 @@ function AnalyticsContent() {
           return { id: resDoc.id, status, createdAt: toDate(data.createdAt) }
         })
         setReservations(resRows)
-      } catch (_) {}
+      } catch (loadError) {
+        if (cancelled) return
+        console.error('[analytics] Failed to load reference data:', loadError)
+        setDataError('Could not load analytics data. Check your connection and reload the page.')
+      }
     }
     loadData()
     return () => { cancelled = true }
@@ -849,6 +827,80 @@ function AnalyticsContent() {
       end: endOfDay(parsedEnd),
     }
   }, [customEndDate, customStartDate, timeRangePreset])
+
+  // ── Load sales for the selected range only ────────────────────────────────
+  // Previously this read the entire sales collection on every page load. That
+  // cost one Firestore read per sale ever recorded, so the cost of opening
+  // Analytics grew forever - and it is what exhausted the daily read quota
+  // during the TBI assessment.
+  //
+  // The query is bounded by createdAt instead, so opening the page costs only
+  // the sales inside the chosen range. Changing the range refetches. Every sale
+  // document writes createdAt as a Firestore Timestamp, so the comparison is
+  // safe for both live and seeded data.
+  const rangeStartMs = activeRange.start.getTime()
+  const rangeEndMs = activeRange.end.getTime()
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadSales() {
+      setSalesLoading(true)
+      try {
+        const salesSnap = await getDocs(
+          query(
+            collection(db, 'sales'),
+            where('createdAt', '>=', Timestamp.fromMillis(rangeStartMs)),
+            where('createdAt', '<=', Timestamp.fromMillis(rangeEndMs)),
+            orderBy('createdAt', 'asc')
+          )
+        )
+        if (cancelled) return
+
+        const salesRows: SaleRecord[] = salesSnap.docs.map((saleDoc) => {
+          const data = saleDoc.data() as Record<string, unknown>
+          return {
+            id: saleDoc.id,
+            items: Array.isArray(data.items)
+              ? data.items
+                  .map((item) => {
+                    const saleItem = item as Record<string, unknown>
+                    const name =
+                      typeof saleItem.name === 'string' && saleItem.name.trim()
+                        ? saleItem.name
+                        : 'Unnamed Item'
+                    return {
+                      name,
+                      quantity: Math.max(0, toNumber(saleItem.quantity, 0)),
+                      price: Math.max(0, toNumber(saleItem.price, 0)),
+                      categoryId:
+                        typeof saleItem.categoryId === 'string' && saleItem.categoryId.trim()
+                          ? saleItem.categoryId
+                          : '',
+                      condition: (saleItem.condition === 'Refurbished' ? 'Refurbished' : 'New') as SaleItemCondition,
+                    }
+                  })
+                  .filter((item) => item.quantity > 0 || item.price > 0)
+              : [],
+            totalAmount: Math.max(0, toNumber(data.totalAmount, toNumber(data.total, toNumber(data.amount, 0)))),
+            createdAt: toDate(data.createdAt),
+          }
+        })
+        setSales(salesRows)
+        setDataError('')
+      } catch (salesError) {
+        if (cancelled) return
+        console.error('[analytics] Failed to load sales:', salesError)
+        setSales([])
+        setDataError('Could not load sales for this period. Check your connection and try again.')
+      } finally {
+        if (!cancelled) setSalesLoading(false)
+      }
+    }
+
+    loadSales()
+    return () => { cancelled = true }
+  }, [rangeStartMs, rangeEndMs])
 
   useEffect(() => {
     if (timeRangePreset !== 'custom') return
@@ -1428,6 +1480,10 @@ function AnalyticsContent() {
               {timeRangePreset === 'custom' && dateRangeError && (
                 <p className="text-xs text-red-500">{dateRangeError}</p>
               )}
+              {/* Changing the range refetches, so say when figures are still moving. */}
+              {salesLoading && !dataError && (
+                <p className="text-xs text-slate-400">Loading sales…</p>
+              )}
               <button
                 type="button"
                 onClick={() => { setTimeRangePreset('this-month'); setCustomStartDate(''); setCustomEndDate(''); setSelectedCategory('All Categories'); setSelectedCondition('All Conditions') }}
@@ -1438,6 +1494,14 @@ function AnalyticsContent() {
             </div>
           </div>
         </div>
+
+        {/* A failed read used to be swallowed silently, so the page showed zeroes
+            that looked like real figures. Say so instead. */}
+        {dataError && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {dataError}
+          </div>
+        )}
 
         {/* ── KPI CARDS ────────────────────────────────────────────────────── */}
         <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">

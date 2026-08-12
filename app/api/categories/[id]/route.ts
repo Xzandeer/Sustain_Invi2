@@ -9,17 +9,24 @@
 import { NextResponse } from 'next/server'
 import { collection, deleteDoc, doc, getDoc, getDocs, limit, query, where } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { requireAdmin } from '@/lib/server/authorize'
 
 interface RouteContext {
   params: Promise<{ id: string }>
 }
 
-export async function DELETE(_: Request, context: RouteContext) {
+export async function DELETE(req: Request, context: RouteContext) {
   try {
     const { id } = await context.params
     if (!id) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
     }
+
+    // Administrator only, matching the create route. The uid travels in the
+    // request body rather than the URL so it stays out of server access logs.
+    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
+    const denied = await requireAdmin(body.requestedByUid)
+    if (denied) return denied
 
     const categoryRef = doc(db, 'categories', id)
     const categorySnapshot = await getDoc(categoryRef)

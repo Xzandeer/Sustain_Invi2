@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { collection, doc, getDoc, getDocs, orderBy, query, limit } from 'firebase/firestore'
+import { collection, doc, getDoc, getDocs, orderBy, query, limit, Timestamp, where } from 'firebase/firestore'
 import { onAuthStateChanged } from 'firebase/auth'
 import {
   ChevronRight, TrendingUp, TrendingDown,
@@ -145,9 +145,22 @@ function DashboardContent() {
     let cancelled = false
     async function loadData() {
       try {
+        // Every figure on this page covers the last 30 days and compares it
+        // against the 30 before that, so 60 days is all the sales data it can
+        // possibly use. Reading the whole collection cost one Firestore read
+        // per sale ever recorded and grew without limit.
+        const sixtyDayCutoff = new Date()
+        sixtyDayCutoff.setDate(sixtyDayCutoff.getDate() - 60)
+
         const [invSnap, salesSnap, resSnap, logsSnap] = await Promise.all([
           getDocs(collection(db, 'inventory')),
-          getDocs(collection(db, 'sales')),
+          getDocs(
+            query(
+              collection(db, 'sales'),
+              where('createdAt', '>=', Timestamp.fromDate(sixtyDayCutoff)),
+              orderBy('createdAt', 'desc')
+            )
+          ),
           getDocs(query(collection(db, 'reservations'), orderBy('createdAt', 'desc'))),
           getDocs(query(collection(db, 'stockLogs'), orderBy('createdAt', 'desc'), limit(20))),
         ])
@@ -218,7 +231,9 @@ function DashboardContent() {
     const d = toDate(s.createdAt); return d && d >= sixtyDaysAgo && d < thirtyDaysAgo
   }), [completedSales, sixtyDaysAgo, thirtyDaysAgo])
 
-  const totalRevenue   = useMemo(() => completedSales.reduce((s, x) => s + toNum(x.totalAmount), 0), [completedSales])
+  // Revenue is the last 30 days, matching the sale count beside it. It used to
+  // sum every sale ever made while the card next to it counted only 30 days,
+  // so the two figures described different periods under the same subtitle.
   const recentRevenue  = useMemo(() => recentSales.reduce((s, x) => s + toNum(x.totalAmount), 0), [recentSales])
   const prevRevenue    = useMemo(() => previousSales.reduce((s, x) => s + toNum(x.totalAmount), 0), [previousSales])
   const revenueChange  = prevRevenue > 0 ? ((recentRevenue - prevRevenue) / prevRevenue) * 100 : null
@@ -317,20 +332,20 @@ function DashboardContent() {
 
         <div className="grid grid-cols-2 gap-3 xl:grid-cols-4 shrink-0">
           <KpiCard
-            title="Total Revenue"
-            value={fmt(totalRevenue)}
+            title="Revenue (30 days)"
+            value={fmt(recentRevenue)}
             change={revenueChange}
-            subtitle="vs last 30 days"
+            subtitle="vs previous 30 days"
             spark={<Sparkline values={revenueSparkline} stroke="#3b82f6" fill="rgba(59,130,246,0.1)" />}
             loading={loading}
             iconBg="bg-blue-100"
             icon={<svg className="h-5 w-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
           />
           <KpiCard
-            title="Total Sales"
+            title="Sales (30 days)"
             value={String(recentSaleCount)}
             change={saleCountChange}
-            subtitle="vs last 30 days"
+            subtitle="vs previous 30 days"
             spark={<Sparkline values={salesSparkline} stroke="#10b981" fill="rgba(16,185,129,0.1)" />}
             loading={loading}
             iconBg="bg-emerald-100"
@@ -418,7 +433,7 @@ function DashboardContent() {
             <QuickAction href="/sales"          icon={<ShoppingCart className="h-5 w-5" />} label="New Sale"    desc="Process a transaction" iconBg="bg-blue-100"    iconColor="text-blue-600"    hoverBg="hover:bg-blue-50" />
             <QuickAction href="/inventory"      icon={<PackagePlus className="h-5 w-5" />}  label="Add Item"    desc="Add to inventory"      iconBg="bg-emerald-100" iconColor="text-emerald-600" hoverBg="hover:bg-emerald-50" />
             <QuickAction href="/reservations"   icon={<Calendar className="h-5 w-5" />}     label="Reserve"     desc="New reservation"       iconBg="bg-amber-100"   iconColor="text-amber-600"   hoverBg="hover:bg-amber-50" />
-            <QuickAction href="/customers"      icon={<UserCheck className="h-5 w-5" />}    label="Customers"   desc="View customers"        iconBg="bg-pink-100"    iconColor="text-pink-600"    hoverBg="hover:bg-pink-50" />
+            <QuickAction href="/containers"     icon={<UserCheck className="h-5 w-5" />}    label="Shipments"   desc="Supplier deliveries"   iconBg="bg-pink-100"    iconColor="text-pink-600"    hoverBg="hover:bg-pink-50" />
             <QuickAction href="/analytics"      icon={<BarChart3 className="h-5 w-5" />}    label="Analytics"   desc="Sales & trends"        iconBg="bg-violet-100"  iconColor="text-violet-600"  hoverBg="hover:bg-violet-50" />
             <QuickAction href="/inventory/logs" icon={<ClipboardList className="h-5 w-5" />} label="Stock Logs" desc="Audit trail"            iconBg="bg-gray-100"    iconColor="text-gray-500"    hoverBg="hover:bg-gray-50" />
           </div>

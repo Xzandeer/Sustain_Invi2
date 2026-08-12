@@ -514,7 +514,10 @@ function InventoryContent() {
       const response = await fetch('/api/categories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim() }),
+        body: JSON.stringify({
+          name: name.trim(),
+          requestedByUid: auth.currentUser?.uid ?? '',
+        }),
       })
       const payload = (await response.json()) as { error?: string }
       if (!response.ok) {
@@ -535,7 +538,11 @@ function InventoryContent() {
     setDeletingCategoryId(categoryId)
     setError('')
     try {
-      const response = await fetch(`/api/categories/${categoryId}`, { method: 'DELETE' })
+      const response = await fetch(`/api/categories/${categoryId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestedByUid: auth.currentUser?.uid ?? '' }),
+      })
       const payload = (await response.json()) as { error?: string }
       if (!response.ok) {
         throw new Error(payload.error || 'Failed to delete category.')

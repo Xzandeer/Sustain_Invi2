@@ -9,9 +9,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { addDoc, collection, getDocs, limit, orderBy, query, where } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { requireAdmin } from '@/lib/server/authorize'
 
 interface CategoryPayload {
   name?: unknown
+  requestedByUid?: unknown
 }
 
 export async function GET() {
@@ -33,6 +35,13 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as CategoryPayload
+
+    // Categories are store-wide structure, not day-to-day data - the inventory
+    // page already restricts the control to administrators, and this enforces
+    // the same rule on the server.
+    const denied = await requireAdmin(body.requestedByUid)
+    if (denied) return denied
+
     const name = typeof body.name === 'string' ? body.name.trim() : ''
     if (!name) {
       return NextResponse.json({ error: 'Category name is required.' }, { status: 400 })

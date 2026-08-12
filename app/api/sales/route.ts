@@ -1,6 +1,17 @@
 // Sales API endpoint - POST to create sales, GET to list sales
 import { NextRequest, NextResponse } from 'next/server'
-import { collection, doc, getDocs, query, runTransaction, serverTimestamp, addDoc } from 'firebase/firestore'
+import {
+  collection,
+  doc,
+  getDocs,
+  query,
+  QueryConstraint,
+  runTransaction,
+  serverTimestamp,
+  Timestamp,
+  where,
+  addDoc,
+} from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import {
   createStockLog,
@@ -8,6 +19,7 @@ import {
   getProcessedByInfo,
 } from '@/lib/server/inventory'
 import { createTransactionNumber } from '@/lib/server/transactionNumbers'
+import { requireActiveUser } from '@/lib/server/authorize'
 import { getStoreSettings } from '@/lib/server/storeSettings'
 import { parseDateRange, toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import {
@@ -62,8 +74,20 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: range.error }, { status: 400 })
     }
 
-    // Step 3: Fetch all sales from database
-    const snapshot = await getDocs(collection(db, 'sales'))
+    // Step 3: Fetch sales from database
+    //
+    // When a date range was supplied, push it into the query instead of reading
+    // the whole collection and discarding most of it in memory. Every sale
+    // document stores createdAt as a Firestore Timestamp, so the comparison is
+    // reliable. Without a range this still reads everything - the caller asked
+    // for everything.
+    const constraints: QueryConstraint[] = []
+    if (range.start) constraints.push(where('createdAt', '>=', Timestamp.fromDate(range.start)))
+    if (range.end) constraints.push(where('createdAt', '<=', Timestamp.fromDate(range.end)))
+
+    const snapshot = await getDocs(
+      constraints.length ? query(collection(db, 'sales'), ...constraints) : collection(db, 'sales')
+    )
 
     let records: Array<Record<string, unknown> & { id: string }> = snapshot.docs.map((saleDoc) => ({
       ...(saleDoc.data() as Record<string, unknown>),
@@ -105,6 +129,17 @@ export async function POST(req: NextRequest) {
   try {
     // Step 1: Parse request body
     const body = (await req.json()) as SalesPayload
+
+    // This route deducts stock and issues a numbered invoice, so it must not be
+    // reachable by an anonymous caller. There is no permission to check - every
+    // employee sells - only that the account exists and is still enabled.
+    const uid =
+      body.processedBy && typeof body.processedBy === 'object'
+        ? (body.processedBy as Record<string, unknown>).uid
+        : undefined
+    const denied = await requireActiveUser(uid)
+    if (denied) return denied
+
     const customerDetails = parseCustomerDetails(body.customerDetails)
     const processedBy = await getProcessedByInfo(body.processedBy)
     const reduceQuantity = body.reduceQuantity !== false

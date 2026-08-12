@@ -93,6 +93,35 @@ export async function requireAdmin(uid: unknown): Promise<NextResponse | null> {
 }
 
 /**
+ * Guard for routes that any signed-in employee may use, but the public may not.
+ *
+ * Recording a sale is the case this exists for. Every staff member does it, so
+ * there is no permission to check — but the route writes to inventory and
+ * creates a numbered invoice, so it must not be reachable by an anonymous
+ * caller. This confirms the account exists and has not been disabled.
+ */
+export async function requireActiveUser(uid: unknown): Promise<NextResponse | null> {
+  const id = typeof uid === 'string' && uid.trim() ? uid.trim() : ''
+  if (!id) {
+    return NextResponse.json({ error: 'You must be signed in.' }, { status: 401 })
+  }
+
+  try {
+    const snap = await getDoc(doc(db, 'users', id))
+    if (!snap.exists()) {
+      return NextResponse.json({ error: 'User account not found.' }, { status: 403 })
+    }
+    if ((snap.data() as Record<string, unknown>).isDisabled === true) {
+      return NextResponse.json({ error: 'This account has been disabled.' }, { status: 403 })
+    }
+    return null
+  } catch {
+    // Fail closed - if the account cannot be verified, deny.
+    return NextResponse.json({ error: 'Unable to verify your account.' }, { status: 403 })
+  }
+}
+
+/**
  * True when the users collection contains no administrator.
  *
  * Used only by account creation, so a brand new database can be bootstrapped:
