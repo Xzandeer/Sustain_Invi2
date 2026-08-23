@@ -142,8 +142,18 @@ export const openLabelPrintWindow = (
 </html>`
 
   const printWindow = window.open('', '_blank', 'width=420,height=640')
-  if (printWindow) {
-    printWindow.document.write(html)
-    printWindow.document.close()
+
+  // A blocked popup used to fail silently - the button appeared to do nothing,
+  // which is indistinguishable from a broken feature. Say what happened.
+  if (!printWindow) {
+    window.alert(
+      'The label window was blocked by your browser.\n\n' +
+        'Look for the blocked-popup icon at the right of the address bar, ' +
+        'choose "Always allow pop-ups from this site", then print again.'
+    )
+    return
   }
+
+  printWindow.document.write(html)
+  printWindow.document.close()
 }
