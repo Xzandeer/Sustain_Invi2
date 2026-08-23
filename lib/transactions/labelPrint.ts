@@ -24,9 +24,18 @@ export interface LabelItem {
 }
 
 // Printable width is narrower than the roll - thermal heads leave a margin.
+//
+// barW is the width of one barcode module in CSS pixels, and it is the single
+// most important number here. A thermal head prints in whole dots, so a module
+// that lands on a fraction of a dot gets dithered into grey - which is exactly
+// what makes bars look faint and merge together. Whole pixels keep every bar
+// solid black.
+//
+// A six-digit CODE128 is about 68 modules wide. At barW 2 that is roughly 36mm,
+// which fits a 58mm roll with room for the quiet zone either side.
 const PAPER = {
-  58: { roll: '58mm', content: '50mm', name: 8, meta: 7, barH: 26, code: 8 },
-  80: { roll: '80mm', content: '72mm', name: 10, meta: 8, barH: 32, code: 9 },
+  58: { roll: '58mm', content: '50mm', name: 8, meta: 7, barW: 2, barH: 45, code: 12 },
+  80: { roll: '80mm', content: '72mm', name: 10, meta: 8, barW: 3, barH: 55, code: 14 },
 } as const
 
 const peso = (value: number) =>
@@ -95,7 +104,17 @@ export const openLabelPrintWindow = (
       font-size: ${paper.meta}px;
       margin-bottom: 1mm;
     }
-    .bars { width: 100%; height: ${paper.barH}px; }
+    /* No width or height here on purpose.
+       JsBarcode sets the SVG's own size from the module width below. Forcing
+       width:100% stretched that size to fill the label, so bars no longer
+       landed on whole printer dots and the printer dithered them into grey.
+       That is what made the barcode look faint and cramped. */
+    .bars {
+      display: block;
+      margin: 0 auto;
+      /* Stops the browser anti-aliasing bar edges into grey pixels. */
+      shape-rendering: crispEdges;
+    }
 
     @media print {
       /* Thermal printing is pure black or white - grey is dithered into dots,
@@ -123,9 +142,16 @@ export const openLabelPrintWindow = (
           format: 'CODE128',
           displayValue: true,
           fontSize: ${paper.code},
-          textMargin: 1,
-          margin: 0,
+          textMargin: 2,
+          // Whole-pixel module width - see the note on barW above.
+          width: ${paper.barW},
           height: ${paper.barH},
+          // The quiet zone. A scanner needs clear space either side of the bars
+          // to find where the code starts; margin 0 removed it entirely, which
+          // alone is enough to make a barcode unreadable.
+          margin: 12,
+          background: '#ffffff',
+          lineColor: '#000000',
         });
       } catch (e) {
         document.body.insertAdjacentHTML(
