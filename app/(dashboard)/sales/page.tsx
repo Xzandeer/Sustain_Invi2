@@ -854,11 +854,16 @@ function SalesContent() {
         return true
       }
 
-      addToCart(payload.item)
+      const refusal = addToCart(payload.item)
       setInventorySearch('')
       // Straight back to the box so the next item can be scanned immediately
       inventorySearchRef.current?.focus()
-      toast.success(`${payload.item.name} added.`)
+
+      if (refusal) {
+        toast.error(refusal)
+      } else {
+        toast.success(`${payload.item.name} added.`)
+      }
       return true
     } catch {
       setError('Could not look up that barcode.')
@@ -866,14 +871,104 @@ function SalesContent() {
     }
   }
 
-  const addToCart = (item: InventoryItem) => {
-    if (isCompletedMode) return
+  /**
+   * Adds one unit to the cart.
+   *
+   * Returns null when the item was added, or the reason it was not. The scanner
+   * needs to know: it used to announce "added" for every scan, including items
+   * that were refused for being out of stock.
+   */
+  // ── Catching scans no matter where the cursor is ──────────────────────────
+  //
+  // A USB scanner is a keyboard. It types the digits then presses Enter, and
+  // those keystrokes go wherever the cursor happens to be. If the counter last
+  // clicked the minus button on a cart line, that button still holds focus, and
+  // a browser fires a focused button's click on Enter - so every scan pressed
+  // minus again instead of adding the item. Any barcode did it, because the
+  // digits went nowhere and only the Enter mattered. Clicking a plus or remove
+  // button had the same effect.
+  //
+  // So scans are captured on the document instead. A scanner types far faster
+  // than a person, which is what separates the two: digits arriving less than
+  // SCAN_GAP_MS apart and closed by Enter are a scan, and the Enter is consumed
+  // before it can reach whatever had focus.
+  const scanBufferRef = useRef('')
+  const scanLastKeyRef = useRef(0)
+  const scanHandlerRef = useRef<(code: string) => Promise<boolean>>(async () => false)
+
+  useEffect(() => {
+    scanHandlerRef.current = handleBarcodeScan
+  })
+
+  useEffect(() => {
+    const SCAN_GAP_MS = 100
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isCompletedMode) return
+
+      const active = document.activeElement as HTMLElement | null
+
+      // The search box has its own handler, and typing a code by hand should
+      // still work there at human speed.
+      if (active && active === inventorySearchRef.current) return
+
+      // Never take keystrokes away from another field the user is filling in.
+      const tag = active?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (active?.isContentEditable) return
+
+      const now = Date.now()
+
+      if (/^[0-9]$/.test(event.key)) {
+        if (now - scanLastKeyRef.current > SCAN_GAP_MS) scanBufferRef.current = ''
+        scanBufferRef.current += event.key
+        scanLastKeyRef.current = now
+        return
+      }
+
+      if (event.key === 'Enter') {
+        const code = scanBufferRef.current
+        scanBufferRef.current = ''
+
+        // Only treat it as a scan if the Enter followed the digits immediately.
+        // A person pressing Enter on a focused button gets the button, as they
+        // should.
+        if (code.length >= 4 && now - scanLastKeyRef.current <= SCAN_GAP_MS) {
+          event.preventDefault()
+          event.stopPropagation()
+          void scanHandlerRef.current(code)
+        }
+        return
+      }
+
+      // Any other key means this was a person typing, not a scanner.
+      scanBufferRef.current = ''
+    }
+
+    // Capture phase, so the Enter is consumed before React delivers it to a
+    // focused button.
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => document.removeEventListener('keydown', onKeyDown, true)
+  }, [isCompletedMode])
+
+  const addToCart = (item: InventoryItem): string | null => {
+    if (isCompletedMode) return 'This sale is already completed.'
     setError('')
     setSuccessMessage('')
 
     if (item.availableStock <= 0) {
-      setError(`${item.name} is out of available stock.`)
-      return
+      const reason = `${item.name} is out of available stock.`
+      setError(reason)
+      return reason
+    }
+
+    // Checked here as well as in the updater below, because the updater cannot
+    // report back to the caller.
+    const alreadyInCart = cart.find((cartItem) => cartItem.id === item.id)
+    if (alreadyInCart && alreadyInCart.quantity >= item.availableStock) {
+      const reason = `Only ${item.availableStock} left of ${item.name}.`
+      setError(reason)
+      return reason
     }
 
     setCart((currentCart) => {
@@ -905,6 +1000,8 @@ function SalesContent() {
         },
       ]
     })
+
+    return null
   }
 
   const updateCartQuantity = (itemId: string, nextQuantity: number) => {
