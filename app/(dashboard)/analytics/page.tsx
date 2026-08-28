@@ -120,6 +120,11 @@ interface CategoryForecastRow {
   categoryName: string
   projectedRevenue: number
   projectedItemsSold: number
+  // What the category actually sold inside the forecast window. Used to keep a
+  // category that sold recently but projects zero, and to break ties in a quiet
+  // week when every projection is zero.
+  recentRevenue: number
+  recentItems: number
 }
 
 // Tracks reservation status counts for the Reservation Activity panel
@@ -546,17 +551,36 @@ const buildCategoryForecast = (
       const projectedRevenuePerStep = Math.max(0, weightedRevenueAverage + revenueTrend * 0.35)
       const projectedItemsPerStep = Math.max(0, weightedItemsAverage + itemsTrend * 0.35)
 
+      // Kept so a category is judged on what it actually sold, not only on
+      // where the trend points. See the filter below.
+      const recentRevenue7 = recentRevenue.reduce((sum, current) => sum + current, 0)
+      const recentItems7 = recentItems.reduce((sum, current) => sum + current, 0)
+
       return {
         categoryId,
         categoryName: value.categoryName,
         projectedRevenue: projectedRevenuePerStep * steps,
         projectedItemsSold: projectedItemsPerStep * steps,
+        recentRevenue: recentRevenue7,
+        recentItems: recentItems7,
       } satisfies CategoryForecastRow
     })
-    .filter((row) => row.projectedRevenue > 0 || row.projectedItemsSold > 0)
+    // Filter on what sold, not on what is projected.
+    //
+    // A surplus shop sells in bursts. One sale early in the window followed by
+    // quiet days produces a steeply negative trend, and the trend term drove the
+    // projection to zero - so the category was discarded even though it was the
+    // only thing that sold. The panel then read "Insufficient data" beside an AI
+    // Insights card naming that very category as fast-moving.
+    //
+    // A category that sold anything in the window belongs in the list. A
+    // projection of zero for it is a legitimate answer; being absent is not.
+    .filter((row) => row.recentRevenue > 0 || row.recentItems > 0 || row.projectedRevenue > 0)
     .sort((a, b) => {
       if (b.projectedRevenue !== a.projectedRevenue) return b.projectedRevenue - a.projectedRevenue
-      return b.projectedItemsSold - a.projectedItemsSold
+      if (b.projectedItemsSold !== a.projectedItemsSold) return b.projectedItemsSold - a.projectedItemsSold
+      // Everything projects zero in a quiet week, so fall back to what sold.
+      return b.recentRevenue - a.recentRevenue
     })
 
   return {
