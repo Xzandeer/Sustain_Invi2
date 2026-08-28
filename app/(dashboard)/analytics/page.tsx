@@ -1043,14 +1043,37 @@ function AnalyticsContent() {
         ? `next ${forecastSeries.steps} days`
         : `next ${forecastSeries.steps} period`
 
+    // The forecast reads only the trailing window - the most recent seven days
+    // of the range - because what sold last week predicts next week, and what
+    // sold three weeks ago does not. So a range can hold plenty of sales and
+    // still project nothing.
+    //
+    // Saying "Insufficient data" in that case is misleading: the data exists,
+    // it is simply older than the window. Name the real reason, otherwise the
+    // panel reads a working calculation as a broken one.
+    let emptyReason = 'Insufficient data'
+    if (!topCategory && filteredSales.length > 0) {
+      emptyReason =
+        trendSeries.granularity === 'day'
+          ? `No sales in the last ${categoryForecast.trailingWindow} days`
+          : 'No sales in the recent periods'
+    }
+
     return {
       forecastWindow,
       projectedSales: forecastSeries.projectedTotal,
-      projectedFastMovingCategory: topCategory?.categoryName ?? 'Insufficient data',
+      projectedFastMovingCategory: topCategory?.categoryName ?? emptyReason,
       projectedCategoryRevenue: topCategory?.projectedRevenue ?? 0,
       projectedCategoryItems: topCategory?.projectedItemsSold ?? 0,
     }
-  }, [categoryForecast.topCategory, forecastSeries.projectedTotal, forecastSeries.steps, trendSeries.granularity])
+  }, [
+    categoryForecast.topCategory,
+    categoryForecast.trailingWindow,
+    filteredSales.length,
+    forecastSeries.projectedTotal,
+    forecastSeries.steps,
+    trendSeries.granularity,
+  ])
 
   const comparisonMetrics = useMemo(() => {
     const topCategoryRevenue = currentSummary.topCategory?.revenue ?? 0
