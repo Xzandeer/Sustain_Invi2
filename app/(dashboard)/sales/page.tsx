@@ -900,11 +900,23 @@ function SalesContent() {
     scanHandlerRef.current = handleBarcodeScan
   })
 
+  const scanBlocked =
+    showAllSalesModal ||
+    showEmailModal ||
+    showRefundConfirm ||
+    scannerOpen ||
+    selectedTransaction !== null
+
   useEffect(() => {
     const SCAN_GAP_MS = 100
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (isCompletedMode) return
+
+      // With a dialog open the cart is not on screen. Adding to it from behind
+      // the dialog would be invisible, and the counter would not find out until
+      // checkout.
+      if (scanBlocked) return
 
       const active = document.activeElement as HTMLElement | null
 
@@ -949,7 +961,7 @@ function SalesContent() {
     // focused button.
     document.addEventListener('keydown', onKeyDown, true)
     return () => document.removeEventListener('keydown', onKeyDown, true)
-  }, [isCompletedMode])
+  }, [isCompletedMode, scanBlocked])
 
   const addToCart = (item: InventoryItem): string | null => {
     if (isCompletedMode) return 'This sale is already completed.'
