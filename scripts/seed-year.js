@@ -453,6 +453,10 @@ function buildInventory(shipments, categoryMap) {
         shipment,
         voidedUnits: 0,
         isVoided: false,
+        // Roughly one line in twenty is not reordered once it sells out - a
+        // one-off in the bale that the shop cannot get again. These are what
+        // give the Dashboard something to report as out of stock.
+        discontinued: Math.random() < 0.05,
       }
 
       shipment.items.push(item)
@@ -780,37 +784,50 @@ async function seedSalesAndEvents(writer, items, logs) {
       }
     }
 
-    // Restocking. Without this the catalogue drains to zero within months and
-    // the last part of the year has nothing left to sell, which would show up
-    // as a dying shop rather than a trading one.
-    if (Math.random() < 0.5) {
-      const low = available.filter((item) => !item.isVoided && item.stock <= item.minStock)
-      for (const item of low.slice(0, randomInt(1, 3))) {
-        const added = randomInt(5, 14)
-        const before = item.stock
-        item.stock += added
-        adjustCount += 1
+    // Replenishment.
+    //
+    // A year of trading sells far more units than the shipments originally
+    // brought in, so the shop reorders. An earlier version topped up only the
+    // first few low items it found each day, which meant most of the catalogue
+    // never got replenished at all and every item finished the year at zero -
+    // the whole inventory reading "Out of Stock".
+    //
+    // Every low item is now considered every day, and topped back up to a
+    // working level rather than nudged by a few units. The probability spreads
+    // the reorders out so they do not all land on the same day.
+    for (const item of available) {
+      if (item.isVoided || item.stock > item.minStock) continue
+      // A few lines are never reordered, so they sell out and stay out. Without
+      // them nothing is ever out of stock and the Dashboard's out-of-stock
+      // alert has nothing to show.
+      if (item.discontinued) continue
+      if (Math.random() > 0.3) continue
 
-        // Restocked units were bought, so they belong in the shipment's cost.
-        // Leaving them out made goods appear from nowhere and pushed the
-        // shipment ROI far beyond anything a real shop achieves.
-        item.shipment.purchaseCost += item.unitCost * added
-        item.received += added
+      const target = randomInt(12, 28)
+      const added = Math.max(4, target - item.stock)
+      const before = item.stock
+      item.stock += added
+      adjustCount += 1
 
-        logs.push({
-          at: nextMoment(),
-          actionType: 'stock_increased',
-          itemId: item.ref.id,
-          itemName: item.name,
-          condition: item.condition,
-          quantityBefore: before,
-          quantityChanged: added,
-          quantityAfter: item.stock,
-          user: STORE_STAFF[2],
-          remarks: 'Restocked from reserve inventory.',
-          relatedId: '',
-        })
-      }
+      // Restocked units were bought, so they belong in the shipment's cost.
+      // Leaving them out made goods appear from nowhere and pushed the
+      // shipment ROI far beyond anything a real shop achieves.
+      item.shipment.purchaseCost += item.unitCost * added
+      item.received += added
+
+      logs.push({
+        at: nextMoment(),
+        actionType: 'stock_increased',
+        itemId: item.ref.id,
+        itemName: item.name,
+        condition: item.condition,
+        quantityBefore: before,
+        quantityChanged: added,
+        quantityAfter: item.stock,
+        user: STORE_STAFF[2],
+        remarks: 'Restocked from reserve inventory.',
+        relatedId: '',
+      })
     }
 
     // Occasional write-off. Second-hand goods get damaged in storage, and the
