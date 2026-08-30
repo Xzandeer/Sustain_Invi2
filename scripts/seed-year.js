@@ -20,19 +20,64 @@
  * agree with the stock figures, which is exactly what a panel checks.
  *
  * RUN
- *   node scripts/seed-year.js
+ *   node scripts/seed-year.js --force
  *
- * It refuses to run unless you pass --force, because it deletes the collections
- * it owns first. Point serviceAccountKey.json at the DEMO project, never main.
+ * Credentials come from .env.local, so it writes to whichever project that file
+ * points at. It prints the project name before doing anything - read it. It
+ * refuses to run without --force, because it deletes the collections it owns.
  */
 
 const admin = require('firebase-admin')
+const fs = require('fs')
 const path = require('path')
 
-const serviceAccount = require(path.resolve(__dirname, '../serviceAccountKey.json'))
+/**
+ * Credentials come from .env.local, the same place the application reads them.
+ *
+ * The older seeder required a serviceAccountKey.json sitting in the project
+ * root. That is a second copy of the same private key, it is easy to forget it
+ * is there, and it is exactly the kind of file that ends up committed. The
+ * variables are already set for the app to run, so use those.
+ *
+ * serviceAccountKey.json is still accepted if it exists, for anyone who set it
+ * up that way.
+ */
+function loadCredentials() {
+  const keyPath = path.resolve(__dirname, '../serviceAccountKey.json')
+  if (fs.existsSync(keyPath)) {
+    const account = require(keyPath)
+    return { credential: admin.credential.cert(account), projectId: account.project_id }
+  }
+
+  const envPath = path.resolve(__dirname, '../.env.local')
+  if (!fs.existsSync(envPath)) {
+    throw new Error('No .env.local found, and no serviceAccountKey.json either.')
+  }
+
+  require('dotenv').config({ path: envPath })
+
+  const projectId = process.env.FIREBASE_ADMIN_PROJECT_ID
+  const clientEmail = process.env.FIREBASE_ADMIN_CLIENT_EMAIL
+  // Stored with escaped newlines so it fits on one line of an env file.
+  const privateKey = (process.env.FIREBASE_ADMIN_PRIVATE_KEY || '').replace(/\\n/g, '\n')
+
+  if (!projectId || !clientEmail || !privateKey) {
+    throw new Error(
+      'FIREBASE_ADMIN_PROJECT_ID, FIREBASE_ADMIN_CLIENT_EMAIL and ' +
+        'FIREBASE_ADMIN_PRIVATE_KEY must all be set in .env.local.'
+    )
+  }
+
+  return {
+    credential: admin.credential.cert({ projectId, clientEmail, privateKey }),
+    projectId,
+  }
+}
+
+const { credential, projectId: TARGET_PROJECT } = loadCredentials()
 
 if (!admin.apps.length) {
-  admin.initializeApp({ credential: admin.credential.cert(serviceAccount) })
+  admin.initializeApp({ credential })
 }
 
 const db = admin.firestore()
@@ -918,15 +963,16 @@ async function writeCounters(writer, barcodeSequence, sales) {
 
 async function main() {
   if (!process.argv.includes('--force')) {
+    console.error(`\nTARGET PROJECT: ${TARGET_PROJECT}`)
     console.error('\nThis deletes and rebuilds sales, inventory, shipments,')
-    console.error('categories, stock logs and counters in the project that')
-    console.error('serviceAccountKey.json points at.')
-    console.error('\nCheck you are pointing at the DEMO project, then run:')
+    console.error('categories, stock logs and counters in that project.')
+    console.error('Users, store settings and sign-in accounts are left alone.')
+    console.error('\nCheck the project above is your DEMO project, then run:')
     console.error('  node scripts/seed-year.js --force\n')
     process.exit(1)
   }
 
-  console.log(`Project: ${serviceAccount.project_id}`)
+  console.log(`Project: ${TARGET_PROJECT}`)
   console.log(`Range:   ${isoDate(START_DATE)} to ${isoDate(END_DATE)}\n`)
 
   console.log('Clearing existing data...')

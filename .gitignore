@@ -155,3 +155,7 @@ app/api/dev/
 # Folder of per-environment configs kept for copy-pasting into .env.local.
 # Contains live credentials - never commit.
 envs/
+
+# Firebase Admin service account key, if one is used instead of .env.local.
+# A private key with full database access - never commit it.
+serviceAccountKey.json
