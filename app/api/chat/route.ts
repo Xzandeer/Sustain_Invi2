@@ -1,6 +1,7 @@
 // AI Chat API — OpenAI REST (fetch) + Firebase Admin + caching + rate limiting
 import { NextRequest, NextResponse } from 'next/server'
 import { TOOL_DEFINITIONS, executeTool } from '@/lib/ai/toolRegistry'
+import { AI_ASSISTANT_ENABLED } from '@/lib/ai/assistantEnabled'
 import { checkRateLimit } from '@/lib/ai/rateLimiter'
 import { sanitizeInput, sanitizeHistory } from '@/lib/ai/sanitize'
 import { getCacheKey, saveToPersistentCache, getFromPersistentCache, formatCacheAge } from '@/lib/ai/persistentCache'
@@ -235,6 +236,13 @@ async function callOpenAI(apiKey: string, messages: OAIMessage[], withTools: boo
 // ── Main handler ──────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  // The assistant is switched off. Hiding the button in the dashboard would
+  // leave this endpoint reachable by anyone who knew the URL, and every call
+  // spends credit on the OpenAI account.
+  if (!AI_ASSISTANT_ENABLED) {
+    return NextResponse.json({ error: 'The AI assistant is not available.' }, { status: 404 })
+  }
+
   let body: ChatRequest | null = null
 
   try {

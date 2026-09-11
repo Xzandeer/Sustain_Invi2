@@ -16,6 +16,7 @@ import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import Sidebar from '@/components/layout/Sidebar'
 import FloatingChatBot from '@/components/chatbot/FloatingChatBot'
+import { AI_ASSISTANT_ENABLED } from '@/lib/ai/assistantEnabled'
 
 export default function DashboardLayout({
   children,
@@ -79,7 +80,9 @@ export default function DashboardLayout({
         {children}
       </main>
 
-      <FloatingChatBot />
+      {/* Switched off - see lib/ai/assistantEnabled.ts for why, and to
+          turn it back on. Forecasting does not go through this. */}
+      {AI_ASSISTANT_ENABLED && <FloatingChatBot />}
     </div>
   )
 }
