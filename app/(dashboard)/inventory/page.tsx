@@ -18,7 +18,8 @@
 
 import Link from 'next/link'
 import { apiFetch } from '@/lib/apiFetch'
-import { useEffect, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { collection, onSnapshot } from 'firebase/firestore'
 import { Plus, Tags, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -128,7 +129,10 @@ const toNumber = (value: unknown, fallback = 0) => {
 export default function ItemsPage() {
   return (
     <ProtectedRoute>
-      <InventoryContent />
+      {/* useSearchParams needs a Suspense boundary during prerender */}
+      <Suspense fallback={null}>
+        <InventoryContent />
+      </Suspense>
     </ProtectedRoute>
   )
 }
@@ -146,7 +150,13 @@ function InventoryContent() {
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [conditionFilter, setConditionFilter] = useState('all')
-  const [stockStatusFilter, setStockStatusFilter] = useState('all')
+  // ?status=Low%20Stock lets the dashboard cards open the list already filtered
+  const searchParams = useSearchParams()
+  const initialStatus = (() => {
+    const raw = searchParams.get('status')
+    return raw === 'Low Stock' || raw === 'Out of Stock' || raw === 'Available' ? raw : 'all'
+  })()
+  const [stockStatusFilter, setStockStatusFilter] = useState(initialStatus)
   const [minPrice, setMinPrice] = useState('')
   const [maxPrice, setMaxPrice] = useState('')
   const [sortBy, setSortBy] = useState<SortOption>('recent')

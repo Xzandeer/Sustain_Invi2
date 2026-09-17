@@ -378,8 +378,8 @@ function DashboardContent() {
               <Link href="/inventory" className="text-xs font-medium text-blue-600 hover:underline">View all</Link>
             </div>
             <div className="flex flex-col flex-1 divide-y divide-gray-50">
-              <InventoryStatusRow iconEl={<AlertTriangle className="h-5 w-5 text-amber-600" />} iconBg="bg-amber-100" label="Low Stock" desc="Items running below minimum" count={lowStockItems.length} href="/inventory" />
-              <InventoryStatusRow iconEl={<Package className="h-5 w-5 text-red-500" />} iconBg="bg-red-100" label="Out of Stock" desc="Items need restocking" count={outOfStockItems.length} href="/inventory" />
+              <InventoryStatusRow iconEl={<AlertTriangle className="h-5 w-5 text-amber-600" />} iconBg="bg-amber-100" label="Low Stock" desc="Items running below minimum" count={lowStockItems.length} href="/inventory?status=Low+Stock" />
+              <InventoryStatusRow iconEl={<Package className="h-5 w-5 text-red-500" />} iconBg="bg-red-100" label="Out of Stock" desc="Items need restocking" count={outOfStockItems.length} href="/inventory?status=Out+of+Stock" />
               <InventoryStatusRow iconEl={<Bookmark className="h-5 w-5 text-blue-500" />} iconBg="bg-blue-100" label="Reserved Items" desc="Items in active reservations" count={reservedCount} href="/reservations" />
               <InventoryStatusRow iconEl={<LayoutGrid className="h-5 w-5 text-purple-500" />} iconBg="bg-purple-100" label="Total Products" desc={`Across ${inventory.length} product lines`} count={totalStock} href="/inventory" />
             </div>
