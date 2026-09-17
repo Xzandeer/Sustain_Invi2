@@ -186,13 +186,17 @@ import { getAdminApp } from '@/lib/firebaseAdmin'
 export async function verifiedUid(req: Request): Promise<string | null> {
   const header = req.headers.get('authorization') ?? ''
   const match = /^Bearer\s+(.+)$/i.exec(header.trim())
-  if (!match) return null
+  if (!match) {
+    console.warn('[auth] no Authorization header on', req.method, req.url)
+    return null
+  }
 
   try {
     const decoded = await getAuth(getAdminApp()).verifyIdToken(match[1].trim())
     return decoded.uid
-  } catch {
-    // Expired, malformed or forged - treated the same as not signed in.
+  } catch (error) {
+    // Expired, malformed, forged - or the Admin SDK is not configured.
+    console.error('[auth] verifyIdToken failed:', (error as Error)?.message)
     return null
   }
 }

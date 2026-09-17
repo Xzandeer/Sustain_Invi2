@@ -360,7 +360,7 @@ function InventoryContent() {
 
       const targetUrl = editingProduct ? `/api/inventory/${editingProduct.id}` : '/api/inventory'
       const method = editingProduct ? 'PUT' : 'POST'
-      const response = await fetch(targetUrl, {
+      const response = await apiFetch(targetUrl, {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

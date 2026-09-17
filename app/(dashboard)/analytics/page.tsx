@@ -796,7 +796,7 @@ function AnalyticsContent() {
       if (forecastCategoryName) params.set('category', forecastCategoryName)
       const qs = params.toString()
       const url = `/api/forecast/ai-enhanced${qs ? `?${qs}` : ''}`
-      const res = await fetch(url)
+      const res = await apiFetch(url)
       const data: AIForecastData = await res.json()
       if (!res.ok) {
         setForecastError(data.reason ?? 'Forecast generation failed.')
