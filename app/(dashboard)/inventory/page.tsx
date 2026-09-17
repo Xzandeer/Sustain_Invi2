@@ -448,7 +448,7 @@ function InventoryContent() {
       })
       const payload = (await response.json()) as { error?: string; isFullVoid?: boolean; newStock?: number }
       if (!response.ok) throw new Error(payload.error || 'Failed to void item.')
-      toast.success(payload.isFullVoid ? 'Item fully voided.' : `${voidQuantity} unit${voidQuantity !== 1 ? 's' : ''} voided — stock updated.`)
+      toast.success(payload.isFullVoid ? 'Item fully written off.' : `${voidQuantity} unit${voidQuantity !== 1 ? 's' : ''} written off — stock updated.`)
       setVoidingProduct(null)
     } catch (voidError) {
       const message = voidError instanceof Error ? voidError.message : 'Failed to void item.'
@@ -932,7 +932,7 @@ function InventoryContent() {
                 <p className="text-xs font-medium text-slate-500">Total Items</p>
                 <p className="text-xl font-bold text-slate-900">{kpiTotal}</p>
                 <p className="text-xs text-slate-400">
-                  {kpiVoided > 0 ? `Excludes ${kpiVoided} voided` : 'All inventory items'}
+                  {kpiVoided > 0 ? `Excludes ${kpiVoided} written off` : 'All inventory items'}
                 </p>
               </div>
             </div>
@@ -1320,7 +1320,7 @@ function InventoryContent() {
                                 className="flex h-7 items-center gap-1 rounded-lg border border-slate-200 px-2 text-xs font-medium text-slate-500 transition hover:border-red-300 hover:text-red-600 disabled:opacity-40"
                               >
                                 <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
-                                Void
+                                Write off
                               </button>
                             ))}
                           </div>
@@ -1495,8 +1495,8 @@ function InventoryContent() {
                   ? `Enter a number between 1 and ${maxRestore}.`
                   : `Stock will become ${restoringProduct.quantity + restoreQty}` +
                     (maxRestore - restoreQty > 0
-                      ? ` · ${maxRestore - restoreQty} will stay voided.`
-                      : ' · nothing will stay voided.')}
+                      ? ` · ${maxRestore - restoreQty} will stay written off.`
+                      : ' · nothing will stay written off.')}
               </p>
 
               <div className="mt-5 flex justify-end gap-2">
