@@ -320,7 +320,8 @@ function InventoryContent() {
         if (!searchTerm) return true
         return (
           product.name.toLowerCase().includes(searchTerm) ||
-          product.category.toLowerCase().includes(searchTerm)
+          product.category.toLowerCase().includes(searchTerm) ||
+          (product.barcode ?? '').toLowerCase().includes(searchTerm)
         )
       })
       .filter((product) => (categoryFilter === 'all' ? true : product.category === categoryFilter))
@@ -795,7 +796,7 @@ function InventoryContent() {
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search by item name or category..."
+                placeholder="Search by item name, category or barcode..."
                 className="w-full rounded-lg border border-slate-200 py-2.5 pl-9 pr-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none"
               />
             </div>

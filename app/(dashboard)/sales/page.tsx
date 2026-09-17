@@ -133,6 +133,7 @@ interface InventoryItem {
   stock: number
   reservedStock: number
   availableStock: number
+  barcode?: string
   isDeleted?: boolean
   isVoided?: boolean
 }
@@ -385,6 +386,7 @@ function SalesContent() {
                 0,
                 Math.max(0, toNumber(data.stock ?? data.quantity, 0)) - Math.max(0, toNumber(data.reservedStock, 0))
               ),
+              barcode: typeof data.barcode === 'string' ? data.barcode : undefined,
               isDeleted: data.isDeleted === true,
               isVoided: data.isVoided === true,
             }
@@ -501,7 +503,13 @@ function SalesContent() {
     return inventoryItems
       .filter((item) => {
         if (!query) return true
-        return item.name.toLowerCase().includes(query) || item.categoryName.toLowerCase().includes(query)
+        // Barcode too, so a label can be found by typing its digits when the
+        // scanner is unavailable.
+        return (
+          item.name.toLowerCase().includes(query) ||
+          item.categoryName.toLowerCase().includes(query) ||
+          (item.barcode ?? '').toLowerCase().includes(query)
+        )
       })
       .filter((item) => (inventoryCategoryFilter === 'all' ? true : item.categoryName === inventoryCategoryFilter))
       .filter((item) => (inventoryConditionFilter === 'all' ? true : item.condition === inventoryConditionFilter))
