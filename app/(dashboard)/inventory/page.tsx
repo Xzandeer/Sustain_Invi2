@@ -912,7 +912,7 @@ function InventoryContent() {
                   : 'text-slate-500 hover:text-slate-700'
               }`}
             >
-              {tab === 'active' ? 'Active' : tab === 'voided' ? 'Voided' : 'All Items'}
+              {tab === 'active' ? 'Active' : tab === 'voided' ? 'Written off' : 'All Items'}
             </button>
           ))}
         </div>
@@ -1137,7 +1137,7 @@ function InventoryContent() {
                     {visibleColumns.shipment && <th className="px-3 py-2 text-left">Shipment</th>}
                     {visibleColumns.barcode && <th className="px-3 py-2 text-left">Barcode</th>}
                     {/* Only on the Voided tab - the reason is meaningless for active items */}
-                    {voidTab === 'voided' && <th className="px-3 py-2 text-left">Void Reason</th>}
+                    {voidTab === 'voided' && <th className="px-3 py-2 text-left">Write-off Reason</th>}
                     <th className="px-3 py-2 text-left">Actions</th>
                   </tr>
                 </thead>
@@ -1315,7 +1315,7 @@ function InventoryContent() {
                               <button
                                 onClick={() => setVoidingProduct(product)}
                                 disabled={voidingId === product.id}
-                                title="Void item"
+                                title="Write off item"
                                 className="flex h-7 items-center gap-1 rounded-lg border border-slate-200 px-2 text-xs font-medium text-slate-500 transition hover:border-red-300 hover:text-red-600 disabled:opacity-40"
                               >
                                 <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
@@ -1467,7 +1467,7 @@ function InventoryContent() {
                   <span className="font-semibold text-slate-900">{restoringProduct.quantity}</span>
                 </div>
                 <div className="mt-1 flex justify-between text-slate-600">
-                  <span>Voided units</span>
+                  <span>Written-off units</span>
                   <span className="font-semibold text-orange-600">{maxRestore}</span>
                 </div>
                 {restoringProduct.voidReason && (
@@ -1572,7 +1572,7 @@ function VoidModal({
             </svg>
           </div>
           <div className="min-w-0 flex-1">
-            <h2 className="text-base font-semibold text-slate-900">Void Item</h2>
+            <h2 className="text-base font-semibold text-slate-900">Write Off Item</h2>
             <p className="mt-0.5 text-sm text-slate-500">
               This will mark <span className="font-medium text-slate-800">{product.name}</span> as voided. It will be removed from active listings but all history will be preserved.
             </p>
@@ -1632,7 +1632,7 @@ function VoidModal({
 
           {/* Reason dropdown */}
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-slate-700">Void Reason <span className="text-red-500">*</span></label>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">Write-off Reason <span className="text-red-500">*</span></label>
             <select
               value={reason}
               onChange={(e) => { setReason(e.target.value); setLocalError('') }}
@@ -1662,7 +1662,7 @@ function VoidModal({
             <svg className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
             </svg>
-            <p className="text-xs text-amber-700">Voided items are hidden from Sales POS and Reservation creation but remain in stock logs, analytics, and history.</p>
+            <p className="text-xs text-amber-700">Written-off items are hidden from Sales POS and Reservation creation but remain in stock logs, analytics, and history.</p>
           </div>
 
           {localError && <p className="text-sm text-red-600">{localError}</p>}

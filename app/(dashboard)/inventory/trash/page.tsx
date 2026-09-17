@@ -425,7 +425,7 @@ function InventoryTrashContent() {
                 <svg className="h-7 w-7 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
               </div>
               <p className="text-sm font-semibold text-slate-700">No trashed items</p>
-              <p className="mt-1 text-xs text-slate-400">Voided items will appear here</p>
+              <p className="mt-1 text-xs text-slate-400">Written-off items will appear here</p>
               {hasActiveFilters && (
                 <button onClick={resetFilters} className="mt-3 text-xs font-medium text-blue-600 hover:underline">Clear filters</button>
               )}
@@ -439,9 +439,9 @@ function InventoryTrashContent() {
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Item</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Category</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Condition</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Date Voided</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Date written off</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Reason</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Voided By</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Written off by</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Status</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Actions</th>
                     </tr>
