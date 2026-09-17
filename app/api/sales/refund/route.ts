@@ -24,7 +24,7 @@ import {
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { getWarrantyDays } from '@/lib/server/storeSettings'
-import { checkPermission } from '@/lib/server/authorize'
+import { checkPermission, verifiedUid } from '@/lib/server/authorize'
 
 interface RequestedLine {
   itemId: string
@@ -53,12 +53,11 @@ export async function POST(req: NextRequest) {
     }
 
     // ── 0. Permission check — enforced server-side, not just in the UI ─────
-    const requestedBy = typeof body.requestedByUid === 'string' ? body.requestedByUid : ''
-    if (requestedBy) {
-      const authz = await checkPermission(requestedBy, 'canProcessRefunds')
-      if (!authz.allowed) {
-        return NextResponse.json({ error: authz.reason ?? 'Not permitted.' }, { status: 403 })
-      }
+    // Unconditional: this used to be skipped when the payload omitted a uid,
+    // which let an unidentified caller refund anything.
+    const authz = await checkPermission(await verifiedUid(req), 'canProcessRefunds')
+    if (!authz.allowed) {
+      return NextResponse.json({ error: authz.reason ?? 'Not permitted.' }, { status: 403 })
     }
 
     // ── 1. Load the sale ───────────────────────────────────────────────────

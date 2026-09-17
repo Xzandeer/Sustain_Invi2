@@ -4,7 +4,7 @@ import { deleteDoc, doc, getDoc, updateDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { assertAdminUser, createStockLog, findInventoryVariant, getProcessedByInfo } from '@/lib/server/inventory'
-import { guardProcessedBy } from '@/lib/server/authorize'
+import { guardRequest, requireAdminRequest } from '@/lib/server/authorize'
 
 interface RouteContext {
   params: Promise<{ id: string }>
@@ -47,7 +47,7 @@ export async function PUT(req: Request, context: RouteContext) {
     const current = snapshot.data() as Record<string, unknown>
 
     // Editing an item is a privileged action - check before reading further.
-    const denied = await guardProcessedBy(body.processedBy, 'canManageInventory')
+    const denied = await guardRequest(req, 'canManageInventory')
     if (denied) return denied
 
     const processedBy = await getProcessedByInfo(body.processedBy)
@@ -253,7 +253,7 @@ export async function PUT(req: Request, context: RouteContext) {
 }
 
 // DELETE /api/inventory/[id] - Move item to trash (soft delete, requires zero stock)
-export async function DELETE(_: Request, context: RouteContext) {
+export async function DELETE(req: Request, context: RouteContext) {
   try {
     // Step 1: Parse ID and verify admin access
     const { id } = await context.params
@@ -261,7 +261,9 @@ export async function DELETE(_: Request, context: RouteContext) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
     }
 
-    const body = (await _.json().catch(() => ({}))) as { processedBy?: unknown }
+    const body = (await req.json().catch(() => ({}))) as { processedBy?: unknown }
+    const deniedDelete = await requireAdminRequest(req)
+    if (deniedDelete) return deniedDelete
     await assertAdminUser(body.processedBy)
 
     // Step 2: Get current item data
@@ -334,6 +336,8 @@ export async function PATCH(req: Request, context: RouteContext) {
     // Step 2: Parse request and get admin user
     const body = (await req.json()) as { action?: unknown }
     const action = typeof body.action === 'string' ? body.action : ''
+    const deniedPatch = await requireAdminRequest(req)
+    if (deniedPatch) return deniedPatch
     const processedBy = await assertAdminUser((body as Record<string, unknown>).processedBy)
     const snapshotData = snapshot.data() as Record<string, unknown>
     const itemName = typeof snapshotData.name === 'string' ? snapshotData.name.trim() : 'Unnamed Item'

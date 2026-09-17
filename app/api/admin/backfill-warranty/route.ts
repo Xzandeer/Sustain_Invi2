@@ -14,7 +14,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { collection, getDocs, writeBatch, doc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { getWarrantyDays } from '@/lib/server/storeSettings'
-import { checkPermission } from '@/lib/server/authorize'
+import { checkPermission, verifiedUid } from '@/lib/server/authorize'
 
 export const dynamic = 'force-dynamic'
 
@@ -49,8 +49,7 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
 
     // Admin-only
-    const uid = typeof body.requestedByUid === 'string' ? body.requestedByUid : ''
-    const authz = await checkPermission(uid, 'canManageInventory')
+    const authz = await checkPermission(await verifiedUid(req), 'canManageInventory')
     if (!authz.allowed || authz.role !== 'admin') {
       return NextResponse.json(
         { error: 'Only an administrator can run this operation.' },

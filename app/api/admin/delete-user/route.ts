@@ -12,6 +12,7 @@
 //   • Requester must type CONFIRM
 
 import { NextRequest, NextResponse } from 'next/server'
+import { requireAdminRequest, verifiedUid } from '@/lib/server/authorize'
 import { getApps, initializeApp, cert, getApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
 import { getAdminDb } from '@/lib/firebaseAdmin'
@@ -38,10 +39,13 @@ function getAdminAuth() {
 
 export async function POST(req: NextRequest) {
   try {
+    const denied = await requireAdminRequest(req)
+    if (denied) return denied
+
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
     const targetUid = typeof body.targetUid === 'string' ? body.targetUid.trim() : ''
-    const requestedByUid =
-      typeof body.requestedByUid === 'string' ? body.requestedByUid.trim() : ''
+    // Identity comes from the verified token, never from the payload
+    const requestedByUid = (await verifiedUid(req)) ?? ''
     const confirmText =
       typeof body.confirmText === 'string' ? body.confirmText.trim().toUpperCase() : ''
 

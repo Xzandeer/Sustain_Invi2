@@ -4,6 +4,7 @@
 // Handles open/close and positioning; the conversation itself lives in ChatBot.
 
 import React, { useEffect, useRef, useState } from 'react'
+import { apiFetch } from '@/lib/apiFetch'
 import { usePathname } from 'next/navigation'
 import { useUserRole } from '@/hooks/useUserRole'
 import { ChevronDown, Database, RotateCcw, Send, Sparkles, ThumbsDown, ThumbsUp, X } from 'lucide-react'
@@ -311,7 +312,7 @@ export default function FloatingChatBot() {
     abortRef.current = controller
     try {
       const history = messages.slice(-6).map(m => ({ role: m.role, content: m.content }))
-      const res = await fetch('/api/chat', {
+      const res = await apiFetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: trimmed, history, page: currentPage, role: userRole }),

@@ -19,7 +19,7 @@ import {
   getProcessedByInfo,
 } from '@/lib/server/inventory'
 import { createTransactionNumber } from '@/lib/server/transactionNumbers'
-import { requireActiveUser } from '@/lib/server/authorize'
+import { requireActiveUserRequest } from '@/lib/server/authorize'
 import { getStoreSettings } from '@/lib/server/storeSettings'
 import { parseDateRange, toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import {
@@ -137,7 +137,7 @@ export async function POST(req: NextRequest) {
       body.processedBy && typeof body.processedBy === 'object'
         ? (body.processedBy as Record<string, unknown>).uid
         : undefined
-    const denied = await requireActiveUser(uid)
+    const denied = await requireActiveUserRequest(req)
     if (denied) return denied
 
     const customerDetails = parseCustomerDetails(body.customerDetails)

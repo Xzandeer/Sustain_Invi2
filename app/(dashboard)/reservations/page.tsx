@@ -14,6 +14,7 @@
 // to the person when they return for the item.
 
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { apiFetch } from '@/lib/apiFetch'
 import { collection, onSnapshot, orderBy, query } from 'firebase/firestore'
 import {
   AlertCircle,
@@ -442,7 +443,7 @@ function ReservationsContent() {
     if (!window.confirm('Complete reservation for ' + reservation.customer + '?')) return
     setActionId(reservation.id)
     try {
-      const res = await fetch('/api/reservations/' + reservation.id, {
+      const res = await apiFetch('/api/reservations/' + reservation.id, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -476,7 +477,7 @@ function ReservationsContent() {
     if (!reservationToCancel) return
     setActionId(reservationToCancel.id)
     try {
-      const res = await fetch('/api/reservations/' + reservationToCancel.id, {
+      const res = await apiFetch('/api/reservations/' + reservationToCancel.id, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

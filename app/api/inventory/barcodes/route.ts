@@ -15,7 +15,7 @@ import { collection, getDocs, query, where, limit, doc, updateDoc } from 'fireba
 import { db } from '@/lib/firebase'
 import { createItemBarcode, normalizeBarcode } from '@/lib/server/barcodes'
 import { getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
-import { guardProcessedBy } from '@/lib/server/authorize'
+import { guardRequest } from '@/lib/server/authorize'
 
 export async function GET(req: NextRequest) {
   try {
@@ -78,7 +78,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
 
-    const denied = await guardProcessedBy(body.processedBy, 'canManageInventory')
+    const denied = await guardRequest(req, 'canManageInventory')
     if (denied) return denied
 
     const snapshot = await getDocs(collection(db, 'inventory'))

@@ -9,7 +9,7 @@ import {
   getProcessedByInfo,
 } from '@/lib/server/inventory'
 import { InventoryCondition, getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
-import { guardProcessedBy } from '@/lib/server/authorize'
+import { guardRequest } from '@/lib/server/authorize'
 
 interface RouteContext {
   params: Promise<{ id: string }>
@@ -35,7 +35,7 @@ export async function POST(req: Request, context: RouteContext) {
 
     // Adjusting stock changes the books, so it needs the same permission as
     // editing an item. Checked before anything is read or written.
-    const denied = await guardProcessedBy(body.processedBy, 'canManageInventory')
+    const denied = await guardRequest(req, 'canManageInventory')
     if (denied) return denied
 
     const processedBy = await getProcessedByInfo(body.processedBy)

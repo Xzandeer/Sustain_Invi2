@@ -20,6 +20,7 @@
 // range problem, not a math problem. Check getPresetRange() and inRange() first.
 
 import { useEffect, useMemo, useState } from 'react'
+import { apiFetch } from '@/lib/apiFetch'
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -776,7 +777,7 @@ function AnalyticsContent() {
         const params = new URLSearchParams()
         if (forecastCategoryName) params.set('category', forecastCategoryName)
         const qs = params.toString()
-        const res = await fetch(`/api/forecast/ai-enhanced${qs ? `?${qs}` : ''}`)
+        const res = await apiFetch(`/api/forecast/ai-enhanced${qs ? `?${qs}` : ''}`)
         if (!res.ok) return
         const data: AIForecastData = await res.json()
         if (!cancelled) setAiForecast(data)

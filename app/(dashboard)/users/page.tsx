@@ -16,6 +16,7 @@
 // the login, not the records - past sales keep the name captured at the time.
 
 import { useEffect, useState } from 'react'
+import { apiFetch } from '@/lib/apiFetch'
 import { doc, getDocs, updateDoc, collection } from 'firebase/firestore'
 import { sendPasswordResetEmail, reauthenticateWithCredential, EmailAuthProvider } from 'firebase/auth'
 import { useRouter } from 'next/navigation'
@@ -170,7 +171,7 @@ function UsersContent() {
 
     setDeleteLoading(true)
     try {
-      const res = await fetch('/api/admin/delete-user', {
+      const res = await apiFetch('/api/admin/delete-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -257,7 +258,7 @@ function UsersContent() {
     }
     setCreating(true)
     try {
-      const res = await fetch('/api/admin/create-user', {
+      const res = await apiFetch('/api/admin/create-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...form, requestedByUid: auth.currentUser?.uid ?? '' }),

@@ -24,6 +24,7 @@
 // because typing a name for every counter sale slowed the staff down.
 
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { apiFetch } from '@/lib/apiFetch'
 import { collection, onSnapshot } from 'firebase/firestore'
 import { toPng } from 'html-to-image'
 import { Download, Mail, Minus, Plus, Printer, Search, ShoppingCart, Trash2 } from 'lucide-react'
@@ -255,7 +256,7 @@ function SalesContent() {
 
     ;(async () => {
       try {
-        const response = await fetch('/api/receipts?status=active&limit=1')
+        const response = await apiFetch('/api/receipts?status=active&limit=1')
         if (!response.ok) return
         const payload = (await response.json()) as { data?: ReceiptRecord[] }
         const [latest] = payload.data ?? []
@@ -570,7 +571,7 @@ function SalesContent() {
   // Load the store's warranty policy so the UI matches the server rule
   useEffect(() => {
     let cancelled = false
-    fetch('/api/settings')
+    apiFetch('/api/settings')
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!cancelled && d && typeof d.warrantyDays === 'number') setWarrantyDays(d.warrantyDays)
@@ -745,7 +746,7 @@ function SalesContent() {
 
     setRefundLoading(true)
     try {
-      const res = await fetch('/api/sales/refund', {
+      const res = await apiFetch('/api/sales/refund', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -845,7 +846,7 @@ function SalesContent() {
     if (code.length < 4) return false
 
     try {
-      const res = await fetch(`/api/inventory/barcodes?code=${encodeURIComponent(code)}`)
+      const res = await apiFetch(`/api/inventory/barcodes?code=${encodeURIComponent(code)}`)
       const payload = (await res.json()) as { item?: InventoryItem; error?: string }
 
       if (!res.ok || !payload.item) {
@@ -1077,7 +1078,7 @@ function SalesContent() {
 
       console.log('CART:', cart)
 
-      const response = await fetch('/api/sales', {
+      const response = await apiFetch('/api/sales', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1167,7 +1168,7 @@ function SalesContent() {
         throw new Error(`Invalid cart item: ${invalidCartItem.name || invalidCartItem.id || 'Unknown item'}`)
       }
 
-      const response = await fetch('/api/reservations', {
+      const response = await apiFetch('/api/reservations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -8,12 +8,16 @@
 // creates it.
 
 import { NextRequest, NextResponse } from 'next/server'
+import { requireActiveUserRequest } from '@/lib/server/authorize'
 import { collection, getDocs, query, where, orderBy, limit } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { ReceiptRecord } from '@/lib/transactions/transactionDocuments'
 
 export async function GET(req: NextRequest) {
   try {
+    const denied = await requireActiveUserRequest(req)
+    if (denied) return denied
+
     const { searchParams } = new URL(req.url)
     const status = searchParams.get('status') ?? 'active'
     const limitCount = Number(searchParams.get('limit') ?? 1)

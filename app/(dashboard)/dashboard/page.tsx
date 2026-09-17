@@ -3,7 +3,7 @@
 // Dashboard - the landing page after login.
 //
 // Shows revenue, inventory value, low-stock and out-of-stock counts, alerts,
-// and recent activity. Figures come from /api/dashboard rather than being
+// and recent activity. Figures are computed here from bounded queries rather than being
 // computed here, so this page and the API can never disagree.
 
 import { useEffect, useMemo, useState } from 'react'

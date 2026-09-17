@@ -172,3 +172,60 @@ export async function guardProcessedBy(
     { status: uid ? 403 : 401 }
   )
 }
+
+// ── Caller identity ──────────────────────────────────────────────────────────
+//
+// The guards above take a uid. Until now every route read that uid out of the
+// request body, which meant the caller chose their own identity. These helpers
+// verify a Firebase ID token instead and read the uid from inside it.
+
+import { getAuth } from 'firebase-admin/auth'
+import { getAdminApp } from '@/lib/firebaseAdmin'
+
+/** Returns the uid of the signed-in caller, or null if the token is absent or invalid. */
+export async function verifiedUid(req: Request): Promise<string | null> {
+  const header = req.headers.get('authorization') ?? ''
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim())
+  if (!match) return null
+
+  try {
+    const decoded = await getAuth(getAdminApp()).verifyIdToken(match[1].trim())
+    return decoded.uid
+  } catch {
+    // Expired, malformed or forged - treated the same as not signed in.
+    return null
+  }
+}
+
+/** Guard for routes that need a specific permission. Returns null when allowed. */
+export async function guardRequest(
+  req: Request,
+  permission: Permission
+): Promise<NextResponse | null> {
+  const uid = await verifiedUid(req)
+  const result = await checkPermission(uid, permission)
+  if (result.allowed) return null
+
+  return NextResponse.json(
+    { error: result.reason ?? 'You are not allowed to perform this action.' },
+    { status: uid ? 403 : 401 }
+  )
+}
+
+/** Guard for routes that only an administrator may call. */
+export async function requireAdminRequest(req: Request): Promise<NextResponse | null> {
+  const uid = await verifiedUid(req)
+  if (!uid) {
+    return NextResponse.json({ error: 'You must be signed in.' }, { status: 401 })
+  }
+  return requireAdmin(uid)
+}
+
+/** Guard for routes any signed-in, enabled account may call. */
+export async function requireActiveUserRequest(req: Request): Promise<NextResponse | null> {
+  const uid = await verifiedUid(req)
+  if (!uid) {
+    return NextResponse.json({ error: 'You must be signed in.' }, { status: 401 })
+  }
+  return requireActiveUser(uid)
+}

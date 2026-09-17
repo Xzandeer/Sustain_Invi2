@@ -1,5 +1,6 @@
 // AI Chat API — OpenAI REST (fetch) + Firebase Admin + caching + rate limiting
 import { NextRequest, NextResponse } from 'next/server'
+import { requireActiveUserRequest } from '@/lib/server/authorize'
 import { TOOL_DEFINITIONS, executeTool } from '@/lib/ai/toolRegistry'
 import { AI_ASSISTANT_ENABLED } from '@/lib/ai/assistantEnabled'
 import { checkRateLimit } from '@/lib/ai/rateLimiter'
@@ -239,6 +240,9 @@ export async function POST(req: NextRequest) {
   // The assistant is switched off. Hiding the button in the dashboard would
   // leave this endpoint reachable by anyone who knew the URL, and every call
   // spends credit on the OpenAI account.
+  const denied = await requireActiveUserRequest(req)
+  if (denied) return denied
+
   if (!AI_ASSISTANT_ENABLED) {
     return NextResponse.json({ error: 'The AI assistant is not available.' }, { status: 404 })
   }

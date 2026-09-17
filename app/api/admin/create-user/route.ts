@@ -15,7 +15,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getApps, initializeApp, cert, getApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
 import { getAdminDb } from '@/lib/firebaseAdmin'
-import { noAdminExists, requireAdmin } from '@/lib/server/authorize'
+import { noAdminExists, requireAdminRequest } from '@/lib/server/authorize'
 
 function getAdminAuth() {
   const privateKey = process.env.FIREBASE_ADMIN_PRIVATE_KEY
@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
     // moment the first admin exists, so it cannot be used to grant yourself
     // access to a running shop.
     if (!(await noAdminExists())) {
-      const denied = await requireAdmin(body.requestedByUid)
+      const denied = await requireAdminRequest(req)
       if (denied) return denied
     }
 

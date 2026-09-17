@@ -10,6 +10,7 @@
 // the customer was actually promised.
 
 import { useState, useEffect } from 'react'
+import { apiFetch } from '@/lib/apiFetch'
 import {
   EmailAuthProvider,
   reauthenticateWithCredential,
@@ -140,7 +141,7 @@ function SettingsContent() {
   // Load the current store policy
   useEffect(() => {
     let cancelled = false
-    fetch('/api/settings')
+    apiFetch('/api/settings')
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!cancelled && d) {
@@ -155,7 +156,7 @@ function SettingsContent() {
     e.preventDefault()
     setPolicyError(''); setPolicySuccess(''); setPolicyLoading(true)
     try {
-      const res = await fetch('/api/settings', {
+      const res = await apiFetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

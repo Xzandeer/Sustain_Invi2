@@ -4,6 +4,7 @@
 // Exports ProductFormValues, the shape the Inventory page saves.
 
 import { useEffect, useMemo, useState } from 'react'
+import { apiFetch } from '@/lib/apiFetch'
 import { X } from 'lucide-react'
 import { DEFAULT_WARRANTY_DAYS } from '@/lib/constants/warranty'
 
@@ -62,7 +63,7 @@ export default function ProductModal({
   useEffect(() => {
     if (!isOpen) return
     let cancelled = false
-    fetch('/api/settings')
+    apiFetch('/api/settings')
       .then(r => (r.ok ? r.json() : null))
       .then(d => { if (!cancelled && d && typeof d.warrantyDays === 'number') setPolicyDays(d.warrantyDays) })
       .catch(() => {})

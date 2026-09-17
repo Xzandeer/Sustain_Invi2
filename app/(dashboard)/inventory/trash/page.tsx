@@ -12,6 +12,7 @@
 // taken out of circulation, and the reason is recorded (see VOID_REASONS).
 
 import Link from 'next/link'
+import { apiFetch } from '@/lib/apiFetch'
 import { useEffect, useMemo, useState } from 'react'
 import { collection, getDocs } from 'firebase/firestore'
 import { toast } from 'sonner'
@@ -266,7 +267,7 @@ function InventoryTrashContent() {
     setError('')
     setActionId(id)
     try {
-      const response = await fetch('/api/inventory/' + id, {
+      const response = await apiFetch('/api/inventory/' + id, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

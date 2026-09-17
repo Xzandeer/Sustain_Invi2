@@ -1,4 +1,4 @@
-// Inventory counters used by GET /api/inventory/stats.
+// Inventory counters used by the inventory page.
 //
 // Reads the inventory and categories collections and counts:
 //   totalItems      - active items (soft-deleted ones are excluded)

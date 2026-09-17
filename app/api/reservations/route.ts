@@ -18,7 +18,7 @@ import {
   ReservationTicketDocument,
   ReceiptRecord,
 } from '@/lib/transactions/transactionDocuments'
-import { guardProcessedBy } from '@/lib/server/authorize'
+import { guardRequest } from '@/lib/server/authorize'
 
 interface ReservationPayload {
   items?: unknown
@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
     const customerDetails = parseCustomerDetails(body.customerDetails)
 
     // Creating a reservation moves stock into reserved, so it is gated.
-    const denied = await guardProcessedBy(body.processedBy, 'canManageReservations')
+    const denied = await guardRequest(req, 'canManageReservations')
     if (denied) return denied
 
     const processedBy = await getProcessedByInfo(body.processedBy)

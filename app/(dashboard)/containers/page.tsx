@@ -18,6 +18,7 @@
 // ContainersContent which loads the data and renders the list.
 
 import { useEffect, useMemo, useState } from 'react'
+import { apiFetch } from '@/lib/apiFetch'
 import {
   collection,
   getDocs,
@@ -804,7 +805,7 @@ function ContainersContent() {
     if (!addItemTarget) return
     setSavingItem(true)
     try {
-      const response = await fetch('/api/inventory', {
+      const response = await apiFetch('/api/inventory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

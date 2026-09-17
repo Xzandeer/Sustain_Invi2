@@ -17,6 +17,7 @@
 // canVoidItems for voiding. Staff without a permission never see the button.
 
 import Link from 'next/link'
+import { apiFetch } from '@/lib/apiFetch'
 import { useEffect, useMemo, useState } from 'react'
 import { collection, onSnapshot } from 'firebase/firestore'
 import { Plus, Tags, Trash2 } from 'lucide-react'
@@ -401,7 +402,7 @@ function InventoryContent() {
     setError('')
     setDeletingProductId(productId)
     try {
-      const response = await fetch(`/api/inventory/${productId}`, {
+      const response = await apiFetch(`/api/inventory/${productId}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -431,7 +432,7 @@ function InventoryContent() {
     setError('')
     setVoidingId(productId)
     try {
-      const response = await fetch(`/api/inventory/${productId}`, {
+      const response = await apiFetch(`/api/inventory/${productId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -469,7 +470,7 @@ function InventoryContent() {
     setError('')
     setVoidingId(productId)
     try {
-      const response = await fetch(`/api/inventory/${productId}`, {
+      const response = await apiFetch(`/api/inventory/${productId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -511,7 +512,7 @@ function InventoryContent() {
     setAddingCategory(true)
     setError('')
     try {
-      const response = await fetch('/api/categories', {
+      const response = await apiFetch('/api/categories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -538,7 +539,7 @@ function InventoryContent() {
     setDeletingCategoryId(categoryId)
     setError('')
     try {
-      const response = await fetch(`/api/categories/${categoryId}`, {
+      const response = await apiFetch(`/api/categories/${categoryId}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ requestedByUid: auth.currentUser?.uid ?? '' }),
@@ -578,7 +579,7 @@ function InventoryContent() {
     setAdjustingStock(true)
     setError('')
     try {
-      const response = await fetch(`/api/inventory/${adjustingProduct.id}/adjust`, {
+      const response = await apiFetch(`/api/inventory/${adjustingProduct.id}/adjust`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -675,7 +676,7 @@ function InventoryContent() {
     if (!isAdmin || assigningBarcodes) return
     setAssigningBarcodes(true)
     try {
-      const res = await fetch('/api/inventory/barcodes', {
+      const res = await apiFetch('/api/inventory/barcodes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
