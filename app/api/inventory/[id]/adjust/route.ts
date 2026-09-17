@@ -195,12 +195,21 @@ export async function POST(req: Request, context: RouteContext) {
     // Step 11: Update or create target variant
     if (targetVariant) {
       const nextTargetStock = targetVariant.stock + quantity
+      // Adopt the source's shipment when the target has none. Variants created
+      // by an earlier transfer have no containerId, and without this their
+      // sales never count toward the delivery the goods actually came from.
+      const targetContainerId =
+        typeof targetVariant.data.containerId === 'string' && targetVariant.data.containerId.trim()
+          ? targetVariant.data.containerId.trim()
+          : undefined
+
       await updateDoc(doc(db, 'inventory', targetVariant.id), {
         stock: nextTargetStock,
         quantity: nextTargetStock,
         price,
         minStock: targetVariant.minStock,
         stockStatus: getStockStatus({ stock: nextTargetStock, minStock: targetVariant.minStock }),
+        ...(targetContainerId || !containerId ? {} : { containerId }),
         updatedAt: new Date().toISOString(),
       })
     } else {
