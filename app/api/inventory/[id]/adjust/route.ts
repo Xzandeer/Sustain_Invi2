@@ -83,6 +83,12 @@ export async function POST(req: Request, context: RouteContext) {
       'Uncategorized'
     const price = Math.max(0, toNumber(data.price, 0))
     const minStock = Math.max(0, toNumber(data.minStock, 0))
+    // Carried to the other condition on transfer. containerId matters most:
+    // shipment profitability counts revenue per delivery, so a variant that
+    // loses its link stops contributing to the shipment it actually came from.
+    const containerId = typeof data.containerId === 'string' ? data.containerId : undefined
+    const description = typeof data.description === 'string' ? data.description : undefined
+    const imageUrl = typeof data.imageUrl === 'string' ? data.imageUrl : undefined
     const currentStock = Math.max(0, toNumber(data.stock ?? data.quantity, 0))
     const currentReservedStock = Math.max(0, toNumber(data.reservedStock, 0))
     const availableStock = Math.max(0, currentStock - currentReservedStock)
@@ -207,6 +213,9 @@ export async function POST(req: Request, context: RouteContext) {
         quantity,
         minStock,
         condition: targetCondition,
+        containerId,
+        description,
+        imageUrl,
       })
       targetId = created.id
       targetStockBefore = 0
