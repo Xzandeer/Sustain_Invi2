@@ -408,24 +408,28 @@ export async function PATCH(req: Request, context: RouteContext) {
       const nextVoidedUnits = previousVoidedUnits + voidQuantity
 
       // Check for active reservations (only block full voids)
-      if (isFullVoid) {
-        const { collection: fsCollection, getDocs, query: fsQuery, where } = await import('firebase/firestore')
-        const activeResQuery = fsQuery(
-          fsCollection(db, 'reservations'),
-          where('status', '==', 'active')
+      // Units held for a customer cannot be written off.
+      //
+      // This used to query the reservations collection for status 'active'
+      // lowercase, while the stored value is 'Active' - so it never matched and
+      // a fully reserved item could be written off from under the customer.
+      // It also only ran on a full write-off, so a partial one could eat into
+      // reserved units and drive available stock negative.
+      //
+      // reservedStock already sits on the item, so the check is a subtraction
+      // and covers both cases.
+      const sellableUnits = Math.max(0, currentStock - currentReservedStock)
+      if (voidQuantity > sellableUnits) {
+        return NextResponse.json(
+          {
+            error:
+              currentReservedStock > 0
+                ? `${currentReservedStock} unit${currentReservedStock === 1 ? ' is' : 's are'} reserved for a customer. ` +
+                  `Only ${sellableUnits} can be written off. Complete or cancel the reservation first.`
+                : `Only ${sellableUnits} unit${sellableUnits === 1 ? '' : 's'} can be written off.`,
+          },
+          { status: 400 }
         )
-        const activeResDocs = await getDocs(activeResQuery)
-        const hasActiveReservation = activeResDocs.docs.some((resDoc) => {
-          const resData = resDoc.data() as Record<string, unknown>
-          const items = Array.isArray(resData.items) ? resData.items : []
-          return items.some((item: Record<string, unknown>) => item.itemId === id || item.id === id)
-        })
-        if (hasActiveReservation) {
-          return NextResponse.json(
-            { error: 'This item has an active reservation and cannot be fully voided. Please cancel or complete the reservation first.' },
-            { status: 400 }
-          )
-        }
       }
 
       const newStock = currentStock - voidQuantity
