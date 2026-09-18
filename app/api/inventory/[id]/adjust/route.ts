@@ -1,5 +1,6 @@
 // Stock adjustment API - POST to add/deduct/transfer stock between conditions
 import { NextResponse } from 'next/server'
+import { MAX_STOCK } from '@/lib/constants/limits'
 import { doc, getDoc, updateDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import {
@@ -47,6 +48,13 @@ export async function POST(req: Request, context: RouteContext) {
 
     if (!Number.isFinite(quantity) || quantity <= 0) {
       return NextResponse.json({ error: 'Adjustment quantity must be greater than zero.' }, { status: 400 })
+    }
+
+    if (quantity > MAX_STOCK) {
+      return NextResponse.json(
+        { error: `Adjustment quantity cannot exceed ${MAX_STOCK}.` },
+        { status: 400 }
+      )
     }
 
     // Step 3: Get current item data

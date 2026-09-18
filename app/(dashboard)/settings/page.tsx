@@ -10,6 +10,7 @@
 // the customer was actually promised.
 
 import { useState, useEffect } from 'react'
+import { checkPassword, PASSWORD_RULE_HINT } from '@/lib/auth/passwordPolicy'
 import { apiFetch } from '@/lib/apiFetch'
 import {
   EmailAuthProvider,
@@ -106,7 +107,8 @@ function SettingsContent() {
     setPwError('')
     setPwSuccess('')
     if (!current || !newPw || !confirm) { setPwError('All fields are required.'); return }
-    if (newPw.length < 6) { setPwError('New password must be at least 6 characters.'); return }
+    const pwCheck = checkPassword(newPw)
+    if (!pwCheck.ok) { setPwError(pwCheck.reason); return }
     if (newPw !== confirm) { setPwError('New passwords do not match.'); return }
     if (current === newPw) { setPwError('New password must be different from your current password.'); return }
     const user = auth.currentUser
@@ -339,9 +341,10 @@ function SettingsContent() {
                         type="password"
                         value={newPw}
                         onChange={e => setNewPw(e.target.value)}
-                        placeholder="Minimum 6 characters"
+                        placeholder="Choose a new password"
                         className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                       />
+                      <p className="mt-1.5 text-xs text-slate-500">{PASSWORD_RULE_HINT}</p>
                     </div>
                     <div>
                       <label className="mb-1.5 block text-xs font-semibold text-slate-600">Confirm New Password</label>

@@ -16,6 +16,7 @@
 // the login, not the records - past sales keep the name captured at the time.
 
 import { useEffect, useState } from 'react'
+import { checkPassword, PASSWORD_RULE_HINT } from '@/lib/auth/passwordPolicy'
 import { apiFetch } from '@/lib/apiFetch'
 import { doc, getDocs, updateDoc, collection } from 'firebase/firestore'
 import { sendPasswordResetEmail, reauthenticateWithCredential, EmailAuthProvider } from 'firebase/auth'
@@ -252,8 +253,9 @@ function UsersContent() {
       setFormError('All fields are required.')
       return
     }
-    if (form.password.length < 6) {
-      setFormError('Password must be at least 6 characters.')
+    const pwCheck = checkPassword(form.password)
+    if (!pwCheck.ok) {
+      setFormError(pwCheck.reason)
       return
     }
     setCreating(true)
@@ -673,9 +675,10 @@ function UsersContent() {
                   type="password"
                   value={form.password}
                   onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-                  placeholder="Minimum 6 characters"
+                  placeholder="Choose a password"
                   className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                 />
+                <p className="mt-1.5 text-xs text-slate-500">{PASSWORD_RULE_HINT}</p>
               </div>
               <div>
                 <label className="mb-1.5 block text-xs font-semibold text-slate-600">Role</label>

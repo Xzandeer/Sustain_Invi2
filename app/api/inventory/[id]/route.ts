@@ -1,5 +1,6 @@
 // Inventory item detail API - PUT to edit, DELETE to move to trash, PATCH to restore/permanently delete
 import { NextResponse } from 'next/server'
+import { MAX_STOCK } from '@/lib/constants/limits'
 import { deleteDoc, doc, getDoc, updateDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
@@ -145,7 +146,9 @@ export async function PUT(req: Request, context: RouteContext) {
       !Number.isFinite(minStock) ||
       price <= 0 ||
       quantity < 0 ||
+      quantity > MAX_STOCK ||
       minStock < 0 ||
+      minStock > MAX_STOCK ||
       reservedStock < 0
     ) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })

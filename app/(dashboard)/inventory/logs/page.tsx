@@ -13,6 +13,7 @@
 // not an audit trail. Viewing requires the canViewStockLogs permission.
 
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { toast } from 'sonner'
 import { collection, getDocs, orderBy, query, limit } from 'firebase/firestore'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { db } from '@/lib/firebase'
@@ -270,6 +271,76 @@ function InventoryLogsContent() {
     })
   }, [logs, deferredSearch, actionFilter, conditionFilter, startDate, endDate, activeTab, sortDir])
 
+  // Quick ranges. The audit trail is usually wanted for a period - "this week",
+  // "last month" - rather than two dates typed by hand.
+  const applyRange = (preset: 'today' | 'week' | 'month' | 'lastMonth' | 'all') => {
+    const now = new Date()
+    const iso = (d: Date) =>
+      new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+
+    setCurrentPage(1)
+    if (preset === 'all') { setStartDate(''); setEndDate(''); return }
+
+    let from = iso(now)
+    let to = iso(now)
+    if (preset === 'week') {
+      // Monday start, matching the sales page
+      const day = (now.getDay() + 6) % 7
+      from = iso(new Date(now.getFullYear(), now.getMonth(), now.getDate() - day))
+    } else if (preset === 'month') {
+      from = iso(new Date(now.getFullYear(), now.getMonth(), 1))
+    } else if (preset === 'lastMonth') {
+      from = iso(new Date(now.getFullYear(), now.getMonth() - 1, 1))
+      to = iso(new Date(now.getFullYear(), now.getMonth(), 0))
+    }
+    setStartDate(from)
+    setEndDate(to)
+  }
+
+  // ── Export the filtered log as CSV ──
+  const exportLogsCsv = () => {
+    const esc = (v: unknown) => {
+      const str = String(v ?? '')
+      return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str
+    }
+    const period =
+      startDate || endDate ? `${startDate || 'any'} to ${endDate || 'any'}` : 'All dates'
+
+    const meta = [
+      ['SUSTAIN — Stock Log Export'],
+      ['Period', period],
+      ['Generated', new Date().toLocaleString('en-PH')],
+      ['Entries', String(filteredLogs.length)],
+      [],
+    ]
+    const headers = [
+      'Date', 'Time', 'Item', 'Condition', 'Action',
+      'Stock before', 'Change', 'Stock after', 'Processed by', 'Remarks',
+    ]
+    const rows = filteredLogs.map((log) => [
+      log.createdAt ? log.createdAt.toLocaleDateString('en-PH') : '',
+      log.createdAt ? log.createdAt.toLocaleTimeString('en-PH') : '',
+      log.itemName,
+      log.condition,
+      getStockLogActionLabel(log.resolvedAction),
+      log.stockBefore,
+      log.quantityChanged,
+      log.stockAfter,
+      log.userName || log.userEmail,
+      log.remarks,
+    ])
+
+    const csv = [...meta, headers, ...rows].map((r) => r.map(esc).join(',')).join('\n')
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `SUSTAIN-StockLogs-${startDate || 'all'}-to-${endDate || 'all'}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast.success(`Exported ${filteredLogs.length} log entr${filteredLogs.length === 1 ? 'y' : 'ies'}.`)
+  }
+
 
   const summary = useMemo(() => ({
     total: logs.filter(l => l.resolvedAction !== 'unmapped_action').length,
@@ -338,6 +409,19 @@ function InventoryLogsContent() {
             <option value="New">New</option>
             <option value="Refurbished">Refurbished</option>
           </select>
+          {/* Quick ranges */}
+          <select
+            onChange={(e) => { applyRange(e.target.value as 'today' | 'week' | 'month' | 'lastMonth' | 'all'); e.target.selectedIndex = 0 }}
+            defaultValue=""
+            title="Set the date range"
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:outline-none">
+            <option value="" disabled>Quick range…</option>
+            <option value="today">Today</option>
+            <option value="week">This week</option>
+            <option value="month">This month</option>
+            <option value="lastMonth">Last month</option>
+            <option value="all">All dates</option>
+          </select>
           {/* Date range */}
           <div className="flex items-center gap-1.5">
             <input type="date" value={startDate} max={endDate || undefined}
@@ -348,6 +432,18 @@ function InventoryLogsContent() {
               onChange={e => { setEndDate(e.target.value); setCurrentPage(1) }}
               className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm text-slate-700 focus:outline-none" />
           </div>
+          {/* Export the filtered range */}
+          <button
+            type="button"
+            onClick={exportLogsCsv}
+            disabled={filteredLogs.length === 0}
+            title="Download the filtered log entries as a CSV file"
+            className="flex items-center gap-1.5 rounded-lg bg-[#1e3a5f] px-3 py-1.5 text-sm font-medium text-white transition hover:bg-[#162d4a] disabled:cursor-not-allowed disabled:opacity-40">
+            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+            </svg>
+            Export
+          </button>
           {/* Reset */}
           <button onClick={resetFilters}
             className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-slate-50">

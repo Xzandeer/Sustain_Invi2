@@ -1,5 +1,6 @@
 // Inventory API endpoint - GET to list items, POST to create items
 import { NextRequest, NextResponse } from 'next/server'
+import { MAX_STOCK } from '@/lib/constants/limits'
 import {
   collection,
   doc,
@@ -133,6 +134,13 @@ export async function POST(req: NextRequest) {
 
     if (price <= 0 || quantity < 0 || minStock < 0) {
       return NextResponse.json({ error: 'Price must be greater than zero, and stock values cannot be negative.' }, { status: 400 })
+    }
+
+    if (quantity > MAX_STOCK || minStock > MAX_STOCK) {
+      return NextResponse.json(
+        { error: `Quantity and minimum stock cannot exceed ${MAX_STOCK}.` },
+        { status: 400 }
+      )
     }
 
     let categoryId = categoryIdInput

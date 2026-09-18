@@ -12,6 +12,7 @@
 // account, which is why this lives on the server.
 
 import { NextRequest, NextResponse } from 'next/server'
+import { checkPassword } from '@/lib/auth/passwordPolicy'
 import { getApps, initializeApp, cert, getApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
 import { getAdminDb } from '@/lib/firebaseAdmin'
@@ -62,8 +63,9 @@ export async function POST(req: NextRequest) {
     if (!name?.trim() || !email?.trim() || !password || !role) {
       return NextResponse.json({ error: 'All fields are required.' }, { status: 400 })
     }
-    if (password.length < 6) {
-      return NextResponse.json({ error: 'Password must be at least 6 characters.' }, { status: 400 })
+    const pwCheck = checkPassword(password)
+    if (!pwCheck.ok) {
+      return NextResponse.json({ error: pwCheck.reason }, { status: 400 })
     }
 
     const adminAuth = getAdminAuth()

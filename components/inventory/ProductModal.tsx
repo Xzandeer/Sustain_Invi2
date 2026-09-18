@@ -4,6 +4,7 @@
 // Exports ProductFormValues, the shape the Inventory page saves.
 
 import { useEffect, useMemo, useState } from 'react'
+import { MAX_STOCK } from '@/lib/constants/limits'
 import { apiFetch } from '@/lib/apiFetch'
 import { X } from 'lucide-react'
 import { DEFAULT_WARRANTY_DAYS } from '@/lib/constants/warranty'
@@ -188,6 +189,7 @@ export default function ProductModal({
                 <input
                   type="number"
                   min={0}
+                  max={MAX_STOCK}
                   value={quantity}
                   onChange={(event) => setQuantity(event.target.value)}
                   required
@@ -200,6 +202,7 @@ export default function ProductModal({
               <input
                 type="number"
                 min={0}
+                max={MAX_STOCK}
                 value={minStock}
                 onChange={(event) => setMinStock(event.target.value)}
                 required

@@ -7,6 +7,7 @@
 // already promised to a customer.
 
 import { useEffect, useState } from 'react'
+import { MAX_STOCK } from '@/lib/constants/limits'
 import { X } from 'lucide-react'
 // Only the fields this modal actually reads. Declared here rather than importing
 // a page-level type, so the component stays independent of where it is used.
@@ -124,6 +125,7 @@ export default function StockAdjustmentModal({
               <input
                 type="number"
                 min={1}
+                max={MAX_STOCK}
                 value={quantity}
                 onChange={(event) => setQuantity(event.target.value)}
                 className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
