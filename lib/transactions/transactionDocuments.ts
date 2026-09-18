@@ -4,8 +4,14 @@ export const STORE_NAME = 'JMGs JAPAN SURPLUS'
 export const STORE_TAGLINE = 'Sales & Inventory'
 export const SALES_THANK_YOU_NOTE = 'Thank you for your purchase.'
 export const RESERVATION_NOTICE = 'Please present this ticket when claiming your reserved item.'
-export const DEFAULT_CLAIM_INSTRUCTIONS =
-  'Present this reservation ticket and a valid ID upon claiming your reserved item. Please claim within 3 days to avoid automatic release.'
+// The customer keeps this slip, so it has to state the period the shop is
+// actually holding the goods for - taken from Settings, not fixed here.
+export const claimInstructionsFor = (holdDays: number) =>
+  `Present this reservation ticket and a valid ID upon claiming your reserved item. ` +
+  `Please claim within ${holdDays} day${holdDays === 1 ? '' : 's'} to avoid automatic release.`
+
+/** Fallback only, for records written before the period was configurable. */
+export const DEFAULT_CLAIM_INSTRUCTIONS = claimInstructionsFor(7)
 
 export interface TransactionCustomerInfo {
   fullName: string

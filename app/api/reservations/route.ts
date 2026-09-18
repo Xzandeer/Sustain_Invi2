@@ -11,7 +11,7 @@ import {
 import { createTransactionNumber } from '@/lib/server/transactionNumbers'
 import { parseDateRange, toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import {
-  DEFAULT_CLAIM_INSTRUCTIONS,
+  claimInstructionsFor,
   RESERVATION_NOTICE,
   STORE_NAME,
   STORE_TAGLINE,
@@ -244,7 +244,7 @@ export async function POST(req: NextRequest) {
       processedByName: processedBy.name,
       processedByEmail: processedBy.email ?? '',
       status: 'Active',
-      claimInstructions: DEFAULT_CLAIM_INSTRUCTIONS,
+      claimInstructions: claimInstructionsFor(holdDays),
       createdAt: serverTimestamp(),
       expiresAt: expiresAt.toISOString(),
       reservationDate: nowIso,
@@ -294,7 +294,7 @@ export async function POST(req: NextRequest) {
       items: ticketItems,
       reservationDate: nowIso,
       processedBy: processedBy.name,
-      claimInstructions: DEFAULT_CLAIM_INSTRUCTIONS,
+      claimInstructions: claimInstructionsFor(holdDays),
       notice: RESERVATION_NOTICE,
     }
 
