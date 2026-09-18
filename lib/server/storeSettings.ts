@@ -4,6 +4,7 @@
 import { doc, getDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import {
+  DEFAULT_RESERVATION_DAYS,
   DEFAULT_WARRANTY_DAYS,
   DEFAULT_SELLER_ADDRESS,
   DEFAULT_SELLER_REGISTERED_NAME,
@@ -14,6 +15,8 @@ import {
 
 export interface StoreSettings {
   warrantyDays: number
+  /** Days a reservation holds stock before it lapses. */
+  reservationDays: number
   /** Seller details printed on the sales invoice. See constants/warranty.ts. */
   sellerRegisteredName: string
   sellerTin: string
@@ -25,6 +28,7 @@ const str = (value: unknown, fallback: string) =>
 
 const FALLBACK: StoreSettings = {
   warrantyDays: DEFAULT_WARRANTY_DAYS,
+  reservationDays: DEFAULT_RESERVATION_DAYS,
   sellerRegisteredName: DEFAULT_SELLER_REGISTERED_NAME,
   sellerTin: DEFAULT_SELLER_TIN,
   sellerAddress: DEFAULT_SELLER_ADDRESS,
@@ -40,9 +44,21 @@ export async function getStoreSettings(): Promise<StoreSettings> {
     const parsed =
       typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : Number.NaN
 
+    const rawReservation = data.reservationDays
+    const parsedReservation =
+      typeof rawReservation === 'number'
+        ? rawReservation
+        : typeof rawReservation === 'string'
+          ? Number(rawReservation)
+          : Number.NaN
+
     return {
       warrantyDays:
         Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_WARRANTY_DAYS,
+      reservationDays:
+        Number.isFinite(parsedReservation) && parsedReservation >= 1
+          ? Math.floor(parsedReservation)
+          : DEFAULT_RESERVATION_DAYS,
       sellerRegisteredName: str(data.sellerRegisteredName, DEFAULT_SELLER_REGISTERED_NAME),
       sellerTin: str(data.sellerTin, DEFAULT_SELLER_TIN),
       sellerAddress: str(data.sellerAddress, DEFAULT_SELLER_ADDRESS),
@@ -55,4 +71,8 @@ export async function getStoreSettings(): Promise<StoreSettings> {
 
 export async function getWarrantyDays(): Promise<number> {
   return (await getStoreSettings()).warrantyDays
+}
+
+export async function getReservationDays(): Promise<number> {
+  return (await getStoreSettings()).reservationDays
 }

@@ -1,5 +1,6 @@
 // Reservations API endpoint - POST to create reservations, GET to list reservations
 import { NextRequest, NextResponse } from 'next/server'
+import { getReservationDays } from '@/lib/server/storeSettings'
 import { collection, doc, getDocs, query, runTransaction, serverTimestamp, addDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import {
@@ -144,7 +145,10 @@ export async function POST(req: NextRequest) {
 
     const now = new Date()
     const nowIso = now.toISOString()
-    const expiresAt = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000)
+    // Hold period comes from Settings so the shop can match whatever it tells
+    // customers, rather than a number buried in this file.
+    const holdDays = await getReservationDays()
+    const expiresAt = new Date(now.getTime() + holdDays * 24 * 60 * 60 * 1000)
 
     // STEP 2: Fetch inventory items
     console.log('[reservations POST] step 2: fetching inventory items', normalizedItems)

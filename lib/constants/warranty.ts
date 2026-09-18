@@ -4,6 +4,11 @@
 // and is editable by the administrator in Settings → Store Policy.
 // This constant is only the fallback used when the setting has not been saved yet.
 
+// How long stock is held for a customer before the hold lapses and the units
+// go back on sale. Set in Settings; this is the fallback.
+export const DEFAULT_RESERVATION_DAYS = 7
+export const MAX_RESERVATION_DAYS = 90
+
 export const DEFAULT_WARRANTY_DAYS = 7
 
 // Kept for backwards compatibility with code that imported the old constant.

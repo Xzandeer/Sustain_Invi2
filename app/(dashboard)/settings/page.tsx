@@ -58,6 +58,7 @@ function SettingsContent() {
 
   // Store policy state
   const [warrantyDays, setWarrantyDays] = useState('7')
+  const [reservationDays, setReservationDays] = useState('7')
   const [policyLoading, setPolicyLoading] = useState(false)
   const [policyError, setPolicyError] = useState('')
   const [policySuccess, setPolicySuccess] = useState('')
@@ -148,6 +149,7 @@ function SettingsContent() {
       .then((d) => {
         if (!cancelled && d) {
           if (typeof d.warrantyDays === 'number') setWarrantyDays(String(d.warrantyDays))
+          if (typeof d.reservationDays === 'number') setReservationDays(String(d.reservationDays))
         }
       })
       .catch(() => {})
@@ -163,6 +165,7 @@ function SettingsContent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           warrantyDays: Number(warrantyDays),
+          reservationDays: Number(reservationDays),
           requestedByUid: auth.currentUser?.uid ?? '',
           updatedByEmail: auth.currentUser?.email ?? '',
         }),
@@ -170,6 +173,7 @@ function SettingsContent() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to save.')
       setWarrantyDays(String(data.warrantyDays))
+      if (typeof data.reservationDays === 'number') setReservationDays(String(data.reservationDays))
       setPolicySuccess('Store policy updated.')
     } catch (err) {
       setPolicyError(err instanceof Error ? err.message : 'Failed to save settings.')
@@ -410,6 +414,29 @@ function SettingsContent() {
                       <p className="mt-2 text-xs text-slate-500">
                         Customers may return an item within this many days of purchase.
                         Refund attempts after this window are automatically rejected by the system.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="mb-1.5 block text-xs font-semibold text-slate-600">
+                        Reservation Hold Period
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={1}
+                          max={90}
+                          value={reservationDays}
+                          onChange={(e) => setReservationDays(e.target.value)}
+                          required
+                          className="w-32 rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                        />
+                        <span className="text-sm font-medium text-slate-600">days</span>
+                      </div>
+                      <p className="mt-2 text-xs text-slate-500">
+                        Stock is held for a customer for this long. After that the hold
+                        lapses and the units return to available stock. An active hold can
+                        be extended, and a lapsed one reinstated if the stock is still there.
                       </p>
                     </div>
 

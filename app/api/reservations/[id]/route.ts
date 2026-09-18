@@ -1,5 +1,6 @@
 // Reservation detail API - PATCH to update reservation status (complete/cancel/expire)
 import { NextResponse } from 'next/server'
+import { getReservationDays } from '@/lib/server/storeSettings'
 import { addDoc, collection, doc, getDoc, runTransaction, serverTimestamp } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { createStockLog, getProcessedByInfo } from '@/lib/server/inventory'
@@ -30,7 +31,7 @@ interface ReservationItemRecord {
 }
 
 interface PendingStockLog {
-  actionType: 'reservation_claim' | 'reservation_release'
+  actionType: 'reservation_claim' | 'reservation_release' | 'reservation_deduction'
   itemId: string
   itemName: string
   condition: 'New' | 'Refurbished'
@@ -84,7 +85,7 @@ export async function PATCH(req: Request, context: RouteContext) {
     const cancellationReasonType = body.cancellationReasonType === 'manual' ? 'manual' : 'system'
 
     // Step 3: Validate action and ID
-    if (!id || !['complete', 'cancel', 'expire'].includes(action)) {
+    if (!id || !['complete', 'cancel', 'expire', 'extend', 'reinstate'].includes(action)) {
       return NextResponse.json({ error: 'Invalid reservation action.' }, { status: 400 })
     }
 
@@ -95,6 +96,9 @@ export async function PATCH(req: Request, context: RouteContext) {
         { status: 400 }
       )
     }
+
+    // Extending or reinstating restarts the hold, using the period the shop set
+    const holdDays = await getReservationDays()
 
     const reservationRef = doc(db, 'reservations', id)
     const saleRef = doc(collection(db, 'sales'))
@@ -110,13 +114,91 @@ export async function PATCH(req: Request, context: RouteContext) {
 
       const data = reservationSnapshot.data() as Record<string, unknown>
       const status = data.status as ReservationStatus
-      if (status !== 'Active') {
+
+      // reinstate revives a lapsed hold; everything else needs a live one
+      if (action === 'reinstate') {
+        if (status !== 'Expired' && status !== 'Cancelled') {
+          throw new Error('RESERVATION_NOT_LAPSED')
+        }
+      } else if (status !== 'Active') {
         throw new Error('RESERVATION_NOT_ACTIVE')
       }
 
       const reservationItems = parseReservationItems(data.items)
       if (reservationItems.length === 0) {
         throw new Error('RESERVATION_ITEMS_MISSING')
+      }
+
+      // ── Extend: push a live hold further out ──
+      if (action === 'extend') {
+        const until = new Date(Date.now() + holdDays * 24 * 60 * 60 * 1000)
+        transaction.update(reservationRef, {
+          expiresAt: until.toISOString(),
+          updatedAt: nowIso,
+        })
+        return
+      }
+
+      // ── Reinstate: the customer arrived after the hold lapsed ──
+      //
+      // The stock went back on sale when the hold expired, so it may since have
+      // been sold. Each line is re-checked against what is actually available
+      // and the hold is only revived if every item can still be covered.
+      if (action === 'reinstate') {
+        for (const item of reservationItems) {
+          const inventoryRef = doc(db, 'inventory', item.id)
+          const inventorySnapshot = await transaction.get(inventoryRef)
+          if (!inventorySnapshot.exists()) {
+            throw new Error(`REINSTATE_UNAVAILABLE:${item.name}`)
+          }
+
+          const inventoryData = inventorySnapshot.data() as Record<string, unknown>
+          if (inventoryData.isVoided === true || inventoryData.isDeleted === true) {
+            throw new Error(`REINSTATE_UNAVAILABLE:${item.name}`)
+          }
+
+          const currentStock = Math.max(0, toNumber(inventoryData.stock ?? inventoryData.quantity, 0))
+          const currentReserved = Math.max(0, toNumber(inventoryData.reservedStock, 0))
+          const available = Math.max(0, currentStock - currentReserved)
+
+          if (available < item.quantity) {
+            throw new Error(`REINSTATE_UNAVAILABLE:${item.name}`)
+          }
+
+          transaction.update(inventoryRef, {
+            reservedStock: currentReserved + item.quantity,
+            updatedAt: nowIso,
+          })
+
+          pendingLogs.push({
+            actionType: 'reservation_deduction',
+            itemId: item.id,
+            itemName: item.name,
+            condition: item.condition,
+            quantityBefore: available,
+            quantityChanged: item.quantity,
+            quantityAfter: available - item.quantity,
+            stockBefore: currentStock,
+            stockAfter: currentStock,
+            reservedBefore: currentReserved,
+            reservedAfter: currentReserved + item.quantity,
+            remarks: 'Reservation reinstated - customer returned after the hold lapsed.',
+          })
+        }
+
+        const until = new Date(Date.now() + holdDays * 24 * 60 * 60 * 1000)
+        transaction.update(reservationRef, {
+          status: 'Active',
+          expiresAt: until.toISOString(),
+          cancellationReason: '',
+          cancellationReasonType: '',
+          cancelledByName: '',
+          cancelledAt: null,
+          reinstatedAt: nowIso,
+          reinstatedBy: processedBy.name,
+          updatedAt: nowIso,
+        })
+        return
       }
 
       if (action === 'complete') {
@@ -336,6 +418,23 @@ export async function PATCH(req: Request, context: RouteContext) {
     if (error instanceof Error) {
       if (error.message === 'RESERVATION_NOT_FOUND') {
         return NextResponse.json({ error: 'Reservation not found.' }, { status: 404 })
+      }
+
+      if (error.message.startsWith('REINSTATE_UNAVAILABLE:')) {
+        const itemName = error.message.split(':').slice(1).join(':')
+        return NextResponse.json(
+          {
+            error: `${itemName} is no longer available in the quantity reserved, so this hold cannot be reinstated. It was released when the hold lapsed and has since been sold or written off.`,
+          },
+          { status: 409 }
+        )
+      }
+
+      if (error.message === 'RESERVATION_NOT_LAPSED') {
+        return NextResponse.json(
+          { error: 'Only a lapsed or cancelled reservation can be reinstated.' },
+          { status: 400 }
+        )
       }
 
       if (error.message === 'RESERVATION_NOT_ACTIVE') {

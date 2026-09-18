@@ -24,6 +24,8 @@ import {
   FileText,
   ReceiptText,
   RefreshCw,
+  RotateCcw,
+  Timer,
   TrendingUp,
   XCircle,
 } from 'lucide-react'
@@ -467,6 +469,68 @@ function ReservationsContent() {
     }
   }
 
+
+  // Customer rang to say they are coming - push the hold out rather than lose it.
+  const handleExtendReservation = async (reservation: Reservation) => {
+    if (reservation.status !== 'Active') return
+    if (!window.confirm('Extend the hold for ' + reservation.customer + '?')) return
+    setActionId(reservation.id)
+    try {
+      const res = await apiFetch('/api/reservations/' + reservation.id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'extend',
+          processedBy: {
+            uid: auth.currentUser?.uid ?? '',
+            email: auth.currentUser?.email ?? '',
+            name: auth.currentUser?.displayName ?? auth.currentUser?.email ?? '',
+          },
+        }),
+      })
+      const payload = (await res.json()) as { error?: string }
+      if (!res.ok) throw new Error(payload.error || 'Failed to extend the hold.')
+      toast.success('Hold extended.')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to extend the hold.'
+      setPageError(msg)
+      toast.error(msg)
+    } finally {
+      setActionId(null)
+    }
+  }
+
+  // The customer turned up after the hold lapsed. If the stock is still on the
+  // shelf the hold is revived; if it has since sold, the server says so.
+  const handleReinstateReservation = async (reservation: Reservation) => {
+    if (reservation.status !== 'Expired' && reservation.status !== 'Cancelled') return
+    if (!window.confirm('Reinstate this reservation for ' + reservation.customer + '? The items must still be in stock.')) return
+    setActionId(reservation.id)
+    try {
+      const res = await apiFetch('/api/reservations/' + reservation.id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'reinstate',
+          processedBy: {
+            uid: auth.currentUser?.uid ?? '',
+            email: auth.currentUser?.email ?? '',
+            name: auth.currentUser?.displayName ?? auth.currentUser?.email ?? '',
+          },
+        }),
+      })
+      const payload = (await res.json()) as { error?: string }
+      if (!res.ok) throw new Error(payload.error || 'Failed to reinstate the reservation.')
+      toast.success('Reservation reinstated. It can now be completed.')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to reinstate the reservation.'
+      setPageError(msg)
+      toast.error(msg)
+    } finally {
+      setActionId(null)
+    }
+  }
+
   const handleCancelReservation = (reservation: Reservation) => {
     if (reservation.status !== 'Active') return
     setReservationToCancel(reservation)
@@ -894,6 +958,14 @@ function ReservationsContent() {
                                 </button>
                                 <button
                                   disabled={actionId === r.id}
+                                  onClick={() => handleExtendReservation(r)}
+                                  title="Extend the hold"
+                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-amber-200 bg-amber-50 text-amber-600 transition-colors hover:bg-amber-100 disabled:opacity-50"
+                                >
+                                  <Timer className="h-4 w-4" />
+                                </button>
+                                <button
+                                  disabled={actionId === r.id}
                                   onClick={() => handleCancelReservation(r)}
                                   title="Cancel Reservation"
                                   className="flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-500 transition-colors hover:bg-rose-100 disabled:opacity-50"
@@ -909,20 +981,40 @@ function ReservationsContent() {
                                 <ReceiptText className="h-4 w-4" />
                               </button>
                             ) : r.status === 'Expired' ? (
-                              <button
-                                title="View Log"
-                                className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-500 transition-colors hover:bg-slate-100"
-                              >
-                                <FileText className="h-4 w-4" />
-                              </button>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  disabled={actionId === r.id}
+                                  onClick={() => handleReinstateReservation(r)}
+                                  title="Reinstate - the customer came back and the stock is still here"
+                                  className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#1e3a5f] text-white shadow-sm transition-colors hover:bg-[#162d4a] disabled:opacity-50"
+                                >
+                                  <RotateCcw className="h-4 w-4" />
+                                </button>
+                                <button
+                                  title="View Log"
+                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-500 transition-colors hover:bg-slate-100"
+                                >
+                                  <FileText className="h-4 w-4" />
+                                </button>
+                              </div>
                             ) : r.status === 'Cancelled' ? (
-                              <button
-                                onClick={() => setViewReasonRes(r)}
-                                title="View Reason"
-                                className="flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-500 transition-colors hover:bg-rose-100"
-                              >
-                                <AlertCircle className="h-4 w-4" />
-                              </button>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  disabled={actionId === r.id}
+                                  onClick={() => handleReinstateReservation(r)}
+                                  title="Reinstate this reservation"
+                                  className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#1e3a5f] text-white shadow-sm transition-colors hover:bg-[#162d4a] disabled:opacity-50"
+                                >
+                                  <RotateCcw className="h-4 w-4" />
+                                </button>
+                                <button
+                                  onClick={() => setViewReasonRes(r)}
+                                  title="View Reason"
+                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-500 transition-colors hover:bg-rose-100"
+                                >
+                                  <AlertCircle className="h-4 w-4" />
+                                </button>
+                              </div>
                             ) : null}
                           </td>
                         </tr>

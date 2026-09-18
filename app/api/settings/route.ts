@@ -2,6 +2,7 @@
 // Backed by Firestore document: storeSettings/general
 
 import { NextRequest, NextResponse } from 'next/server'
+import { MAX_RESERVATION_DAYS } from '@/lib/constants/warranty'
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { getStoreSettings } from '@/lib/server/storeSettings'
@@ -36,6 +37,28 @@ export async function PUT(req: NextRequest) {
     }
 
     const warrantyDays = Math.floor(parsed)
+
+    // How long a reservation holds stock. At least a day, or a hold would lapse
+    // the moment it was made.
+    const rawReservation = body.reservationDays
+    const parsedReservation =
+      typeof rawReservation === 'number'
+        ? rawReservation
+        : typeof rawReservation === 'string'
+          ? Number(rawReservation)
+          : Number.NaN
+
+    if (
+      !Number.isFinite(parsedReservation) ||
+      parsedReservation < 1 ||
+      parsedReservation > MAX_RESERVATION_DAYS
+    ) {
+      return NextResponse.json(
+        { error: `Reservation period must be a whole number between 1 and ${MAX_RESERVATION_DAYS} days.` },
+        { status: 400 }
+      )
+    }
+    const reservationDays = Math.floor(parsedReservation)
     const updatedBy =
       typeof body.updatedByEmail === 'string' ? body.updatedByEmail.trim() : ''
 
@@ -64,6 +87,7 @@ export async function PUT(req: NextRequest) {
       doc(db, SETTINGS_COLLECTION, SETTINGS_DOC),
       {
         warrantyDays,
+        reservationDays,
         sellerRegisteredName,
         sellerAddress,
         sellerTin,
@@ -76,6 +100,7 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({
       success: true,
       warrantyDays,
+      reservationDays,
       sellerRegisteredName,
       sellerAddress,
       sellerTin,

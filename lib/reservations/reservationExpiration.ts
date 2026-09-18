@@ -1,4 +1,8 @@
-// Auto-expires reservations after 3 days and releases reserved stock back to inventory
+// Releases a hold once it passes the expiry stamped on it when it was created.
+//
+// The hold period itself is a store setting - see Settings, Reservation Hold
+// Period - so nothing here needs to know how long it is. A lapsed hold can be
+// reinstated from the Reservations page if the stock is still on the shelf.
 import { collection, doc, getDocs, query, runTransaction, serverTimestamp, where } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { createStockLog, getProcessedByInfo } from '@/lib/server/inventory'
