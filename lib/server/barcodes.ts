@@ -17,8 +17,7 @@
 // condition and history - would suit second-hand goods better, but it is a
 // change to the data model rather than a feature. Recorded as future work.
 
-import { doc, runTransaction } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 
 const COUNTER_COLLECTION = 'transactionCounters'
 const COUNTER_ID = 'itemBarcode'
@@ -34,12 +33,13 @@ const formatBarcode = (sequence: number) => String(sequence).padStart(6, '0')
  * moment from receiving the same code.
  */
 export async function createItemBarcode(): Promise<string> {
-  const counterRef = doc(db, COUNTER_COLLECTION, COUNTER_ID)
+  const adminDb = getAdminDb()
+  const counterRef = adminDb.collection(COUNTER_COLLECTION).doc(COUNTER_ID)
 
   let next = 1
-  await runTransaction(db, async (txn) => {
+  await adminDb.runTransaction(async (txn) => {
     const snap = await txn.get(counterRef)
-    const current = snap.exists() ? Number((snap.data() as Record<string, unknown>).sequence) : 0
+    const current = snap.exists ? Number((snap.data() as Record<string, unknown>).sequence) : 0
     next = Number.isFinite(current) && current > 0 ? current + 1 : 1
     txn.set(counterRef, { sequence: next, updatedAt: new Date().toISOString() }, { merge: true })
   })

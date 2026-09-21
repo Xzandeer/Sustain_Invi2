@@ -1,6 +1,6 @@
 // Generates unique transaction numbers (receipt & reservation codes) using Firestore counters
-import { collection, doc, runTransaction, serverTimestamp } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { FieldValue, type DocumentReference } from 'firebase-admin/firestore'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 
 type TransactionNumberType = 'sale' | 'reservation'
 
@@ -31,27 +31,84 @@ const formatDateKey = (date: Date) => {
 // Step 2: Pad sequence number to 4 digits (1 becomes 0001)
 const formatSequenceNumber = (sequenceNumber: number) => String(sequenceNumber).padStart(4, '0')
 
+/**
+ * Reserves the next number WITHOUT writing a target document.
+ *
+ * `createTransactionNumber` below opens its own Firestore transaction, so it
+ * cannot be called from inside another one. The reservation-claim flow already
+ * runs in a transaction (stock and reserved stock have to move together with
+ * the sale), so it allocates its number up front with this instead.
+ *
+ * If the caller's own transaction then fails, the allocated number is simply
+ * never used and the day's sequence has a gap. That is fine - receipt numbers
+ * must be unique and ordered, not contiguous.
+ */
+export const allocateTransactionNumber = async (
+  type: TransactionNumberType,
+  createdAtIso: string
+): Promise<TransactionNumberResult> => {
+  const dateKey = formatDateKey(new Date(createdAtIso))
+  const db = getAdminDb()
+  const counterRef = db.collection('transactionCounters').doc(`${type}_${dateKey}`)
+
+  let result: TransactionNumberResult | null = null
+
+  await db.runTransaction(async (transaction) => {
+    const counterSnapshot = await transaction.get(counterRef)
+    const currentSequence =
+      counterSnapshot.exists && typeof counterSnapshot.data()?.sequenceNumber === 'number'
+        ? (counterSnapshot.data()!.sequenceNumber as number)
+        : 0
+
+    const nextSequence = currentSequence + 1
+
+    transaction.set(
+      counterRef,
+      {
+        transactionType: type,
+        dateKey,
+        sequenceNumber: nextSequence,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+
+    result = {
+      value: `${COUNTER_PREFIX[type]}-${dateKey}-${formatSequenceNumber(nextSequence)}`,
+      dateKey,
+      sequenceNumber: nextSequence,
+    }
+  })
+
+  if (!result) {
+    throw new Error('Failed to allocate transaction number.')
+  }
+
+  return result
+}
+
 // Main function to generate unique transaction numbers atomically (prevents duplicate numbers)
 export const createTransactionNumber = async (
   type: TransactionNumberType,
-  targetRef: ReturnType<typeof doc>,
+  targetRef: DocumentReference,
   buildPayload: (result: TransactionNumberResult) => Record<string, unknown>,
   createdAtIso: string
 ): Promise<TransactionNumberResult> => {
   const now = new Date(createdAtIso)
   const dateKey = formatDateKey(now)
   const counterId = `${type}_${dateKey}` // Separate counter for each transaction type per day
-  const counterRef = doc(db, 'transactionCounters', counterId)
+  const db = getAdminDb()
+  const counterRef = db.collection('transactionCounters').doc(counterId)
 
   let result: TransactionNumberResult | null = null
 
   // Use transaction to ensure atomic read-modify-write (avoids duplicate sequence numbers)
-  await runTransaction(db, async (transaction) => {
+  await db.runTransaction(async (transaction) => {
     // Step 1: Get current sequence number from counter
     const counterSnapshot = await transaction.get(counterRef)
     const currentSequence =
-      counterSnapshot.exists() && typeof counterSnapshot.data().sequenceNumber === 'number'
-        ? counterSnapshot.data().sequenceNumber
+      counterSnapshot.exists && typeof counterSnapshot.data()?.sequenceNumber === 'number'
+        ? (counterSnapshot.data()!.sequenceNumber as number)
         : 0
 
     // Step 2: Increment counter and format final transaction number
@@ -65,7 +122,7 @@ export const createTransactionNumber = async (
         transactionType: type,
         dateKey,
         sequenceNumber: nextSequence,
-        updatedAt: serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     )

@@ -1,8 +1,7 @@
 // Server-side reader for store-wide settings (Firestore: storeSettings/general).
 // Falls back to the built-in default when the document or field is missing.
 
-import { doc, getDoc } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import {
   DEFAULT_RESERVATION_DAYS,
   DEFAULT_WARRANTY_DAYS,
@@ -36,10 +35,10 @@ const FALLBACK: StoreSettings = {
 
 export async function getStoreSettings(): Promise<StoreSettings> {
   try {
-    const snap = await getDoc(doc(db, SETTINGS_COLLECTION, SETTINGS_DOC))
-    if (!snap.exists()) return { ...FALLBACK }
+    const snap = await getAdminDb().collection(SETTINGS_COLLECTION).doc(SETTINGS_DOC).get()
+    if (!snap.exists) return { ...FALLBACK }
 
-    const data = snap.data() as Record<string, unknown>
+    const data = (snap.data() ?? {}) as Record<string, unknown>
     const raw = data.warrantyDays
     const parsed =
       typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : Number.NaN

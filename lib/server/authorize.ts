@@ -6,8 +6,7 @@
 // server as well.
 
 import { NextResponse } from 'next/server'
-import { collection, doc, getDoc, getDocs, limit, query, where } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import { Permission, resolvePermissions } from '@/lib/auth/permissions'
 
 export interface AuthzResult {
@@ -29,8 +28,8 @@ export async function checkPermission(
   }
 
   try {
-    const snap = await getDoc(doc(db, 'users', uid))
-    if (!snap.exists()) {
+    const snap = await getAdminDb().collection('users').doc(uid).get()
+    if (!snap.exists) {
       return { allowed: false, reason: 'User account not found.' }
     }
 
@@ -71,8 +70,8 @@ export async function requireAdmin(uid: unknown): Promise<NextResponse | null> {
   }
 
   try {
-    const snap = await getDoc(doc(db, 'users', id))
-    if (!snap.exists()) {
+    const snap = await getAdminDb().collection('users').doc(id).get()
+    if (!snap.exists) {
       return NextResponse.json({ error: 'User account not found.' }, { status: 403 })
     }
     const data = snap.data() as Record<string, unknown>
@@ -107,8 +106,8 @@ export async function requireActiveUser(uid: unknown): Promise<NextResponse | nu
   }
 
   try {
-    const snap = await getDoc(doc(db, 'users', id))
-    if (!snap.exists()) {
+    const snap = await getAdminDb().collection('users').doc(id).get()
+    if (!snap.exists) {
       return NextResponse.json({ error: 'User account not found.' }, { status: 403 })
     }
     if ((snap.data() as Record<string, unknown>).isDisabled === true) {
@@ -130,7 +129,7 @@ export async function requireActiveUser(uid: unknown): Promise<NextResponse | nu
  */
 export async function noAdminExists(): Promise<boolean> {
   try {
-    const snap = await getDocs(query(collection(db, 'users'), where('role', '==', 'admin'), limit(1)))
+    const snap = await getAdminDb().collection('users').where('role', '==', 'admin').limit(1).get()
     return snap.empty
   } catch {
     // Cannot confirm the database is empty, so assume it is not.

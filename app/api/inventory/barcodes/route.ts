@@ -11,8 +11,7 @@
 // createInventoryVariant(). This exists for stock encoded before that.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { collection, getDocs, query, where, limit, doc, updateDoc } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import { createItemBarcode, normalizeBarcode } from '@/lib/server/barcodes'
 import { getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { guardRequest } from '@/lib/server/authorize'
@@ -24,9 +23,11 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'A barcode is required.' }, { status: 400 })
     }
 
-    const snapshot = await getDocs(
-      query(collection(db, 'inventory'), where('barcode', '==', code), limit(1))
-    )
+    const snapshot = await getAdminDb()
+      .collection('inventory')
+      .where('barcode', '==', code)
+      .limit(1)
+      .get()
 
     if (snapshot.empty) {
       return NextResponse.json(
@@ -81,7 +82,7 @@ export async function POST(req: NextRequest) {
     const denied = await guardRequest(req, 'canManageInventory')
     if (denied) return denied
 
-    const snapshot = await getDocs(collection(db, 'inventory'))
+    const snapshot = await getAdminDb().collection('inventory').get()
 
     // Only items genuinely missing a code. Running this twice must not reassign
     // codes already printed on labels stuck to physical stock.
@@ -93,7 +94,7 @@ export async function POST(req: NextRequest) {
     let assigned = 0
     for (const item of missing) {
       const barcode = await createItemBarcode()
-      await updateDoc(doc(db, 'inventory', item.id), { barcode })
+      await getAdminDb().collection('inventory').doc(item.id).update({ barcode })
       assigned += 1
     }
 

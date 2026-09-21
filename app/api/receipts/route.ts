@@ -9,8 +9,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { requireActiveUserRequest } from '@/lib/server/authorize'
-import { collection, getDocs, query, where, orderBy, limit } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import { ReceiptRecord } from '@/lib/transactions/transactionDocuments'
 
 export async function GET(req: NextRequest) {
@@ -22,14 +21,12 @@ export async function GET(req: NextRequest) {
     const status = searchParams.get('status') ?? 'active'
     const limitCount = Number(searchParams.get('limit') ?? 1)
 
-    let receiptsQuery = query(
-      collection(db, 'receipts'),
-      where('status', '==', status),
-      orderBy('createdAt', 'desc'),
-      limit(Number.isFinite(limitCount) && limitCount > 0 ? limitCount : 1)
-    )
-
-    const snapshot = await getDocs(receiptsQuery)
+    const snapshot = await getAdminDb()
+      .collection('receipts')
+      .where('status', '==', status)
+      .orderBy('createdAt', 'desc')
+      .limit(Number.isFinite(limitCount) && limitCount > 0 ? limitCount : 1)
+      .get()
     const data: ReceiptRecord[] = snapshot.docs
       .map((docEntry) => ({ id: docEntry.id, ...(docEntry.data() as Omit<ReceiptRecord, 'id'>) }))
 

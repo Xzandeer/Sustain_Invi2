@@ -1,17 +1,7 @@
 // Inventory API endpoint - GET to list items, POST to create items
 import { NextRequest, NextResponse } from 'next/server'
 import { MAX_STOCK } from '@/lib/constants/limits'
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  orderBy,
-  query,
-  updateDoc,
-  where,
-} from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import { getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { createInventoryVariant, createStockLog, findInventoryVariant, getProcessedByInfo } from '@/lib/server/inventory'
 import { guardRequest } from '@/lib/server/authorize'
@@ -29,7 +19,6 @@ interface InventoryPayload {
   minStock?: unknown
   status?: unknown
   condition?: unknown
-  containerId?: unknown
   processedBy?: unknown
   remarks?: unknown
 }
@@ -39,12 +28,12 @@ export async function GET(req: NextRequest) {
   try {
     // Step 1: Parse view parameter (default: active items, 'trash': deleted items)
     const view = new URL(req.url).searchParams.get('view')
-    const inventoryQuery = query(collection(db, 'inventory'), orderBy('createdAt', 'desc'))
+    const adminDb = getAdminDb()
 
     // Step 2: Fetch inventory and categories in parallel
     const [inventorySnapshot, categoriesSnapshot] = await Promise.all([
-      getDocs(inventoryQuery),
-      getDocs(collection(db, 'categories')),
+      adminDb.collection('inventory').orderBy('createdAt', 'desc').get(),
+      adminDb.collection('categories').get(),
     ])
 
     // Step 3: Build category lookup map (categoryId -> categoryName)
@@ -113,7 +102,6 @@ export async function POST(req: NextRequest) {
     const condition = normalizeInventoryCondition(body.condition)
     const description = typeof body.description === 'string' ? body.description.trim() : ''
     const imageUrl = typeof body.imageUrl === 'string' ? body.imageUrl.trim() : ''
-    const containerId = typeof body.containerId === 'string' && body.containerId.trim() ? body.containerId.trim() : null
     // Permission check before any write. The UI hides the Add Item button for
     // staff without this permission, but that only stops the button — not a
     // request sent directly to this endpoint.
@@ -147,17 +135,19 @@ export async function POST(req: NextRequest) {
     let categoryName = categoryNameInput
 
     if (categoryId) {
-      const categorySnapshot = await getDoc(doc(db, 'categories', categoryId))
-      if (!categorySnapshot.exists()) {
+      const categorySnapshot = await getAdminDb().collection('categories').doc(categoryId).get()
+      if (!categorySnapshot.exists) {
         return NextResponse.json({ error: 'Category not found' }, { status: 404 })
       }
 
-      const categoryData = categorySnapshot.data() as Record<string, unknown>
+      const categoryData = (categorySnapshot.data() ?? {}) as Record<string, unknown>
       categoryName =
         typeof categoryData.name === 'string' && categoryData.name.trim() ? categoryData.name.trim() : categoryName
     } else if (categoryName) {
-      const categoryQuery = query(collection(db, 'categories'), where('name', '==', categoryName))
-      const categorySnapshot = await getDocs(categoryQuery)
+      const categorySnapshot = await getAdminDb()
+        .collection('categories')
+        .where('name', '==', categoryName)
+        .get()
       if (!categorySnapshot.empty) {
         const matchedCategory = categorySnapshot.docs[0]
         categoryId = matchedCategory.id
@@ -182,7 +172,7 @@ export async function POST(req: NextRequest) {
       const updatedQuantity = existingVariant.stock + quantity
       const stockStatus = getStockStatus({ stock: updatedQuantity, minStock: existingVariant.minStock })
 
-      await updateDoc(existingVariant.ref, {
+      await existingVariant.ref.update({
         price,
         quantity: updatedQuantity,
         stock: updatedQuantity,
@@ -251,7 +241,6 @@ export async function POST(req: NextRequest) {
       condition,
       description,
       imageUrl,
-      containerId: containerId ?? undefined,
     })
 
     await createStockLog({

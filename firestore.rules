@@ -1,85 +1,91 @@
 rules_version = '2';
+
+// SUSTAIN — Firestore security rules
+//
+// HOW WRITES ARE PROTECTED
+//
+// The browser never writes store data directly. Every change to inventory,
+// sales, reservations, stock logs, receipts, categories and settings goes
+// through an API route under app/api, which:
+//
+//   1. verifies the caller's Firebase ID token (lib/server/authorize.ts), and
+//   2. checks that user's specific permission before touching anything.
+//
+// Those routes use the Firebase Admin SDK, which runs with service-account
+// credentials and bypasses these rules by design. That is why the collections
+// below are read-only here: a client that tried to write to them directly is
+// doing something the application never asks for.
+//
+// This is stricter than enforcing writes here, not looser. Rules cannot express
+// a check like "staff may refund only if canProcessRefunds is true" - they can
+// only see the document being written. The API routes can, and do.
+//
+// THE ONE EXCEPTION
+//
+// `users` is written from the browser: a person edits their own display name on
+// Settings, and an admin changes roles and permissions on the Users page. Those
+// writes carry a real signed-in identity, so they are checked here.
+
 service cloud.firestore {
   match /databases/{database}/documents {
+
     function isSignedIn() {
       return request.auth != null;
     }
 
-    function role() {
-      return isSignedIn()
-        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
-        : null;
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
     function isAdmin() {
-      return role() == 'admin';
-    }
-
-    function isStaffOrAdmin() {
-      return role() == 'staff' || role() == 'admin';
+      return isSignedIn() && userDoc().role == 'admin';
     }
 
     function canViewStockLogs() {
-      return isAdmin() || (
-        isSignedIn() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.canViewStockLogs == true
-      );
+      return isAdmin() || (isSignedIn() && userDoc().canViewStockLogs == true);
     }
 
+    // ── users — the only collection the browser writes ──────────────────────
     match /users/{userId} {
+      // A new account creates its own profile document at sign-up.
       allow create: if isSignedIn() && request.auth.uid == userId;
+
+      // You can read yourself; an admin can read everyone.
       allow read: if isAdmin() || (isSignedIn() && request.auth.uid == userId);
+
+      // Roles and permissions are an admin decision. A staff member must not be
+      // able to grant themselves canProcessRefunds by writing their own row.
       allow update, delete: if isAdmin();
     }
 
-    match /categories/{categoryId} {
-      allow read: if isSignedIn();
-      allow create, update, delete: if isAdmin();
-    }
-
-    match /inventory/{itemId} {
-      allow read: if isSignedIn();
-      allow create: if isAdmin();
-      allow update: if isAdmin();
-      allow delete: if isAdmin();
-    }
-
-    match /sales/{saleId} {
-      allow read: if isSignedIn();
-      allow create: if isStaffOrAdmin();
-      allow update, delete: if false;
-    }
-
-    match /restocks/{restockId} {
-      allow read: if isSignedIn();
-      allow create: if isStaffOrAdmin();
-      allow update, delete: if false;
-    }
-
+    // ── stock logs — the audit trail ────────────────────────────────────────
+    //
+    // Read access is a permission in its own right, so it is checked here as
+    // well as in the API. Nothing may edit or delete a log entry: an audit
+    // trail that can be rewritten is not an audit trail.
     match /stockLogs/{logId} {
       allow read: if canViewStockLogs();
-      allow create: if isStaffOrAdmin();
-      allow update, delete: if false;
+      allow write: if false;
     }
 
-    match /reservations/{reservationId} {
-      allow read: if isSignedIn();
-      allow create: if isStaffOrAdmin();
-      allow update: if isStaffOrAdmin();
-      allow delete: if false;
-    }
+    // ── everything else — read for signed-in users, writes via the API ──────
+    match /inventory/{docId}            { allow read: if isSignedIn(); allow write: if false; }
+    match /sales/{docId}                { allow read: if isSignedIn(); allow write: if false; }
+    match /reservations/{docId}         { allow read: if isSignedIn(); allow write: if false; }
+    match /categories/{docId}           { allow read: if isSignedIn(); allow write: if false; }
+    match /receipts/{docId}             { allow read: if isSignedIn(); allow write: if false; }
+    match /storeSettings/{docId}        { allow read: if isSignedIn(); allow write: if false; }
+    match /transactionCounters/{docId}  { allow read: if isSignedIn(); allow write: if false; }
 
-    match /receipts/{receiptId} {
-      allow read: if isSignedIn();
-      allow create: if isStaffOrAdmin();
-      allow update: if isStaffOrAdmin();
-      allow delete: if false;
-    }
+    // Server-only collections. The browser has no reason to see either: the
+    // forecast cache is served through /api/forecast, and nothing reads
+    // ai_forecast_cache directly.
+    match /ai_forecast_cache/{docId}    { allow read, write: if false; }
 
-    match /transactionCounters/{counterId} {
-      allow read: if isSignedIn();
-      allow create, update: if isStaffOrAdmin();
-      allow delete: if false;
+    // Anything not named above is denied. Adding a collection means adding a
+    // rule for it here - silence is not permission.
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

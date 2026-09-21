@@ -1,16 +1,6 @@
 // Server-side inventory operations - creates items, logs stock changes, retrieves user info
-import {
-  addDoc,
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  query,
-  runTransaction,
-  serverTimestamp,
-  where,
-} from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { FieldValue, type DocumentReference } from 'firebase-admin/firestore'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import { createItemBarcode } from '@/lib/server/barcodes'
 import { normalizeStockLogActionForStorage, ResolvedStockLogAction } from '@/lib/inventory/stockLogActions'
 import { InventoryCondition, getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
@@ -26,7 +16,7 @@ export interface ProcessedByInfo {
 
 export interface InventoryVariant {
   id: string
-  ref: ReturnType<typeof doc>
+  ref: DocumentReference
   name: string
   categoryId: string
   categoryName: string
@@ -96,8 +86,8 @@ export const getProcessedByInfo = async (input: unknown): Promise<ProcessedByInf
 
   // Try to get full user details from users collection
   try {
-    const userSnapshot = await getDoc(doc(db, 'users', uid))
-    if (userSnapshot.exists()) {
+    const userSnapshot = await getAdminDb().collection('users').doc(uid).get()
+    if (userSnapshot.exists) {
       const userData = userSnapshot.data() as Record<string, unknown>
       const name =
         (typeof userData.name === 'string' && userData.name.trim()) ||
@@ -131,8 +121,8 @@ export const assertAdminUser = async (input: unknown): Promise<ProcessedByInfo> 
   }
 
   // Step 2: Get user document from Firebase
-  const userSnapshot = await getDoc(doc(db, 'users', processedBy.uid))
-  if (!userSnapshot.exists()) {
+  const userSnapshot = await getAdminDb().collection('users').doc(processedBy.uid).get()
+  if (!userSnapshot.exists) {
     throw new Error('ADMIN_REQUIRED')
   }
 
@@ -146,16 +136,15 @@ export const assertAdminUser = async (input: unknown): Promise<ProcessedByInfo> 
 }
 
 export const findInventoryVariantById = async (id: string) => {
-  const directRef = doc(db, 'inventory', id)
-  const directSnapshot = await getDoc(directRef)
+  const directRef = getAdminDb().collection('inventory').doc(id)
+  const directSnapshot = await directRef.get()
 
-  if (directSnapshot.exists()) {
+  if (directSnapshot.exists) {
     const data = directSnapshot.data() as Record<string, unknown>
     return parseInventoryVariant(directSnapshot.id, data)
   }
 
-  const fallbackQuery = query(collection(db, 'inventory'), where('id', '==', id))
-  const fallbackSnapshot = await getDocs(fallbackQuery)
+  const fallbackSnapshot = await getAdminDb().collection('inventory').where('id', '==', id).get()
 
   if (fallbackSnapshot.empty) {
     return null
@@ -170,13 +159,11 @@ export const findInventoryVariant = async (params: {
   categoryId: string
   condition: InventoryCondition
 }) => {
-  const duplicateQuery = query(
-    collection(db, 'inventory'),
-    where('categoryId', '==', params.categoryId),
-    where('status', '==', params.condition)
-  )
-
-  const duplicateSnapshot = await getDocs(duplicateQuery)
+  const duplicateSnapshot = await getAdminDb()
+    .collection('inventory')
+    .where('categoryId', '==', params.categoryId)
+    .where('status', '==', params.condition)
+    .get()
   const match = duplicateSnapshot.docs.find((docItem) => {
     const data = docItem.data() as Record<string, unknown>
     return data.isDeleted !== true && normalizeName(typeof data.name === 'string' ? data.name : '') === normalizeName(params.name)
@@ -201,8 +188,8 @@ export const createStockLog = async (entry: StockLogEntryInput) => {
   }
 
   // Step 1: Save log entry to stockLogs collection
-  await addDoc(collection(db, 'stockLogs'), {
-    createdAt: serverTimestamp(),
+  await getAdminDb().collection('stockLogs').add({
+    createdAt: FieldValue.serverTimestamp(),
     actionType,
     itemId: entry.itemId,
     itemName: entry.itemName,
@@ -240,7 +227,7 @@ export const createStockLog = async (entry: StockLogEntryInput) => {
 }
 
 const parseInventoryVariant = (id: string, data: Record<string, unknown>): InventoryVariant => {
-  const ref = doc(db, 'inventory', id)
+  const ref = getAdminDb().collection('inventory').doc(id)
   return {
     id,
     ref,
@@ -283,9 +270,11 @@ async function generateSku(categoryName: string, condition: string): Promise<str
   const prefix = `${catCode}-${condCode}`
 
   // Count existing items with same prefix to get next sequence number
-  const existing = await getDocs(
-    query(collection(db, 'inventory'), where('sku', '>=', `${prefix}-`), where('sku', '<', `${prefix}-￿`))
-  )
+  const existing = await getAdminDb()
+    .collection('inventory')
+    .where('sku', '>=', `${prefix}-`)
+    .where('sku', '<', `${prefix}-￿`)
+    .get()
   const next = existing.size + 1
   return `${prefix}-${String(next).padStart(3, '0')}`
 }
@@ -301,7 +290,6 @@ export const createInventoryVariant = async (input: {
   condition: InventoryCondition
   description?: string
   imageUrl?: string
-  containerId?: string
 }) => {
   const now = new Date().toISOString()
   const stockStatus = getStockStatus({ stock: input.quantity, minStock: input.minStock })
@@ -310,7 +298,7 @@ export const createInventoryVariant = async (input: {
   const barcode = await createItemBarcode()
 
   // Step 1: Create inventory document
-  const docRef = await addDoc(collection(db, 'inventory'), {
+  const docRef = await getAdminDb().collection('inventory').add({
     name: input.name,
     categoryId: input.categoryId,
     categoryName: input.categoryName,
@@ -326,7 +314,6 @@ export const createInventoryVariant = async (input: {
     sku,
     description: input.description ?? '',
     imageUrl: input.imageUrl ?? '',
-    containerId: input.containerId ?? null,
     stockStatus,
     isDeleted: false,
     deletedAt: null,
@@ -335,9 +322,7 @@ export const createInventoryVariant = async (input: {
   })
 
   // Step 2: Update document to add its own ID (for cross-references)
-  await runTransaction(db, async (transaction) => {
-    transaction.update(docRef, { id: docRef.id })
-  })
+  await docRef.update({ id: docRef.id })
 
   return {
     id: docRef.id,

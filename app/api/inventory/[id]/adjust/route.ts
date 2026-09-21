@@ -1,8 +1,7 @@
 // Stock adjustment API - POST to add/deduct/transfer stock between conditions
 import { NextResponse } from 'next/server'
 import { MAX_STOCK } from '@/lib/constants/limits'
-import { doc, getDoc, updateDoc } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import {
   createInventoryVariant,
   createStockLog,
@@ -58,8 +57,8 @@ export async function POST(req: Request, context: RouteContext) {
     }
 
     // Step 3: Get current item data
-    const snapshot = await getDoc(doc(db, 'inventory', id))
-    if (!snapshot.exists()) {
+    const snapshot = await getAdminDb().collection('inventory').doc(id).get()
+    if (!snapshot.exists) {
       return NextResponse.json({ error: 'Item not found.' }, { status: 404 })
     }
 
@@ -91,16 +90,12 @@ export async function POST(req: Request, context: RouteContext) {
       'Uncategorized'
     const price = Math.max(0, toNumber(data.price, 0))
     const minStock = Math.max(0, toNumber(data.minStock, 0))
-    // Carried to the other condition on transfer. containerId matters most:
-    // shipment profitability counts revenue per delivery, so a variant that
-    // loses its link stops contributing to the shipment it actually came from.
-    const containerId = typeof data.containerId === 'string' ? data.containerId : undefined
     const description = typeof data.description === 'string' ? data.description : undefined
     const imageUrl = typeof data.imageUrl === 'string' ? data.imageUrl : undefined
     const currentStock = Math.max(0, toNumber(data.stock ?? data.quantity, 0))
     const currentReservedStock = Math.max(0, toNumber(data.reservedStock, 0))
     const availableStock = Math.max(0, currentStock - currentReservedStock)
-    const sourceRef = doc(db, 'inventory', id)
+    const sourceRef = getAdminDb().collection('inventory').doc(id)
 
     // Step 4: Validate item has required fields
     if (!itemName || !categoryId) {
@@ -110,7 +105,7 @@ export async function POST(req: Request, context: RouteContext) {
     // Step 5: Handle ADD action (simple stock increase)
     if (action === 'add') {
       const nextStock = currentStock + quantity
-      await updateDoc(sourceRef, {
+      await sourceRef.update({
         stock: nextStock,
         quantity: nextStock,
         stockStatus: getStockStatus({ stock: nextStock, minStock }),
@@ -147,7 +142,7 @@ export async function POST(req: Request, context: RouteContext) {
     // Step 7: Handle DEDUCT action (simple stock decrease)
     if (action === 'deduct') {
       const nextStock = currentStock - quantity
-      await updateDoc(sourceRef, {
+      await sourceRef.update({
         stock: nextStock,
         quantity: nextStock,
         stockStatus: getStockStatus({ stock: nextStock, minStock }),
@@ -193,7 +188,7 @@ export async function POST(req: Request, context: RouteContext) {
     let targetMinStock = targetVariant?.minStock ?? minStock
 
     // Step 10: Reduce source stock
-    await updateDoc(sourceRef, {
+    await sourceRef.update({
       stock: nextSourceStock,
       quantity: nextSourceStock,
       stockStatus: getStockStatus({ stock: nextSourceStock, minStock }),
@@ -203,21 +198,12 @@ export async function POST(req: Request, context: RouteContext) {
     // Step 11: Update or create target variant
     if (targetVariant) {
       const nextTargetStock = targetVariant.stock + quantity
-      // Adopt the source's shipment when the target has none. Variants created
-      // by an earlier transfer have no containerId, and without this their
-      // sales never count toward the delivery the goods actually came from.
-      const targetContainerId =
-        typeof targetVariant.data.containerId === 'string' && targetVariant.data.containerId.trim()
-          ? targetVariant.data.containerId.trim()
-          : undefined
-
-      await updateDoc(doc(db, 'inventory', targetVariant.id), {
+      await getAdminDb().collection('inventory').doc(targetVariant.id).update({
         stock: nextTargetStock,
         quantity: nextTargetStock,
         price,
         minStock: targetVariant.minStock,
         stockStatus: getStockStatus({ stock: nextTargetStock, minStock: targetVariant.minStock }),
-        ...(targetContainerId || !containerId ? {} : { containerId }),
         updatedAt: new Date().toISOString(),
       })
     } else {
@@ -230,7 +216,6 @@ export async function POST(req: Request, context: RouteContext) {
         quantity,
         minStock,
         condition: targetCondition,
-        containerId,
         description,
         imageUrl,
       })

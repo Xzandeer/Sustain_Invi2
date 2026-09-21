@@ -14,15 +14,8 @@
 // and updates the sale's status to 'refunded' (full) or 'partially_refunded'.
 
 import { NextRequest, NextResponse } from 'next/server'
-import {
-  doc,
-  getDoc,
-  runTransaction,
-  serverTimestamp,
-  addDoc,
-  collection,
-} from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { FieldValue } from 'firebase-admin/firestore'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import { getWarrantyDays } from '@/lib/server/storeSettings'
 import { checkPermission, verifiedUid } from '@/lib/server/authorize'
 
@@ -61,9 +54,9 @@ export async function POST(req: NextRequest) {
     }
 
     // ── 1. Load the sale ───────────────────────────────────────────────────
-    const saleRef = doc(db, 'sales', saleId)
-    const saleSnap = await getDoc(saleRef)
-    if (!saleSnap.exists()) {
+    const saleRef = getAdminDb().collection('sales').doc(saleId)
+    const saleSnap = await saleRef.get()
+    if (!saleSnap.exists) {
       return NextResponse.json({ error: 'Sale not found' }, { status: 404 })
     }
 
@@ -229,11 +222,12 @@ export async function POST(req: NextRequest) {
     // ── 4. Restock each refunded line and log it ───────────────────────────
     for (const line of toRefund) {
       if (!line.itemId) continue
-      const itemRef = doc(db, 'inventory', line.itemId)
+      const adminDb = getAdminDb()
+      const itemRef = adminDb.collection('inventory').doc(line.itemId)
 
-      await runTransaction(db, async (txn) => {
+      await adminDb.runTransaction(async (txn) => {
         const itemSnap = await txn.get(itemRef)
-        if (!itemSnap.exists()) return
+        if (!itemSnap.exists) return
 
         const itemData = itemSnap.data() as Record<string, unknown>
         const stockBefore = typeof itemData.stock === 'number' ? itemData.stock : 0
@@ -241,8 +235,12 @@ export async function POST(req: NextRequest) {
 
         txn.update(itemRef, { stock: stockAfter })
 
-        await addDoc(collection(db, 'stockLogs'), {
-          createdAt: serverTimestamp(),
+        // Written through the transaction, not as a separate addDoc. A
+        // transaction callback can be retried, and an independent write inside
+        // it is not rolled back - on a retry the shop would get two log rows
+        // for one refund.
+        txn.set(adminDb.collection('stockLogs').doc(), {
+          createdAt: FieldValue.serverTimestamp(),
           actionType: 'sale_refund',
           itemId: line.itemId,
           itemName: line.name,
@@ -285,15 +283,15 @@ export async function POST(req: NextRequest) {
     const previousRefundTotal =
       typeof saleData.refundedAmount === 'number' ? saleData.refundedAmount : 0
 
-    await runTransaction(db, async (txn) => {
-      txn.update(saleRef, {
-        items: updatedItems,
-        status: fullyRefunded ? 'refunded' : 'partially_refunded',
-        refundedAt: serverTimestamp(),
-        refundReason: reasonText,
-        refundReasonCategory: reasonCategory,
-        refundedAmount: previousRefundTotal + refundAmount,
-      })
+    // Plain update - there is nothing to read here, so a transaction bought
+    // nothing but an extra round trip.
+    await saleRef.update({
+      items: updatedItems,
+      status: fullyRefunded ? 'refunded' : 'partially_refunded',
+      refundedAt: FieldValue.serverTimestamp(),
+      refundReason: reasonText,
+      refundReasonCategory: reasonCategory,
+      refundedAmount: previousRefundTotal + refundAmount,
     })
 
     return NextResponse.json({

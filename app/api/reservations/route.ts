@@ -1,8 +1,8 @@
 // Reservations API endpoint - POST to create reservations, GET to list reservations
 import { NextRequest, NextResponse } from 'next/server'
 import { getReservationDays } from '@/lib/server/storeSettings'
-import { collection, doc, getDocs, query, runTransaction, serverTimestamp, addDoc } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { FieldValue } from 'firebase-admin/firestore'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import {
   createStockLog,
   findInventoryVariantById,
@@ -59,8 +59,7 @@ export async function GET(req: NextRequest) {
     }
 
     // Step 3: Fetch all reservations
-    const reservationsQuery = query(collection(db, 'reservations'))
-    const snapshot = await getDocs(reservationsQuery)
+    const snapshot = await getAdminDb().collection('reservations').get()
 
     let records: Array<Record<string, unknown> & { id: string }> = snapshot.docs.map((reservationDoc) => ({
       ...(reservationDoc.data() as Record<string, unknown>),
@@ -181,10 +180,24 @@ export async function POST(req: NextRequest) {
 
     // STEP 3: Firestore transaction - update reservedStock
     console.log('[reservations POST] step 3: running inventory transaction')
-    await runTransaction(db, async (transaction) => {
+    await getAdminDb().runTransaction(async (transaction) => {
+      // Firestore requires EVERY read in a transaction to precede ANY write, so
+      // reading and updating inside one loop fails as soon as there is a second
+      // item: its read lands after the first item's write. Two phases instead.
+      const holdWrites: Array<{
+        ref: (typeof preparedItems)[number]['inventoryItem']['ref']
+        inventoryItem: (typeof preparedItems)[number]['inventoryItem']
+        quantity: number
+        currentStock: number
+        currentReservedStock: number
+        availableStock: number
+        nextReservedStock: number
+      }> = []
+
+      // ── Phase 1: read and validate every line ──
       for (const { requestedItem, inventoryItem } of preparedItems) {
         const inventorySnapshot = await transaction.get(inventoryItem.ref)
-        if (!inventorySnapshot.exists()) {
+        if (!inventorySnapshot.exists) {
           throw new Error('ITEM_NOT_FOUND')
         }
 
@@ -197,8 +210,22 @@ export async function POST(req: NextRequest) {
           throw new Error('INSUFFICIENT_STOCK')
         }
 
-        const nextReservedStock = currentReservedStock + requestedItem.quantity
-        transaction.update(inventoryItem.ref, {
+        holdWrites.push({
+          ref: inventoryItem.ref,
+          inventoryItem,
+          quantity: requestedItem.quantity,
+          currentStock,
+          currentReservedStock,
+          availableStock,
+          nextReservedStock: currentReservedStock + requestedItem.quantity,
+        })
+      }
+
+      // ── Phase 2: write ──
+      for (const entry of holdWrites) {
+        const { ref, inventoryItem, quantity, currentStock, currentReservedStock, availableStock, nextReservedStock } = entry
+
+        transaction.update(ref, {
           reservedStock: nextReservedStock,
           updatedAt: nowIso,
         })
@@ -206,11 +233,11 @@ export async function POST(req: NextRequest) {
         reservationItems.push({
           id: inventoryItem.id,
           name: inventoryItem.name,
-          quantity: requestedItem.quantity,
+          quantity,
           price: inventoryItem.price,
           condition: inventoryItem.condition,
           availableBefore: availableStock,
-          availableAfter: availableStock - requestedItem.quantity,
+          availableAfter: availableStock - quantity,
           stockBefore: currentStock,
           stockAfter: currentStock,
           reservedBefore: currentReservedStock,
@@ -221,7 +248,7 @@ export async function POST(req: NextRequest) {
 
     // STEP 4: Generate reservation number + create Firestore doc
     console.log('[reservations POST] step 4: creating transaction number')
-    const reservationRef = doc(collection(db, 'reservations'))
+    const reservationRef = getAdminDb().collection('reservations').doc()
     const numberResult = await createTransactionNumber('reservation', reservationRef, (numberInfo) => ({
       id: reservationRef.id,
       reservationNumber: numberInfo.value,
@@ -245,7 +272,7 @@ export async function POST(req: NextRequest) {
       processedByEmail: processedBy.email ?? '',
       status: 'Active',
       claimInstructions: claimInstructionsFor(holdDays),
-      createdAt: serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
       expiresAt: expiresAt.toISOString(),
       reservationDate: nowIso,
     }), nowIso)
@@ -317,7 +344,7 @@ export async function POST(req: NextRequest) {
 
     // STEP 7: Save receipt to Firestore
     console.log('[reservations POST] step 7: saving receipt')
-    await addDoc(collection(db, 'receipts'), receiptRecord)
+    await getAdminDb().collection('receipts').add(receiptRecord)
     console.log('[reservations POST] done!')
 
     return NextResponse.json(

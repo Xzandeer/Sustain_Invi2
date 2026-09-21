@@ -11,23 +11,33 @@
 // Admin-only. Safe to run more than once — it skips sales that already have it.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { collection, getDocs, writeBatch, doc } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import { getWarrantyDays } from '@/lib/server/storeSettings'
 import { checkPermission, verifiedUid } from '@/lib/server/authorize'
 
 export const dynamic = 'force-dynamic'
 
 async function findUnstamped() {
-  const snap = await getDocs(collection(db, 'sales'))
+  const snap = await getAdminDb().collection('sales').get()
   return snap.docs.filter((d) => {
     const data = d.data() as Record<string, unknown>
     return typeof data.warrantyDays !== 'number'
   })
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    // Admin-only, same as POST. This reads the whole sales collection, so an
+    // unguarded version let anyone who knew the URL trigger a full scan and
+    // learn how many sales the shop has.
+    const authz = await checkPermission(await verifiedUid(req), 'canManageInventory')
+    if (!authz.allowed || authz.role !== 'admin') {
+      return NextResponse.json(
+        { error: 'Only an administrator can run this operation.' },
+        { status: 403 }
+      )
+    }
+
     const missing = await findUnstamped()
     const currentPolicy = await getWarrantyDays()
     return NextResponse.json({
@@ -71,9 +81,9 @@ export async function POST(req: NextRequest) {
 
     let updated = 0
     for (let i = 0; i < missing.length; i += 400) {
-      const batch = writeBatch(db)
+      const batch = getAdminDb().batch()
       for (const d of missing.slice(i, i + 400)) {
-        batch.update(doc(db, 'sales', d.id), { warrantyDays: days })
+        batch.update(getAdminDb().collection('sales').doc(d.id), { warrantyDays: days })
       }
       await batch.commit()
       updated += Math.min(400, missing.length - i)

@@ -7,8 +7,7 @@
 // per-category forecast groups by the same field.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { addDoc, collection, getDocs, limit, orderBy, query, where } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import { requireAdminRequest } from '@/lib/server/authorize'
 
 interface CategoryPayload {
@@ -18,8 +17,7 @@ interface CategoryPayload {
 
 export async function GET() {
   try {
-    const categoriesQuery = query(collection(db, 'categories'), orderBy('name', 'asc'))
-    const snapshot = await getDocs(categoriesQuery)
+    const snapshot = await getAdminDb().collection('categories').orderBy('name', 'asc').get()
     const data = snapshot.docs.map((categoryDoc) => ({
       id: categoryDoc.id,
       ...(categoryDoc.data() as Record<string, unknown>),
@@ -47,14 +45,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Category name is required.' }, { status: 400 })
     }
 
-    const duplicateQuery = query(collection(db, 'categories'), where('name', '==', name), limit(1))
-    const duplicateSnapshot = await getDocs(duplicateQuery)
+    const duplicateSnapshot = await getAdminDb()
+      .collection('categories')
+      .where('name', '==', name)
+      .limit(1)
+      .get()
     if (!duplicateSnapshot.empty) {
       return NextResponse.json({ error: 'Category already exists.' }, { status: 409 })
     }
 
     const createdAt = new Date().toISOString()
-    const categoryRef = await addDoc(collection(db, 'categories'), {
+    const categoryRef = await getAdminDb().collection('categories').add({
       name,
       createdAt,
     })

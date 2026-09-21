@@ -1,19 +1,11 @@
 {
   "indexes": [
     {
-      "collectionGroup": "sales",
+      "collectionGroup": "receipts",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "categoryName", "order": "ASCENDING" },
-        { "fieldPath": "date", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "sales",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "categoryName", "order": "ASCENDING" },
-        { "fieldPath": "date", "order": "ASCENDING" }
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     },
     {

@@ -1,8 +1,7 @@
 // Inventory item detail API - PUT to edit, DELETE to move to trash, PATCH to restore/permanently delete
 import { NextResponse } from 'next/server'
 import { MAX_STOCK } from '@/lib/constants/limits'
-import { deleteDoc, doc, getDoc, updateDoc } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import { getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { assertAdminUser, createStockLog, findInventoryVariant, getProcessedByInfo } from '@/lib/server/inventory'
 import { guardRequest, requireAdminRequest } from '@/lib/server/authorize'
@@ -24,7 +23,6 @@ interface InventoryUpdatePayload {
   minStock?: unknown
   status?: unknown
   condition?: unknown
-  containerId?: unknown
   processedBy?: unknown
   remarks?: unknown
 }
@@ -38,8 +36,8 @@ export async function PUT(req: Request, context: RouteContext) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
     }
 
-    const snapshot = await getDoc(doc(db, 'inventory', id))
-    if (!snapshot.exists()) {
+    const snapshot = await getAdminDb().collection('inventory').doc(id).get()
+    if (!snapshot.exists) {
       return NextResponse.json({ error: 'Item not found' }, { status: 404 })
     }
 
@@ -108,16 +106,6 @@ export async function PUT(req: Request, context: RouteContext) {
         : Number.NaN
     )
 
-    // containerId: explicit null clears it, string sets it, undefined preserves existing
-    const containerId =
-      body.containerId === null
-        ? null
-        : typeof body.containerId === 'string' && body.containerId.trim()
-          ? body.containerId.trim()
-          : typeof current.containerId === 'string' && current.containerId.trim()
-            ? current.containerId.trim()
-            : null
-
     const currentCondition = normalizeInventoryCondition(current.condition)
     const requestedCondition =
       body.condition !== undefined ? normalizeInventoryCondition(body.condition) : currentCondition
@@ -185,7 +173,7 @@ export async function PUT(req: Request, context: RouteContext) {
     const stockStatus = getStockStatus({ stock: quantity, minStock })
     const updatedAt = new Date().toISOString()
 
-    await updateDoc(doc(db, 'inventory', id), {
+    await getAdminDb().collection('inventory').doc(id).update({
       name,
       categoryId,
       categoryName,
@@ -198,7 +186,6 @@ export async function PUT(req: Request, context: RouteContext) {
       condition: currentCondition,
       description,
       imageUrl,
-      containerId,
       isDeleted: false,
       deletedAt: null,
       updatedAt,
@@ -270,9 +257,9 @@ export async function DELETE(req: Request, context: RouteContext) {
     await assertAdminUser(body.processedBy)
 
     // Step 2: Get current item data
-    const docRef = doc(db, 'inventory', id)
-    const snapshot = await getDoc(docRef)
-    if (!snapshot.exists()) {
+    const docRef = getAdminDb().collection('inventory').doc(id)
+    const snapshot = await docRef.get()
+    if (!snapshot.exists) {
       return NextResponse.json({ error: 'Item not found' }, { status: 404 })
     }
 
@@ -289,7 +276,7 @@ export async function DELETE(req: Request, context: RouteContext) {
     }
 
     // Step 4: Mark as deleted (soft delete, can be restored)
-    await updateDoc(docRef, {
+    await docRef.update({
       isDeleted: true,
       deletedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -330,9 +317,9 @@ export async function PATCH(req: Request, context: RouteContext) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
     }
 
-    const docRef = doc(db, 'inventory', id)
-    const snapshot = await getDoc(docRef)
-    if (!snapshot.exists()) {
+    const docRef = getAdminDb().collection('inventory').doc(id)
+    const snapshot = await docRef.get()
+    if (!snapshot.exists) {
       return NextResponse.json({ error: 'Item not found' }, { status: 404 })
     }
 
@@ -350,7 +337,7 @@ export async function PATCH(req: Request, context: RouteContext) {
 
     // Step 3: Handle restore action (move back from trash)
     if (action === 'restore') {
-      await updateDoc(docRef, {
+      await docRef.update({
         isDeleted: false,
         deletedAt: null,
         updatedAt: new Date().toISOString(),
@@ -444,7 +431,7 @@ export async function PATCH(req: Request, context: RouteContext) {
         // `voidedQuantity` remembers what was written off, so restoring the
         // item can hand the same amount back instead of making the user re-key
         // it. See the 'unvoid' branch below.
-        await updateDoc(docRef, {
+        await docRef.update({
           isVoided: true,
           voidedAt: new Date().toISOString(),
           voidedBy: processedBy.name ?? processedBy.email ?? 'Admin',
@@ -479,7 +466,7 @@ export async function PATCH(req: Request, context: RouteContext) {
         // written. Readers resolve them as `stock ?? quantity`, so updating
         // only `quantity` leaves the original figure on screen and the units
         // are never actually removed.
-        await updateDoc(docRef, {
+        await docRef.update({
           stock: newStock,
           quantity: newStock,
           stockStatus: getStockStatus({ stock: newStock, minStock: voidMinStock }),
@@ -521,7 +508,7 @@ export async function PATCH(req: Request, context: RouteContext) {
       // void followed by an un-void reads as the correction it actually was.
       //
       // The caller may restore ALL written-off units or only some of them - a
-      // shipment of 8 damaged units where 3 turned out to be fine, for example.
+      // batch of 8 damaged units where 3 turned out to be fine, for example.
       // Omitting restoreQuantity restores everything.
       //
       // `voidedUnits` is the ceiling: you can never restore more than was
@@ -556,7 +543,7 @@ export async function PATCH(req: Request, context: RouteContext) {
       // restored still appears on the Voided tab with the remainder.
       const remainingVoidedUnits = Math.max(0, maxRestorable - restoreQuantity)
 
-      await updateDoc(docRef, {
+      await docRef.update({
         isVoided: false,
         voidedAt: remainingVoidedUnits > 0 ? snapshotData.voidedAt ?? null : null,
         voidedBy: remainingVoidedUnits > 0 ? snapshotData.voidedBy ?? null : null,
@@ -598,7 +585,7 @@ export async function PATCH(req: Request, context: RouteContext) {
     }
 
     if (action === 'permanent-delete') {
-      await deleteDoc(docRef)
+      await docRef.delete()
       await createStockLog({
         actionType: 'item_deleted_permanently',
         itemId: id,

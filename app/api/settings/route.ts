@@ -3,8 +3,8 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { MAX_RESERVATION_DAYS } from '@/lib/constants/warranty'
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { FieldValue } from 'firebase-admin/firestore'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import { getStoreSettings } from '@/lib/server/storeSettings'
 import { SETTINGS_COLLECTION, SETTINGS_DOC } from '@/lib/constants/warranty'
 import { requireAdminRequest } from '@/lib/server/authorize'
@@ -83,15 +83,14 @@ export async function PUT(req: NextRequest) {
       )
     }
 
-    await setDoc(
-      doc(db, SETTINGS_COLLECTION, SETTINGS_DOC),
+    await getAdminDb().collection(SETTINGS_COLLECTION).doc(SETTINGS_DOC).set(
       {
         warrantyDays,
         reservationDays,
         sellerRegisteredName,
         sellerAddress,
         sellerTin,
-        updatedAt: serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
         updatedBy,
       },
       { merge: true }

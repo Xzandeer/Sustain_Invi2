@@ -7,8 +7,7 @@
 // To remove a category that is in use: move its items to another category first.
 
 import { NextResponse } from 'next/server'
-import { collection, deleteDoc, doc, getDoc, getDocs, limit, query, where } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import { requireAdminRequest } from '@/lib/server/authorize'
 
 interface RouteContext {
@@ -28,18 +27,17 @@ export async function DELETE(req: Request, context: RouteContext) {
     const denied = await requireAdminRequest(req)
     if (denied) return denied
 
-    const categoryRef = doc(db, 'categories', id)
-    const categorySnapshot = await getDoc(categoryRef)
-    if (!categorySnapshot.exists()) {
+    const categoryRef = getAdminDb().collection('categories').doc(id)
+    const categorySnapshot = await categoryRef.get()
+    if (!categorySnapshot.exists) {
       return NextResponse.json({ error: 'Category not found' }, { status: 404 })
     }
 
-    const linkedInventoryQuery = query(
-      collection(db, 'inventory'),
-      where('categoryId', '==', id),
-      limit(1)
-    )
-    const linkedInventorySnapshot = await getDocs(linkedInventoryQuery)
+    const linkedInventorySnapshot = await getAdminDb()
+      .collection('inventory')
+      .where('categoryId', '==', id)
+      .limit(1)
+      .get()
     if (!linkedInventorySnapshot.empty) {
       return NextResponse.json(
         { error: 'Cannot delete category linked to inventory items.' },
@@ -47,7 +45,7 @@ export async function DELETE(req: Request, context: RouteContext) {
       )
     }
 
-    await deleteDoc(categoryRef)
+    await categoryRef.delete()
     return NextResponse.json({ success: true }, { status: 200 })
   } catch (error) {
     console.error('DELETE /api/categories/[id] error:', error)

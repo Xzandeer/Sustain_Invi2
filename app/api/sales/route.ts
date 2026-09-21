@@ -1,18 +1,7 @@
 // Sales API endpoint - POST to create sales, GET to list sales
 import { NextRequest, NextResponse } from 'next/server'
-import {
-  collection,
-  doc,
-  getDocs,
-  query,
-  QueryConstraint,
-  runTransaction,
-  serverTimestamp,
-  Timestamp,
-  where,
-  addDoc,
-} from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { FieldValue, Timestamp, type Query } from 'firebase-admin/firestore'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import {
   createStockLog,
   findInventoryVariantById,
@@ -81,13 +70,11 @@ export async function GET(req: NextRequest) {
     // document stores createdAt as a Firestore Timestamp, so the comparison is
     // reliable. Without a range this still reads everything - the caller asked
     // for everything.
-    const constraints: QueryConstraint[] = []
-    if (range.start) constraints.push(where('createdAt', '>=', Timestamp.fromDate(range.start)))
-    if (range.end) constraints.push(where('createdAt', '<=', Timestamp.fromDate(range.end)))
+    let salesQuery: Query = getAdminDb().collection('sales')
+    if (range.start) salesQuery = salesQuery.where('createdAt', '>=', Timestamp.fromDate(range.start))
+    if (range.end) salesQuery = salesQuery.where('createdAt', '<=', Timestamp.fromDate(range.end))
 
-    const snapshot = await getDocs(
-      constraints.length ? query(collection(db, 'sales'), ...constraints) : collection(db, 'sales')
-    )
+    const snapshot = await salesQuery.get()
 
     let records: Array<Record<string, unknown> & { id: string }> = snapshot.docs.map((saleDoc) => ({
       ...(saleDoc.data() as Record<string, unknown>),
@@ -223,7 +210,7 @@ export async function POST(req: NextRequest) {
     }> = []
 
     // Step 9: Atomic transaction - check stock and reduce quantities
-    await runTransaction(db, async (transaction) => {
+    await getAdminDb().runTransaction(async (transaction) => {
       const pendingUpdates: Array<{
         ref: typeof preparedItems[number]['inventoryItem']['ref']
         nextStock: number
@@ -232,7 +219,7 @@ export async function POST(req: NextRequest) {
       // Loop through each item in sale
       for (const { requestedItem, inventoryItem } of preparedItems) {
         const inventorySnapshot = await transaction.get(inventoryItem.ref)
-        if (!inventorySnapshot.exists()) {
+        if (!inventorySnapshot.exists) {
           throw new Error('ITEM_NOT_FOUND')
         }
 
@@ -295,7 +282,7 @@ export async function POST(req: NextRequest) {
     const saleWarrantyDays = storeSettings.warrantyDays
 
     // Step 11: Create sale document reference and generate unique receipt number
-    const saleRef = doc(collection(db, 'sales'))
+    const saleRef = getAdminDb().collection('sales').doc()
     const numberResult = await createTransactionNumber('sale', saleRef, (numberInfo) => ({
       ...(saleLines.length === 1 ? { itemId: saleLines[0].itemId } : {}),
       id: saleRef.id,
@@ -332,7 +319,7 @@ export async function POST(req: NextRequest) {
       warrantyDays: saleWarrantyDays,
       processedByName: processedBy.name,
       processedByEmail: processedBy.email ?? '',
-      createdAt: serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
       transactionDate: nowIso,
     }), nowIso)
 
@@ -403,7 +390,7 @@ export async function POST(req: NextRequest) {
       document: receiptDocument,
     }
 
-    await addDoc(collection(db, 'receipts'), receiptRecord)
+    await getAdminDb().collection('receipts').add(receiptRecord)
 
     return NextResponse.json(
       {

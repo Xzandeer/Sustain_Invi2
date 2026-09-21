@@ -1,8 +1,9 @@
 // Reservation detail API - PATCH to update reservation status (complete/cancel/expire)
 import { NextResponse } from 'next/server'
-import { getReservationDays } from '@/lib/server/storeSettings'
-import { addDoc, collection, doc, getDoc, runTransaction, serverTimestamp } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { getReservationDays, getStoreSettings } from '@/lib/server/storeSettings'
+import { allocateTransactionNumber } from '@/lib/server/transactionNumbers'
+import { FieldValue, type DocumentReference } from 'firebase-admin/firestore'
+import { getAdminDb } from '@/lib/firebaseAdmin'
 import { createStockLog, getProcessedByInfo } from '@/lib/server/inventory'
 import { toNumber } from '@/lib/server/salesInventoryMetrics'
 import { isCancellationReasonValid, SYSTEM_CANCELLATION_REASON, type CancellationReasonType } from '@/lib/reservations/cancellationReasons'
@@ -100,15 +101,24 @@ export async function PATCH(req: Request, context: RouteContext) {
     // Extending or reinstating restarts the hold, using the period the shop set
     const holdDays = await getReservationDays()
 
-    const reservationRef = doc(db, 'reservations', id)
-    const saleRef = doc(collection(db, 'sales'))
+    const adminDb = getAdminDb()
+    const reservationRef = adminDb.collection('reservations').doc(id)
+    const saleRef = adminDb.collection('sales').doc()
     const nowIso = new Date().toISOString()
     const pendingLogs: PendingStockLog[] = []
     let saleId: string | null = null
 
-    await runTransaction(db, async (transaction) => {
+    // A claimed reservation becomes a real sale, so it needs everything a
+    // counter sale gets: a receipt number, and the warranty window promised on
+    // the day it was paid for. Both are resolved BEFORE the transaction opens -
+    // allocateTransactionNumber runs its own transaction and cannot be nested,
+    // and getStoreSettings is a read that must not sit inside one either.
+    const saleNumber = action === 'complete' ? await allocateTransactionNumber('sale', nowIso) : null
+    const saleWarrantyDays = action === 'complete' ? (await getStoreSettings()).warrantyDays : null
+
+    await adminDb.runTransaction(async (transaction) => {
       const reservationSnapshot = await transaction.get(reservationRef)
-      if (!reservationSnapshot.exists()) {
+      if (!reservationSnapshot.exists) {
         throw new Error('RESERVATION_NOT_FOUND')
       }
 
@@ -145,10 +155,23 @@ export async function PATCH(req: Request, context: RouteContext) {
       // been sold. Each line is re-checked against what is actually available
       // and the hold is only revived if every item can still be covered.
       if (action === 'reinstate') {
+        // Firestore requires EVERY read in a transaction to happen before ANY
+        // write. Reading and updating inside one loop works for a single-line
+        // reservation and throws on the second item, so the two phases are kept
+        // apart: collect every line first, then write.
+        const reinstateWrites: Array<{
+          ref: DocumentReference
+          item: ReservationItemRecord
+          currentStock: number
+          currentReserved: number
+          available: number
+        }> = []
+
+        // ── Phase 1: read and validate every line ──
         for (const item of reservationItems) {
-          const inventoryRef = doc(db, 'inventory', item.id)
+          const inventoryRef = adminDb.collection('inventory').doc(item.id)
           const inventorySnapshot = await transaction.get(inventoryRef)
-          if (!inventorySnapshot.exists()) {
+          if (!inventorySnapshot.exists) {
             throw new Error(`REINSTATE_UNAVAILABLE:${item.name}`)
           }
 
@@ -165,7 +188,14 @@ export async function PATCH(req: Request, context: RouteContext) {
             throw new Error(`REINSTATE_UNAVAILABLE:${item.name}`)
           }
 
-          transaction.update(inventoryRef, {
+          reinstateWrites.push({ ref: inventoryRef, item, currentStock, currentReserved, available })
+        }
+
+        // ── Phase 2: write ──
+        for (const entry of reinstateWrites) {
+          const { ref, item, currentStock, currentReserved, available } = entry
+
+          transaction.update(ref, {
             reservedStock: currentReserved + item.quantity,
             updatedAt: nowIso,
           })
@@ -212,10 +242,25 @@ export async function PATCH(req: Request, context: RouteContext) {
           condition: string
         }> = []
 
+        // Same two-phase split as reinstate: every read first, then the writes.
+        // Firestore rejects a read that follows a write in the same transaction,
+        // so the interleaved version only ever worked for one-line reservations.
+        const claimWrites: Array<{
+          ref: DocumentReference
+          item: ReservationItemRecord
+          currentStock: number
+          currentReservedStock: number
+          nextStock: number
+          nextReservedStock: number
+          categoryId: string
+          categoryName: string
+        }> = []
+
+        // ── Phase 1: read and validate every line ──
         for (const item of reservationItems) {
-          const inventoryRef = doc(db, 'inventory', item.id)
+          const inventoryRef = adminDb.collection('inventory').doc(item.id)
           const inventorySnapshot = await transaction.get(inventoryRef)
-          if (!inventorySnapshot.exists()) {
+          if (!inventorySnapshot.exists) {
             throw new Error('ITEM_NOT_FOUND')
           }
 
@@ -238,7 +283,23 @@ export async function PATCH(req: Request, context: RouteContext) {
               ? inventoryData.categoryId.trim()
               : ''
 
-          transaction.update(inventoryRef, {
+          claimWrites.push({
+            ref: inventoryRef,
+            item,
+            currentStock,
+            currentReservedStock,
+            nextStock,
+            nextReservedStock,
+            categoryId,
+            categoryName,
+          })
+        }
+
+        // ── Phase 2: write ──
+        for (const entry of claimWrites) {
+          const { ref, item, currentStock, currentReservedStock, nextStock, nextReservedStock } = entry
+
+          transaction.update(ref, {
             stock: nextStock,
             quantity: nextStock,
             reservedStock: nextReservedStock,
@@ -265,8 +326,8 @@ export async function PATCH(req: Request, context: RouteContext) {
             name: item.name,
             quantity: item.quantity,
             price: item.price,
-            categoryId,
-            categoryName,
+            categoryId: entry.categoryId,
+            categoryName: entry.categoryName,
             condition: item.condition,
           })
         }
@@ -277,8 +338,18 @@ export async function PATCH(req: Request, context: RouteContext) {
         transaction.set(saleRef, {
           ...(saleItems.length === 1 ? { itemId: saleItems[0].itemId } : {}),
           id: saleRef.id,
+          // Receipt identity - without these the sale shows its raw document id
+          // in the sales list and cannot be found by receipt search.
+          receiptNumber: saleNumber!.value,
+          searchableNumber: saleNumber!.value,
+          transactionType: 'sale',
+          dateKey: saleNumber!.dateKey,
+          sequenceNumber: saleNumber!.sequenceNumber,
+          customerSearchEmail:
+            typeof data.customerEmail === 'string' ? data.customerEmail.toLowerCase() : '',
           items: saleItems.map((item) => ({
             ...item,
+            warrantyDays: saleWarrantyDays!,
             status: 'completed',
           })),
           categoryName: categoryNames.join(', '),
@@ -292,17 +363,20 @@ export async function PATCH(req: Request, context: RouteContext) {
           total: totalAmount,
           amount: totalAmount,
           status: 'Completed',
+          // Snapshot of the store policy on the day the reservation was paid,
+          // so a later policy change cannot move this customer's refund window.
+          warrantyDays: saleWarrantyDays!,
           sourceReservationId: id,
           processedByName: processedBy.name,
           processedByEmail: processedBy.email ?? '',
-          createdAt: serverTimestamp(),
+          createdAt: FieldValue.serverTimestamp(),
           transactionDate: nowIso,
         })
 
         saleId = saleRef.id
         transaction.update(reservationRef, {
           status: 'Completed',
-          completedAt: serverTimestamp(),
+          completedAt: FieldValue.serverTimestamp(),
           completedByName: processedBy.name,
           updatedAt: nowIso,
         })
@@ -310,10 +384,24 @@ export async function PATCH(req: Request, context: RouteContext) {
         return
       }
 
+      // ── Cancel / expire: release the held units back to sellable stock ──
+      //
+      // Two-phase, for the same Firestore reason as the branches above: every
+      // read before any write.
+      const releaseWrites: Array<{
+        ref: DocumentReference
+        item: ReservationItemRecord
+        currentStock: number
+        currentReservedStock: number
+        availableBefore: number
+        nextReservedStock: number
+      }> = []
+
+      // ── Phase 1: read and validate every line ──
       for (const item of reservationItems) {
-        const inventoryRef = doc(db, 'inventory', item.id)
+        const inventoryRef = adminDb.collection('inventory').doc(item.id)
         const inventorySnapshot = await transaction.get(inventoryRef)
-        if (!inventorySnapshot.exists()) {
+        if (!inventorySnapshot.exists) {
           throw new Error('ITEM_NOT_FOUND')
         }
 
@@ -327,45 +415,13 @@ export async function PATCH(req: Request, context: RouteContext) {
           throw new Error('INVALID_RESERVED_STOCK')
         }
 
-        transaction.update(inventoryRef, {
-          reservedStock: nextReservedStock,
-          updatedAt: nowIso,
-        })
-
-        const cancellationDetails =
-          action === 'expire'
-            ? {
-                cancellationReason: SYSTEM_CANCELLATION_REASON,
-                cancellationReasonType: 'system' as CancellationReasonType,
-                cancelledBy: 'System',
-              }
-            : {
-                cancellationReason:
-                  selectedReason === 'Other'
-                    ? typeof body.customCancellationReason === 'string'
-                      ? body.customCancellationReason.trim()
-                      : selectedReason
-                    : selectedReason,
-                cancellationReasonType: 'manual' as CancellationReasonType,
-                cancelledBy: processedBy.name,
-              }
-
-        const reasonSuffix =
-          action === 'expire' ? `Reservation expired - ${SYSTEM_CANCELLATION_REASON}` : `Reservation cancelled - ${cancellationDetails.cancellationReason}`
-
-        pendingLogs.push({
-          actionType: 'reservation_release',
-          itemId: item.id,
-          itemName: item.name,
-          condition: item.condition,
-          quantityBefore: availableBefore,
-          quantityChanged: item.quantity,
-          quantityAfter: availableBefore + item.quantity,
-          stockBefore: currentStock,
-          stockAfter: currentStock,
-          reservedBefore: currentReservedStock,
-          reservedAfter: nextReservedStock,
-          remarks: reasonSuffix,
+        releaseWrites.push({
+          ref: inventoryRef,
+          item,
+          currentStock,
+          currentReservedStock,
+          availableBefore,
+          nextReservedStock,
         })
       }
 
@@ -387,9 +443,45 @@ export async function PATCH(req: Request, context: RouteContext) {
               cancelledBy: processedBy.name,
             }
 
+      const reasonSuffix =
+        action === 'expire'
+          ? `Reservation expired - ${SYSTEM_CANCELLATION_REASON}`
+          : `Reservation cancelled - ${cancellationDetails.cancellationReason}`
+
+      // ── Phase 2: write ──
+      for (const entry of releaseWrites) {
+        const { ref, item, currentStock, currentReservedStock, availableBefore, nextReservedStock } = entry
+
+        transaction.update(ref, {
+          reservedStock: nextReservedStock,
+          updatedAt: nowIso,
+        })
+
+        pendingLogs.push({
+          actionType: 'reservation_release',
+          itemId: item.id,
+          itemName: item.name,
+          condition: item.condition,
+          quantityBefore: availableBefore,
+          quantityChanged: item.quantity,
+          quantityAfter: availableBefore + item.quantity,
+          stockBefore: currentStock,
+          stockAfter: currentStock,
+          reservedBefore: currentReservedStock,
+          reservedAfter: nextReservedStock,
+          remarks: reasonSuffix,
+        })
+      }
+
+      // An expired hold is not a cancelled one. Both branches used to write
+      // 'Cancelled', which made 'Expired' a status the interface could render
+      // but the system could never produce - the Expired tally on Reservations
+      // and the Expired slice on the Analytics chart both sat permanently at
+      // zero, and a hold the shop released on time looked like one a staff
+      // member had cancelled.
       transaction.update(reservationRef, {
-        status: 'Cancelled',
-        cancelledAt: serverTimestamp(),
+        status: action === 'expire' ? 'Expired' : 'Cancelled',
+        cancelledAt: FieldValue.serverTimestamp(),
         cancelledByName: cancellationDetails.cancelledBy,
         cancellationReason: cancellationDetails.cancellationReason,
         cancellationReasonType: cancellationDetails.cancellationReasonType,
