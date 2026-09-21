@@ -4,7 +4,7 @@
 // Exports ProductFormValues, the shape the Inventory page saves.
 
 import { useEffect, useMemo, useState } from 'react'
-import { MAX_STOCK } from '@/lib/constants/limits'
+import { MAX_STOCK, MAX_PRICE, clampIntegerInput, clampPriceInput } from '@/lib/constants/limits'
 import { apiFetch } from '@/lib/apiFetch'
 import { X } from 'lucide-react'
 import { DEFAULT_WARRANTY_DAYS } from '@/lib/constants/warranty'
@@ -18,15 +18,9 @@ export interface ProductFormValues {
   condition: 'New' | 'Refurbished'
   reservedStock?: number
   availableStock?: number
-  containerId?: string
 }
 
 interface CategoryOption {
-  id: string
-  name: string
-}
-
-interface ContainerOption {
   id: string
   name: string
 }
@@ -36,7 +30,6 @@ interface ProductModalProps {
   onClose: () => void
   onSubmit: (values: ProductFormValues) => Promise<void> | void
   categories: CategoryOption[]
-  containers?: ContainerOption[]
   initialValues?: ProductFormValues
   submitting?: boolean
 }
@@ -46,7 +39,6 @@ export default function ProductModal({
   onClose,
   onSubmit,
   categories,
-  containers = [],
   initialValues,
   submitting = false,
 }: ProductModalProps) {
@@ -58,7 +50,6 @@ export default function ProductModal({
   const [quantity, setQuantity] = useState('')
   const [minStock, setMinStock] = useState('')
   const [condition, setCondition] = useState<'New' | 'Refurbished'>('New')
-  const [containerId, setContainerId] = useState('')
   const [policyDays, setPolicyDays] = useState<number>(DEFAULT_WARRANTY_DAYS)
 
   useEffect(() => {
@@ -81,7 +72,6 @@ export default function ProductModal({
       setQuantity(String(initialValues.quantity))
       setMinStock(String(initialValues.minStock))
       setCondition(initialValues.condition)
-      setContainerId(initialValues.containerId ?? '')
       return
     }
 
@@ -91,7 +81,6 @@ export default function ProductModal({
     setQuantity('')
     setMinStock('')
     setCondition('New')
-    setContainerId('')
   }, [isOpen, initialValues, defaultCategory])
 
   if (!isOpen) return null
@@ -123,7 +112,6 @@ export default function ProductModal({
       condition,
       reservedStock: initialValues?.reservedStock,
       availableStock: initialValues?.availableStock,
-      containerId: containerId || undefined,
     })
   }
 
@@ -167,12 +155,15 @@ export default function ProductModal({
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-900">Price *</label>
+              {/* type="text" + inputMode, not type="number". With type="number"
+                  the browser hands back an empty string for partial input like
+                  "12e", which would wipe the field mid-typing. */}
               <input
-                type="number"
-                min={0.01}
-                step="0.01"
+                type="text"
+                inputMode="decimal"
+                maxLength={String(MAX_PRICE).length + 3}
                 value={price}
-                onChange={(event) => setPrice(event.target.value)}
+                onChange={(event) => setPrice(clampPriceInput(event.target.value, price))}
                 required
                 className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
               />
@@ -187,11 +178,11 @@ export default function ProductModal({
                 </div>
               ) : (
                 <input
-                  type="number"
-                  min={0}
-                  max={MAX_STOCK}
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={String(MAX_STOCK).length}
                   value={quantity}
-                  onChange={(event) => setQuantity(event.target.value)}
+                  onChange={(event) => setQuantity(clampIntegerInput(event.target.value, quantity))}
                   required
                   className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
                 />
@@ -200,11 +191,11 @@ export default function ProductModal({
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-900">Minimum Stock *</label>
               <input
-                type="number"
-                min={0}
-                max={MAX_STOCK}
+                type="text"
+                inputMode="numeric"
+                maxLength={String(MAX_STOCK).length}
                 value={minStock}
-                onChange={(event) => setMinStock(event.target.value)}
+                onChange={(event) => setMinStock(clampIntegerInput(event.target.value, minStock))}
                 required
                 className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
               />
@@ -238,27 +229,6 @@ export default function ProductModal({
               </div>
             </div>
 
-            {/* Container linking — shown only when containers exist */}
-            {containers.length > 0 && (
-              <div className="space-y-2 sm:col-span-2">
-                <label className="text-sm font-medium text-slate-900">
-                  Shipment{' '}
-                  <span className="font-normal text-slate-500">(optional)</span>
-                </label>
-                <select
-                  value={containerId}
-                  onChange={(event) => setContainerId(event.target.value)}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
-                >
-                  <option value="">— Not linked to a shipment —</option>
-                  {containers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
           </div>
 
           <div className="flex items-center justify-end gap-3 pt-1">
