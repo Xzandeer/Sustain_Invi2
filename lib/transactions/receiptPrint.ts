@@ -410,14 +410,11 @@ export const openReceiptPrintWindow = (
       `
           : `
         <div class="section">
-          <div class="section-label">Claim Instructions</div>
+          <div class="section-label">Claiming</div>
           <div class="section-content" style="font-size: 10px; line-height: 1.5;">
             ${document.claimInstructions}
           </div>
-        </div>
-        <div class="section">
-          <div class="section-label">Notice</div>
-          <div class="section-content" style="font-size: 10px; line-height: 1.5;">
+          <div class="section-content" style="font-size: 9px; line-height: 1.5; opacity: 0.75;">
             ${document.notice}
           </div>
         </div>

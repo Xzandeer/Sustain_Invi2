@@ -13,10 +13,11 @@ import { onAuthStateChanged } from 'firebase/auth'
 import {
   ChevronRight, TrendingUp, TrendingDown,
   AlertTriangle, Package, Bookmark, LayoutGrid, ShoppingCart, Calendar,
-  BarChart3, ClipboardList, UserCheck, PackagePlus,
+  BarChart3, ClipboardList, PackagePlus, Trash2,
 } from 'lucide-react'
 import { auth, db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
+import { useUserRole } from '@/hooks/useUserRole'
 import type { LowStockItem } from '@/lib/server/salesInventoryMetrics'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -110,6 +111,8 @@ export default function DashboardPage() {
 // ── Main content ──────────────────────────────────────────────────────────────
 
 function DashboardContent() {
+  const { isAdmin, canViewStockLogs, can } = useUserRole()
+  const canSeeMoney = isAdmin || can('canViewAnalytics')
   const [sales, setSales]               = useState<SaleDoc[]>([])
   const [inventory, setInventory]       = useState<InventoryDoc[]>([])
   const [reservations, setReservations] = useState<ReservationDoc[]>([])
@@ -242,6 +245,31 @@ function DashboardContent() {
   const prevSaleCount    = previousSales.length
   const saleCountChange  = prevSaleCount > 0 ? ((recentSaleCount - prevSaleCount) / prevSaleCount) * 100 : null
 
+  // Today's transaction count, and the same count for yesterday to compare
+  // against. Deliberately a COUNT, not a peso total: how busy the counter has
+  // been is useful to whoever is standing at it, while the day's takings are
+  // the same restricted figure as the revenue card above.
+  //
+  // `now` ticks once a minute, so this rolls over on its own at midnight
+  // without the page being reloaded.
+  const salesToday = useMemo(() => {
+    const startOfToday = new Date(now); startOfToday.setHours(0, 0, 0, 0)
+    return completedSales.filter(s => {
+      const d = toDate(s.createdAt); return d && d >= startOfToday
+    }).length
+  }, [completedSales, now])
+
+  const salesYesterday = useMemo(() => {
+    const startOfToday = new Date(now); startOfToday.setHours(0, 0, 0, 0)
+    const startOfYesterday = new Date(startOfToday); startOfYesterday.setDate(startOfYesterday.getDate() - 1)
+    return completedSales.filter(s => {
+      const d = toDate(s.createdAt); return d && d >= startOfYesterday && d < startOfToday
+    }).length
+  }, [completedSales, now])
+
+  const salesTodayChange =
+    salesYesterday > 0 ? ((salesToday - salesYesterday) / salesYesterday) * 100 : null
+
   const inventoryValue   = useMemo(() => inventory.reduce((s, i) => s + toNum(i.price) * Math.max(0, toNum(i.quantity)), 0), [inventory])
   const lowStockItems    = useMemo<LowStockItem[]>(() =>
     inventory.filter(i => toNum(i.quantity) > 0 && toNum(i.quantity) <= toNum(i.minStock))
@@ -279,9 +307,9 @@ function DashboardContent() {
     return buckets
   }, [completedSales])
 
-  const inventorySparkline = useMemo(() =>
-    buildDailyBuckets(14).map(() => inventoryValue),
-  [inventoryValue])
+  // No inventory-value sparkline: nothing records what the stock was worth on
+  // previous days, so the only honest series would be today's figure repeated
+  // fourteen times - a flat line pretending to be history.
 
   // ── Recent activity ───────────────────────────────────────────────────────
 
@@ -330,7 +358,25 @@ function DashboardContent() {
 
       <div className="flex flex-1 flex-col gap-3 p-5 overflow-y-auto min-h-0">
 
-        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4 shrink-0">
+        {/* Money figures are limited to admins and staff with View Analytics.
+            The shop's takings and the value of everything on the shelves are
+            the owner's business; a counter account that was never granted
+            analytics should not read them off the landing page. The grid drops
+            to two columns for those accounts so the row does not sit half empty. */}
+        <div className={`grid grid-cols-2 gap-3 shrink-0 ${canSeeMoney ? 'xl:grid-cols-5' : 'xl:grid-cols-2'}`}>
+          {/* Sales Today comes first: it is the figure whoever is at the
+              counter actually acts on, and it is the only sales card a staff
+              account sees. */}
+          <KpiCard
+            title="Sales Today"
+            value={String(salesToday)}
+            change={salesTodayChange}
+            subtitle="vs yesterday"
+            loading={loading}
+            iconBg="bg-sky-100"
+            icon={<svg className="h-5 w-5 text-sky-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>}
+          />
+          {canSeeMoney && (
           <KpiCard
             title="Revenue (30 days)"
             value={fmt(recentRevenue)}
@@ -341,6 +387,8 @@ function DashboardContent() {
             iconBg="bg-blue-100"
             icon={<svg className="h-5 w-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
           />
+          )}
+          {canSeeMoney && (
           <KpiCard
             title="Sales (30 days)"
             value={String(recentSaleCount)}
@@ -351,15 +399,17 @@ function DashboardContent() {
             iconBg="bg-emerald-100"
             icon={<svg className="h-5 w-5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" /></svg>}
           />
+          )}
+          {canSeeMoney && (
           <KpiCard
             title="Inventory Value"
             value={fmt(inventoryValue)}
             subtitle={`${inventory.length} product lines`}
-            spark={<Sparkline values={inventorySparkline} stroke="#8b5cf6" fill="rgba(139,92,246,0.1)" />}
             loading={loading}
             iconBg="bg-violet-100"
             icon={<svg className="h-5 w-5 text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>}
           />
+          )}
           <KpiCard
             title="Low Stock Alerts"
             value={String(alertCount)}
@@ -429,13 +479,25 @@ function DashboardContent() {
 
         <div className="rounded-2xl bg-white p-5 shadow-sm border border-gray-100 shrink-0">
           <h2 className="mb-3 text-base font-bold text-gray-800">Quick Actions</h2>
+          {/* Same visibility rules as the sidebar. A tile that leads somewhere
+              ProtectedRoute will bounce is worse than no tile at all. */}
           <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
             <QuickAction href="/sales"          icon={<ShoppingCart className="h-5 w-5" />} label="New Sale"    desc="Process a transaction" iconBg="bg-blue-100"    iconColor="text-blue-600"    hoverBg="hover:bg-blue-50" />
-            <QuickAction href="/inventory"      icon={<PackagePlus className="h-5 w-5" />}  label="Add Item"    desc="Add to inventory"      iconBg="bg-emerald-100" iconColor="text-emerald-600" hoverBg="hover:bg-emerald-50" />
-            <QuickAction href="/reservations"   icon={<Calendar className="h-5 w-5" />}     label="Reserve"     desc="New reservation"       iconBg="bg-amber-100"   iconColor="text-amber-600"   hoverBg="hover:bg-amber-50" />
-            <QuickAction href="/containers"     icon={<UserCheck className="h-5 w-5" />}    label="Shipments"   desc="Supplier deliveries"   iconBg="bg-pink-100"    iconColor="text-pink-600"    hoverBg="hover:bg-pink-50" />
-            <QuickAction href="/analytics"      icon={<BarChart3 className="h-5 w-5" />}    label="Analytics"   desc="Sales & trends"        iconBg="bg-violet-100"  iconColor="text-violet-600"  hoverBg="hover:bg-violet-50" />
-            <QuickAction href="/inventory/logs" icon={<ClipboardList className="h-5 w-5" />} label="Stock Logs" desc="Audit trail"            iconBg="bg-gray-100"    iconColor="text-gray-500"    hoverBg="hover:bg-gray-50" />
+            {(isAdmin || can('canManageInventory')) && (
+              <QuickAction href="/inventory"      icon={<PackagePlus className="h-5 w-5" />}  label="Add Item"    desc="Add to inventory"      iconBg="bg-emerald-100" iconColor="text-emerald-600" hoverBg="hover:bg-emerald-50" />
+            )}
+            {(isAdmin || can('canManageReservations')) && (
+              <QuickAction href="/reservations"   icon={<Calendar className="h-5 w-5" />}     label="Reserve"     desc="New reservation"       iconBg="bg-amber-100"   iconColor="text-amber-600"   hoverBg="hover:bg-amber-50" />
+            )}
+            {(isAdmin || can('canViewAnalytics')) && (
+              <QuickAction href="/analytics"      icon={<BarChart3 className="h-5 w-5" />}    label="Analytics"   desc="Sales & trends"        iconBg="bg-violet-100"  iconColor="text-violet-600"  hoverBg="hover:bg-violet-50" />
+            )}
+            {(isAdmin || canViewStockLogs) && (
+              <QuickAction href="/inventory/logs" icon={<ClipboardList className="h-5 w-5" />} label="Stock Logs" desc="Audit trail"            iconBg="bg-gray-100"    iconColor="text-gray-500"    hoverBg="hover:bg-gray-50" />
+            )}
+            {isAdmin && (
+              <QuickAction href="/inventory/trash" icon={<Trash2 className="h-5 w-5" />}      label="Trash"       desc="Restore or delete"     iconBg="bg-rose-100"    iconColor="text-rose-600"    hoverBg="hover:bg-rose-50" />
+            )}
           </div>
         </div>
       </div>

@@ -57,9 +57,6 @@ export interface Product {
   // Total units written off this item. Present even when isVoided is false,
   // because a partial void leaves the item active but still records the loss.
   voidedUnits?: number | null
-  // The shipment this item arrived in. Null for items encoded directly into
-  // inventory rather than through a container.
-  containerId?: string | null
   // Short scannable code, one per variant. Assigned on creation; older items
   // get one from the Assign Barcodes action.
   barcode?: string | null
@@ -67,11 +64,6 @@ export interface Product {
 }
 
 interface Category {
-  id: string
-  name: string
-}
-
-interface ContainerOption {
   id: string
   name: string
 }
@@ -95,7 +87,7 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'category',   label: 'Category (A\u2013Z)' },
 ]
 
-type ColumnKey = 'category' | 'price' | 'stock' | 'reserved' | 'available' | 'condition' | 'status' | 'shipment' | 'barcode'
+type ColumnKey = 'category' | 'price' | 'stock' | 'reserved' | 'available' | 'condition' | 'status' | 'barcode'
 
 const COLUMN_LABELS: { key: ColumnKey; label: string }[] = [
   { key: 'category',  label: 'Category' },
@@ -105,13 +97,12 @@ const COLUMN_LABELS: { key: ColumnKey; label: string }[] = [
   { key: 'available', label: 'Available' },
   { key: 'condition', label: 'Condition' },
   { key: 'status',    label: 'Stock Status' },
-  { key: 'shipment',  label: 'Shipment' },
   { key: 'barcode',   label: 'Barcode' },
 ]
 
 const DEFAULT_COLUMNS: Record<ColumnKey, boolean> = {
   category: true, price: true, stock: true,
-  reserved: true, available: true, condition: true, status: true, shipment: true,
+  reserved: true, available: true, condition: true, status: true,
   // Off by default - useful for staff and for testing, but most days it is
   // noise. Turned on from Table Options.
   barcode: false,
@@ -143,7 +134,6 @@ function InventoryContent() {
   const canVoid = isAdmin || can('canVoidItems')
   const [inventory, setInventory] = useState<Product[]>([])
   const [categories, setCategories] = useState<Category[]>([])
-  const [containers, setContainers] = useState<ContainerOption[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -264,9 +254,6 @@ function InventoryContent() {
               voidedBy: typeof data.voidedBy === 'string' ? data.voidedBy : null,
               voidReason: typeof data.voidReason === 'string' ? data.voidReason : null,
               voidedUnits: typeof data.voidedUnits === 'number' ? data.voidedUnits : null,
-              // Which shipment this item arrived in. Resolved to a name below;
-              // items encoded outside a shipment simply have none.
-              containerId: typeof data.containerId === 'string' ? data.containerId : null,
               barcode: typeof data.barcode === 'string' ? data.barcode : null,
               createdAtMs: (() => {
                 const raw = data.createdAt as { seconds?: number } | string | undefined
@@ -288,24 +275,9 @@ function InventoryContent() {
       }
     )
 
-    const unsubscribeContainers = onSnapshot(
-      collection(db, 'containers'),
-      (snapshot) => {
-        const list: ContainerOption[] = snapshot.docs
-          .map((d) => {
-            const data = d.data() as Record<string, unknown>
-            return { id: d.id, name: typeof data.name === 'string' ? data.name.trim() : '' }
-          })
-          .filter((c) => c.name)
-        list.sort((a, b) => a.name.localeCompare(b.name))
-        setContainers(list)
-      }
-    )
-
     return () => {
       unsubscribeCategories()
       unsubscribeInventory()
-      unsubscribeContainers()
     }
   }, [])
 
@@ -382,7 +354,6 @@ function InventoryContent() {
           quantity: values.quantity,
           minStock: values.minStock,
           condition: values.condition,
-          containerId: values.containerId ?? null,
           processedBy: {
             uid: auth.currentUser?.uid ?? '',
             email: auth.currentUser?.email ?? '',
@@ -712,12 +683,6 @@ function InventoryContent() {
     }
   }
 
-  // Shipment name lookup, so the inventory table can show where each item came
-  // from. Items store only containerId; the names live in the containers list.
-  const containerNameById = useMemo(
-    () => Object.fromEntries(containers.map((c) => [c.id, c.name])) as Record<string, string>,
-    [containers]
-  )
 
   const sellableInventory = useMemo(() => inventory.filter((p) => !p.isVoided), [inventory])
 
@@ -1146,7 +1111,6 @@ function InventoryContent() {
                     </th>)}
                     {visibleColumns.condition && <th className="px-3 py-2 text-left">Condition</th>}
                     {visibleColumns.status && <th className="px-3 py-2 text-left">Stock Status</th>}
-                    {visibleColumns.shipment && <th className="px-3 py-2 text-left">Shipment</th>}
                     {visibleColumns.barcode && <th className="px-3 py-2 text-left">Barcode</th>}
                     {/* Only on the Voided tab - the reason is meaningless for active items */}
                     {voidTab === 'voided' && <th className="px-3 py-2 text-left">Write-off Reason</th>}
@@ -1198,16 +1162,6 @@ function InventoryContent() {
                           }`} />
                           {product.stockStatus}
                         </span>
-                      </td>)}
-                      {visibleColumns.shipment && (
-                      <td className="px-5 py-3.5">
-                        {containerNameById[product.containerId ?? ''] ? (
-                          <span className="inline-flex rounded-md bg-sky-50 px-2.5 py-0.5 text-xs font-medium text-sky-700">
-                            {containerNameById[product.containerId ?? '']}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-slate-400">—</span>
-                        )}
                       </td>)}
                       {visibleColumns.barcode && (
                       <td className="px-5 py-3.5">
@@ -1415,7 +1369,6 @@ function InventoryContent() {
         onClose={() => { setIsProductModalOpen(false); setEditingProduct(null) }}
         onSubmit={handleSaveProduct}
         categories={categoryOptions}
-        containers={containers}
         initialValues={
           editingProduct
             ? {
@@ -1427,7 +1380,6 @@ function InventoryContent() {
                 condition: editingProduct.condition,
                 reservedStock: editingProduct.reservedStock,
                 availableStock: editingProduct.availableStock,
-                containerId: (editingProduct as Product & { containerId?: string }).containerId,
               }
             : undefined
         }

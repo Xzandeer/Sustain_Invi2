@@ -35,6 +35,13 @@ import { CancellationReasonModal } from '@/components/reservations/CancellationR
 import { auth, db } from '@/lib/firebase'
 import { toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { getCancellationReasonTypeLabel, type CancellationReasonOption } from '@/lib/reservations/cancellationReasons'
+import { openReceiptPrintWindow } from '@/lib/transactions/receiptPrint'
+import {
+  claimInstructionsFor,
+  RESERVATION_NOTICE,
+  STORE_NAME,
+  STORE_TAGLINE,
+} from '@/lib/transactions/transactionDocuments'
 import { expireReservations } from '@/lib/reservations/reservationExpiration'
 
 type ReservationStatus = 'Active' | 'Completed' | 'Cancelled' | 'Expired'
@@ -116,8 +123,12 @@ function ConditionBadge({ condition }: { condition: string }) {
 }
 
 function StatusBadge({ status }: { status: ReservationStatus }) {
+  // Status colours are kept distinct from the action buttons beside them.
+  // Active was amber, the same as the Extend button one column over, so the
+  // eye read them as related. Blue says "this is a state", leaving warm
+  // colours to mean "this is something you can press".
   const map: Record<ReservationStatus, string> = {
-    Active: 'bg-amber-50 text-amber-700 ring-amber-200',
+    Active: 'bg-blue-50 text-blue-700 ring-blue-200',
     Completed: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
     Expired: 'bg-slate-100 text-slate-600 ring-slate-200',
     Cancelled: 'bg-rose-50 text-rose-700 ring-rose-200',
@@ -221,6 +232,9 @@ function ReservationsContent() {
   const [reservations, setReservations] = useState<Reservation[]>([])
   const [loading, setLoading] = useState(true)
   const [actionId, setActionId] = useState<string | null>(null)
+  // Which reservation has its full item list open. Only one at a time, so a
+  // long hold cannot push every other row off the screen.
+  const [openItemsId, setOpenItemsId] = useState<string | null>(null)
   const [pageError, setPageError] = useState('')
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | ReservationStatus>('all')
@@ -237,6 +251,10 @@ function ReservationsContent() {
   const [cancellationModalOpen, setCancellationModalOpen] = useState(false)
   const [reservationToCancel, setReservationToCancel] = useState<Reservation | null>(null)
   const [viewReasonRes, setViewReasonRes] = useState<Reservation | null>(null)
+  // The reservation whose ticket is being previewed. Printing is a physical,
+  // irreversible act on a roll of thermal paper - the shop should see what it
+  // is about to spend paper on first.
+  const [ticketRes, setTicketRes] = useState<Reservation | null>(null)
 
   // Live clock (updates every 30s)
   useEffect(() => {
@@ -471,6 +489,53 @@ function ReservationsContent() {
 
 
   // Customer rang to say they are coming - push the hold out rather than lose it.
+  // Reprint the ticket the customer was given when the hold was made.
+  //
+  // Rebuilt from the reservation itself rather than fetched: every field the
+  // ticket needs is already on this row, and a reprint that cannot fail on a
+  // missing receipt document is worth more at the counter than one that is
+  // byte-identical to the original.
+  const handlePrintTicket = (reservation: Reservation) => {
+    if (reservation.items.length === 0) {
+      toast.error('This reservation has no items to print.')
+      return
+    }
+
+    openReceiptPrintWindow({
+      type: 'reservation',
+      reservationCode: reservation.reservationNumber,
+      storeName: STORE_NAME,
+      storeTagline: STORE_TAGLINE,
+      customer: {
+        fullName: reservation.customer,
+        email: reservation.customerEmail,
+        contactNumber: reservation.customerContactNumber,
+      },
+      items: reservation.items.map((item) => ({
+        itemId: item.id,
+        name: item.name,
+        quantity: item.quantity,
+        price: item.price,
+        condition: item.condition,
+        categoryName: item.categoryName,
+        subtotal: item.price * item.quantity,
+      })),
+      reservationDate: (reservation.createdAt ?? new Date()).toISOString(),
+      processedBy: auth.currentUser?.displayName ?? auth.currentUser?.email ?? 'Staff',
+      // Derived from this reservation's own dates, not the current store
+      // setting: if the owner has since changed the hold period, a reprint must
+      // still say what this customer was told.
+      claimInstructions: claimInstructionsFor(
+        reservation.createdAt && reservation.expiresAt
+          ? Math.max(1, Math.round(
+              (reservation.expiresAt.getTime() - reservation.createdAt.getTime()) / 86_400_000
+            ))
+          : 7
+      ),
+      notice: RESERVATION_NOTICE,
+    })
+  }
+
   const handleExtendReservation = async (reservation: Reservation) => {
     if (reservation.status !== 'Active') return
     if (!window.confirm('Extend the hold for ' + reservation.customer + '?')) return
@@ -572,11 +637,16 @@ function ReservationsContent() {
 
   // ── Render ─────────────────────────────────────────────────────────────────────
 
+  // Expired is listed because it is now a status the system can actually
+  // produce - the expire action used to write 'Cancelled', so the tab would
+  // have been permanently empty. Without it, an auto-released hold appears
+  // only under All.
   const TABS: { id: TabId; label: string; count?: number }[] = [
+    { id: 'all', label: 'All' },
     { id: 'Active', label: 'Active', count: counts.Active },
     { id: 'Completed', label: 'Completed', count: counts.Completed },
     { id: 'Cancelled', label: 'Cancelled', count: counts.Cancelled },
-    { id: 'all', label: 'All' },
+    { id: 'Expired', label: 'Expired', count: counts.Expired },
   ]
 
   const hasFilters = search || statusFilter !== 'all' || categoryFilter !== 'all' || startDate || endDate
@@ -609,8 +679,10 @@ function ReservationsContent() {
             >
               <RefreshCw className="h-3.5 w-3.5" />
             </button>
-            <div className="flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 ring-1 ring-inset ring-amber-200">
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+            {/* Same blue as the Active status badge, so the header count and
+                the rows it counts read as the same thing. */}
+            <div className="flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 ring-1 ring-inset ring-blue-200">
+              <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
               Active Reservations: {counts.Active}
             </div>
           </div>
@@ -841,6 +913,7 @@ function ReservationsContent() {
                       const isExpiringSoon =
                         r.status === 'Active' && r.expiresAt && msUntil(r.expiresAt) < 86_400_000
                       const totalQty = r.items.reduce((s, i) => s + i.quantity, 0)
+                      const itemsOpen = openItemsId === r.id
 
                       return (
                         <tr key={r.id} className="group transition-colors hover:bg-blue-50/30">
@@ -851,19 +924,54 @@ function ReservationsContent() {
                             </span>
                           </td>
 
-                          {/* Item */}
-                          <td className="max-w-[180px] px-4 py-3">
+                          {/* Item
+                              Listing every line made a five-item hold four
+                              times taller than a one-item hold, so a page of
+                              four reservations no longer fitted on screen. The
+                              first item is named and the rest are counted; the
+                              full list is on hover and on the receipt. */}
+                          <td className="max-w-[220px] px-4 py-3 align-top">
                             {r.items.length > 0 ? (
-                              <div className="space-y-1.5">
-                                {r.items.map((item) => (
-                                  <div key={item.id}>
-                                    <p className="text-xs font-semibold leading-snug text-slate-800">
-                                      {item.name}
-                                    </p>
-                                    <ConditionBadge condition={item.condition} />
+                              itemsOpen ? (
+                                // Opened on purpose: show every line, with its
+                                // own quantity, which the collapsed view cannot.
+                                <div className="space-y-1.5">
+                                  {r.items.map((item) => (
+                                    <div key={item.id} className="flex items-start gap-1.5">
+                                      <span className="mt-0.5 shrink-0 rounded bg-slate-100 px-1 text-[10px] font-bold text-slate-600">
+                                        {item.quantity}×
+                                      </span>
+                                      <div className="min-w-0">
+                                        <p className="text-xs font-semibold leading-snug text-slate-800">{item.name}</p>
+                                        <ConditionBadge condition={item.condition} />
+                                      </div>
+                                    </div>
+                                  ))}
+                                  <button
+                                    onClick={() => setOpenItemsId(null)}
+                                    className="text-[11px] font-medium text-blue-600 hover:text-blue-700"
+                                  >
+                                    Show less
+                                  </button>
+                                </div>
+                              ) : (
+                                <div>
+                                  <p className="text-xs font-semibold leading-snug text-slate-800">
+                                    {r.items[0].name}
+                                  </p>
+                                  <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                                    <ConditionBadge condition={r.items[0].condition} />
+                                    {r.items.length > 1 && (
+                                      <button
+                                        onClick={() => setOpenItemsId(r.id)}
+                                        className="rounded-md bg-blue-50 px-1.5 py-0.5 text-[11px] font-semibold text-blue-700 ring-1 ring-inset ring-blue-200 transition-colors hover:bg-blue-100"
+                                      >
+                                        +{r.items.length - 1} more
+                                      </button>
+                                    )}
                                   </div>
-                                ))}
-                              </div>
+                                </div>
+                              )
                             ) : (
                               <span className="text-xs text-slate-400">No items</span>
                             )}
@@ -871,15 +979,13 @@ function ReservationsContent() {
 
                           {/* Customer */}
                           <td className="px-4 py-3">
-                            <p className="text-xs font-semibold text-slate-800">{r.customer}</p>
+                            <p className="text-xs font-semibold text-slate-800" title={r.customerEmail || undefined}>{r.customer}</p>
                             {r.customerContactNumber ? (
                               <p className="mt-0.5 text-[11px] text-slate-500">{r.customerContactNumber}</p>
                             ) : null}
-                            {r.customerEmail ? (
-                              <p className="max-w-[160px] truncate text-[11px] text-slate-400">
-                                {r.customerEmail}
-                              </p>
-                            ) : null}
+                            {/* Email on hover. The phone number is what the
+                                shop rings when a hold is about to lapse; the
+                                email was a third line of grey text per row. */}
                           </td>
 
                           {/* Qty */}
@@ -903,13 +1009,19 @@ function ReservationsContent() {
                             >
                               {fmtDate(r.expiresAt)}
                             </p>
+                            {/* "in 4 days" is the part the shop acts on - a
+                                calendar date makes the reader do the
+                                subtraction. The exact time is on hover. */}
                             <p
                               className={
-                                'text-[11px] ' +
-                                (isExpiringSoon ? 'text-rose-400' : 'text-slate-400')
+                                'text-[11px] font-medium ' +
+                                (isExpiringSoon ? 'text-rose-500' : 'text-slate-500')
                               }
+                              title={fmtTime(r.expiresAt)}
                             >
-                              {fmtTime(r.expiresAt)}
+                              {r.status === 'Active'
+                                ? fmtCountdown(msUntil(r.expiresAt))
+                                : fmtTime(r.expiresAt)}
                             </p>
                           </td>
 
@@ -918,26 +1030,29 @@ function ReservationsContent() {
                             <StatusBadge status={r.status} />
                           </td>
 
-                          {/* Cancellation Info */}
+                          {/* Cancellation Info
+                              One line, not a four-line pink panel. The panel
+                              wrapped in a 170px column and made a cancelled row
+                              three times the height of every other one, for a
+                              record nobody needs to act on. Who cancelled it
+                              and when is in the reason dialog behind the button
+                              in Actions, and on hover here. */}
                           {activeTab !== 'Active' && (
-                          <td className="max-w-[170px] px-4 py-3">
+                          <td className="max-w-[190px] px-4 py-3">
                             {r.status === 'Cancelled' && r.cancellationReason ? (
-                              <div className="rounded-lg border border-rose-100 bg-rose-50 px-2.5 py-2 text-[11px] space-y-0.5">
-                                <p className="font-semibold text-rose-700">{r.cancellationReason}</p>
-                                <p className="text-rose-500">
-                                  {r.cancellationReasonType
+                              <p
+                                className="truncate text-xs text-slate-600"
+                                title={[
+                                  r.cancellationReason,
+                                  r.cancellationReasonType
                                     ? getCancellationReasonTypeLabel(r.cancellationReasonType)
-                                    : 'Unknown'}
-                                </p>
-                                {r.cancelledBy ? (
-                                  <p className="text-slate-500">By: {r.cancelledBy}</p>
-                                ) : null}
-                                {r.cancelledAt ? (
-                                  <p className="text-slate-400">
-                                    {fmtDate(r.cancelledAt)}, {fmtTime(r.cancelledAt)}
-                                  </p>
-                                ) : null}
-                              </div>
+                                    : null,
+                                  r.cancelledBy ? `By ${r.cancelledBy}` : null,
+                                  r.cancelledAt ? `${fmtDate(r.cancelledAt)}, ${fmtTime(r.cancelledAt)}` : null,
+                                ].filter(Boolean).join('\n')}
+                              >
+                                {r.cancellationReason}
+                              </p>
                             ) : (
                               <span className="text-slate-300">—</span>
                             )}
@@ -946,39 +1061,48 @@ function ReservationsContent() {
 
                           {/* Actions */}
                           <td className="px-4 py-3">
+                            {/* Labelled, not icon-only. Three coloured circles
+                                required the owner to hover each one to learn
+                                which was which, and the consequences differ
+                                sharply: one takes the customer's money, one
+                                releases the stock. */}
                             {r.status === 'Active' ? (
                               <div className="flex items-center gap-1.5">
                                 <button
                                   disabled={actionId === r.id}
                                   onClick={() => handleCompleteReservation(r)}
-                                  title="Complete Sale"
-                                  className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500 text-white shadow-sm transition-colors hover:bg-emerald-600 disabled:opacity-50"
+                                  title="Customer paid - turn this hold into a sale"
+                                  className="flex h-8 items-center gap-1.5 rounded-lg bg-emerald-500 px-2.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-emerald-600 disabled:opacity-50"
                                 >
-                                  <CheckCircle2 className="h-4 w-4" />
+                                  <CheckCircle2 className="h-4 w-4 shrink-0" />
+                                  Claim
                                 </button>
                                 <button
                                   disabled={actionId === r.id}
                                   onClick={() => handleExtendReservation(r)}
-                                  title="Extend the hold"
-                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-amber-200 bg-amber-50 text-amber-600 transition-colors hover:bg-amber-100 disabled:opacity-50"
+                                  title="Give the customer more time"
+                                  className="flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50 disabled:opacity-50"
                                 >
-                                  <Timer className="h-4 w-4" />
+                                  <Timer className="h-4 w-4 shrink-0" />
+                                  Extend
                                 </button>
                                 <button
                                   disabled={actionId === r.id}
                                   onClick={() => handleCancelReservation(r)}
-                                  title="Cancel Reservation"
-                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-500 transition-colors hover:bg-rose-100 disabled:opacity-50"
+                                  title="Release the stock back to the shelf"
+                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-400 transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-50"
                                 >
                                   <XCircle className="h-4 w-4" />
                                 </button>
                               </div>
                             ) : r.status === 'Completed' ? (
                               <button
-                                title="View Receipt"
-                                className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-500 transition-colors hover:bg-slate-100"
+                                onClick={() => setTicketRes(r)}
+                                title="View this reservation's ticket"
+                                className="flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50"
                               >
-                                <ReceiptText className="h-4 w-4" />
+                                <ReceiptText className="h-4 w-4 shrink-0" />
+                                Ticket
                               </button>
                             ) : r.status === 'Expired' ? (
                               <div className="flex items-center gap-1.5">
@@ -1010,7 +1134,7 @@ function ReservationsContent() {
                                 <button
                                   onClick={() => setViewReasonRes(r)}
                                   title="View Reason"
-                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-500 transition-colors hover:bg-rose-100"
+                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-400 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-600"
                                 >
                                   <AlertCircle className="h-4 w-4" />
                                 </button>
@@ -1131,34 +1255,13 @@ function ReservationsContent() {
                     <span className="font-semibold text-blue-600">{topCategory[0]}</span> currently have
                     the highest reservation volume this month.
                   </p>
-                  <div className="mt-3 overflow-hidden rounded-lg">
-                    <svg
-                      viewBox="0 0 200 52"
-                      className="w-full"
-                      fill="none"
-                      xmlns="http://www.w3.org/2000/svg"
-                    >
-                      <defs>
-                        <linearGradient id="insightGrad" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.18" />
-                          <stop offset="100%" stopColor="#3b82f6" stopOpacity="0" />
-                        </linearGradient>
-                      </defs>
-                      <polyline
-                        points="0,42 28,36 55,28 80,32 108,20 135,24 162,13 200,16"
-                        stroke="#3b82f6"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        fill="none"
-                        opacity="0.85"
-                      />
-                      <polygon
-                        points="0,42 28,36 55,28 80,32 108,20 135,24 162,13 200,16 200,52 0,52"
-                        fill="url(#insightGrad)"
-                      />
-                    </svg>
-                  </div>
+                  {/* The line that used to sit here was eight hardcoded SVG
+                      coordinates - the same rising curve on an empty database
+                      as on a record month. The sentence above is real
+                      (topCategory is computed from actual reservations); the
+                      graph was decoration shaped like a trend, so it is gone.
+                      Analytics has the charts that are drawn from data. */}
+
                   <button
                     onClick={() => { window.location.href = '/analytics' }}
                     className="mt-2 text-[11px] font-medium text-blue-500 transition-colors hover:text-blue-700"
@@ -1190,6 +1293,94 @@ function ReservationsContent() {
       ) : null}
 
       {/* ── VIEW REASON MODAL ── */}
+      {/* Ticket preview.
+          Laid out like the printed slip rather than as a data table, so what is
+          on screen is what comes out of the printer. Nothing is sent to paper
+          until Print is pressed. */}
+      {ticketRes ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+          onClick={() => setTicketRes(null)}
+        >
+          <div
+            className="flex max-h-[85vh] w-full max-w-sm flex-col rounded-2xl border border-slate-200 bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
+              <h3 className="text-sm font-semibold text-slate-800">Reservation Ticket</h3>
+              <button
+                onClick={() => setTicketRes(null)}
+                className="rounded-lg p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+              >
+                <XCircle className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto px-5 py-4">
+              {/* Monospaced and narrow, the way it prints on a 58/80mm roll. */}
+              <div className="mx-auto max-w-[280px] rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-4 font-mono text-[11px] leading-relaxed text-slate-700">
+                <div className="text-center">
+                  <p className="text-xs font-bold tracking-wide text-slate-900">{STORE_NAME}</p>
+                  <p className="text-[10px] text-slate-500">{STORE_TAGLINE}</p>
+                </div>
+
+                <div className="my-2 border-t border-dashed border-slate-300" />
+
+                <div className="flex justify-between"><span className="text-slate-500">Ticket</span><span className="font-bold">{ticketRes.reservationNumber}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Date</span><span>{fmtDateTime(ticketRes.createdAt)}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Expires</span><span>{fmtDateTime(ticketRes.expiresAt)}</span></div>
+
+                <div className="my-2 border-t border-dashed border-slate-300" />
+
+                <p className="text-slate-500">Customer</p>
+                <p className="font-bold text-slate-900">{ticketRes.customer}</p>
+                {ticketRes.customerContactNumber ? <p>{ticketRes.customerContactNumber}</p> : null}
+                {ticketRes.customerEmail ? <p className="break-all">{ticketRes.customerEmail}</p> : null}
+
+                <div className="my-2 border-t border-dashed border-slate-300" />
+
+                {ticketRes.items.map((item) => (
+                  <div key={item.id} className="mb-1.5">
+                    <p className="font-semibold text-slate-900">{item.name}</p>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">{item.quantity} × ₱{item.price.toLocaleString('en-PH')} ({item.condition})</span>
+                      <span className="font-semibold">₱{(item.price * item.quantity).toLocaleString('en-PH')}</span>
+                    </div>
+                  </div>
+                ))}
+
+                <div className="my-2 border-t border-dashed border-slate-300" />
+
+                <div className="flex justify-between text-xs font-bold text-slate-900">
+                  <span>TOTAL</span>
+                  <span>₱{ticketRes.items.reduce((sum, i) => sum + i.price * i.quantity, 0).toLocaleString('en-PH')}</span>
+                </div>
+
+                <div className="my-2 border-t border-dashed border-slate-300" />
+
+                <p className="text-center text-[10px] text-slate-500">{RESERVATION_NOTICE}</p>
+              </div>
+            </div>
+
+            <div className="flex gap-2 border-t border-slate-100 px-5 py-3">
+              <button
+                onClick={() => setTicketRes(null)}
+                className="flex-1 rounded-lg border border-slate-200 bg-white py-2.5 text-sm font-semibold text-slate-600 transition-colors hover:bg-slate-50"
+              >
+                Close
+              </button>
+              <button
+                onClick={() => { handlePrintTicket(ticketRes); setTicketRes(null) }}
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-slate-800 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-slate-900"
+              >
+                <ReceiptText className="h-4 w-4" />
+                Print
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {viewReasonRes ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"

@@ -10,31 +10,82 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, BarChart3, ShoppingCart, Package,
-  Package2, Trash2, Users, LogOut, Calendar,
-  ClipboardList, UserCheck, Settings,
+  Trash2, Users, LogOut, Calendar,
+  ClipboardList, Settings,
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
 import { auth, db } from '@/lib/firebase'
 import { useUserRole } from '@/hooks/useUserRole'
+import type { Permission } from '@/lib/auth/permissions'
 
-const mainNav = [
-  { name: 'Dashboard',    href: '/dashboard',       icon: LayoutDashboard },
-  { name: 'Sales',        href: '/sales',            icon: ShoppingCart },
-  { name: 'Inventory',    href: '/inventory',        icon: Package },
-  { name: 'Reservations', href: '/reservations',     icon: Calendar },
-  { name: 'Shipments',    href: '/containers',       icon: Package2 },
-]
+// What the signed-in user is allowed to open. Passed to each item's `show`.
+interface NavAccess {
+  isAdmin: boolean
+  canViewStockLogs: boolean
+  can: (permission: Permission) => boolean
+}
 
-const managementNav = [
-  { name: 'Analytics',    href: '/analytics',        icon: BarChart3 },
-  { name: 'Users',        href: '/users',            icon: Users },
-]
+interface NavItemDef {
+  name: string
+  href: string
+  icon: React.ElementType
+  /** Omit to always show. */
+  show?: (access: NavAccess) => boolean
+}
 
-const systemNav = [
-  { name: 'Stock Logs',   href: '/inventory/logs',   icon: ClipboardList },
-  { name: 'Trash',        href: '/inventory/trash',  icon: Trash2 },
+// Each item carries its own visibility rule, matching the guard on the page it
+// links to. Keeping the two in the same shape is what stops the sidebar
+// offering a link that ProtectedRoute will immediately bounce.
+//
+// Analytics sits in MAIN, not under a management heading: reading the sales
+// trend is part of running the counter, and a staff member with
+// canViewAnalytics uses it the same way the owner does.
+const NAV_SECTIONS: { title: string; items: NavItemDef[] }[] = [
+  {
+    title: 'Main',
+    items: [
+      { name: 'Dashboard',    href: '/dashboard',   icon: LayoutDashboard },
+      { name: 'Sales',        href: '/sales',       icon: ShoppingCart },
+      { name: 'Inventory',    href: '/inventory',   icon: Package },
+      {
+        name: 'Reservations', href: '/reservations', icon: Calendar,
+        show: (a) => a.isAdmin || a.can('canManageReservations'),
+      },
+      {
+        name: 'Analytics',    href: '/analytics',   icon: BarChart3,
+        show: (a) => a.isAdmin || a.can('canViewAnalytics'),
+      },
+    ],
+  },
+  {
+    title: 'Records',
+    items: [
+      {
+        name: 'Stock Logs',   href: '/inventory/logs',  icon: ClipboardList,
+        show: (a) => a.isAdmin || a.canViewStockLogs,
+      },
+      {
+        // Trash restores and permanently deletes items - admin only, matching
+        // <ProtectedRoute requireAdmin> on the page itself.
+        name: 'Trash',        href: '/inventory/trash', icon: Trash2,
+        show: (a) => a.isAdmin,
+      },
+    ],
+  },
+  {
+    title: 'Administration',
+    items: [
+      { name: 'Users',        href: '/users',       icon: Users, show: (a) => a.isAdmin },
+    ],
+  },
+  {
+    title: 'Account',
+    items: [
+      { name: 'Settings',     href: '/settings',    icon: Settings },
+    ],
+  },
 ]
 
 export default function Sidebar() {
@@ -71,7 +122,17 @@ export default function Sidebar() {
   const isActive = (href: string) =>
     href === '/dashboard' ? pathname === href : pathname.startsWith(href)
 
-  const NavItem = ({ item }: { item: { name: string; href: string; icon: React.ElementType } }) => {
+  const visibleSections = useMemo(() => {
+    const access: NavAccess = { isAdmin, canViewStockLogs, can }
+    return NAV_SECTIONS
+      .map(section => ({
+        ...section,
+        items: section.items.filter(item => !item.show || item.show(access)),
+      }))
+      .filter(section => section.items.length > 0)
+  }, [isAdmin, canViewStockLogs, can])
+
+  const NavItem = ({ item }: { item: NavItemDef }) => {
     const Icon = item.icon
     const active = isActive(item.href)
     return (
@@ -104,47 +165,19 @@ export default function Sidebar() {
       {/* Nav */}
       <div className="flex flex-1 flex-col gap-5 overflow-y-auto px-3 py-4">
 
-        {/* MAIN */}
-        <div>
-          <p className="mb-1.5 px-3 text-[10px] font-bold uppercase tracking-widest text-gray-500">Main</p>
-          <nav className="space-y-0.5">
-            {mainNav.map(item => (
-              (item.name === 'Reservations' && !isAdmin && !can('canManageReservations'))
-                ? null
-                : <NavItem key={item.href} item={item} />
-            ))}
-          </nav>
-        </div>
-
-        {/* MANAGEMENT */}
-        <div>
-          <p className="mb-1.5 px-3 text-[10px] font-bold uppercase tracking-widest text-gray-500">Management</p>
-          <nav className="space-y-0.5">
-            {managementNav.map(item => {
-              if (!isAdmin && item.name === 'Users') return null
-              if (item.name === 'Analytics' && !isAdmin && !can('canViewAnalytics')) return null
-              return <NavItem key={item.href + item.name} item={item} />
-            })}
-          </nav>
-        </div>
-
-        {/* SYSTEM */}
-        {(isAdmin || canViewStockLogs) && (
-          <div>
-            <p className="mb-1.5 px-3 text-[10px] font-bold uppercase tracking-widest text-gray-500">System</p>
+        {/* A section renders only if the user can open something inside it.
+            Previously the headings were hard-coded, so a staff member without
+            analytics saw an "MANAGEMENT" label with nothing under it. */}
+        {visibleSections.map(section => (
+          <div key={section.title}>
+            <p className="mb-1.5 px-3 text-[10px] font-bold uppercase tracking-widest text-gray-500">
+              {section.title}
+            </p>
             <nav className="space-y-0.5">
-              {systemNav.map(item => <NavItem key={item.href} item={item} />)}
+              {section.items.map(item => <NavItem key={item.href} item={item} />)}
             </nav>
           </div>
-        )}
-
-        {/* ACCOUNT */}
-        <div>
-          <p className="mb-1.5 px-3 text-[10px] font-bold uppercase tracking-widest text-gray-500">Account</p>
-          <nav className="space-y-0.5">
-            <NavItem item={{ name: 'Settings', href: '/settings', icon: Settings }} />
-          </nav>
-        </div>
+        ))}
       </div>
 
       {/* User profile */}

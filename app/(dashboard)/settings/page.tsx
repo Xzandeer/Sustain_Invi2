@@ -22,6 +22,7 @@ import {
 import { doc, getDoc, updateDoc } from 'firebase/firestore'
 import { auth, db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
+import { useUserRole } from '@/hooks/useUserRole'
 import {
   getReceiptPaperWidth,
   setReceiptPaperWidth,
@@ -39,6 +40,7 @@ export default function SettingsPage() {
 }
 
 function SettingsContent() {
+  const { isAdmin } = useUserRole()
   const [activeSection, setActiveSection] = useState<Section>('profile')
 
   // Profile state
@@ -182,7 +184,12 @@ function SettingsContent() {
     }
   }
 
-  const navItems: { key: Section; label: string; icon: React.ReactNode }[] = [
+  // Store Policy sets the warranty window and reservation hold period for the
+  // whole shop, so it is an owner's decision. The API already refuses a
+  // non-admin (requireAdminRequest in /api/settings), but a staff member could
+  // still open the tab, edit the fields and be refused on save - which reads as
+  // a broken page rather than a boundary. Hide it instead.
+  const allNavItems: { key: Section; label: string; icon: React.ReactNode }[] = [
     {
       key: 'profile',
       label: 'Profile',
@@ -211,6 +218,8 @@ function SettingsContent() {
       ),
     },
   ]
+
+  const navItems = allNavItems.filter((item) => item.key !== 'policy' || isAdmin)
 
   return (
     <main className="min-h-[calc(100vh-64px)] bg-slate-100 px-4 py-8 sm:px-6 lg:px-8">
@@ -375,7 +384,7 @@ function SettingsContent() {
             )}
 
             {/* Store Policy Section */}
-            {activeSection === 'policy' && (
+            {activeSection === 'policy' && isAdmin && (
               <section className="rounded-xl border bg-white shadow-sm">
                 <div className="border-b border-slate-100 px-6 py-4">
                   <h2 className="text-base font-bold text-slate-900">Store Policy</h2>

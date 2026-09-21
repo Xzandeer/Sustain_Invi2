@@ -71,6 +71,30 @@ const formatDate = (value: Date | null) => {
   return value.toLocaleString('en-PH', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
+// Row dates, split into day and time.
+//
+// Every row printing "Sep 20, 2026, 04:39 PM" made eight near-identical strings
+// the widest thing on screen, and the part that actually differs - the time -
+// was buried at the end. Today and yesterday are named instead of dated, which
+// is how someone checking "what happened this afternoon" reads the page.
+const formatLogDay = (value: Date | null, now: Date) => {
+  if (!value) return 'Pending'
+
+  const startOfToday = new Date(now); startOfToday.setHours(0, 0, 0, 0)
+  const startOfYesterday = new Date(startOfToday); startOfYesterday.setDate(startOfYesterday.getDate() - 1)
+
+  if (value >= startOfToday) return 'Today'
+  if (value >= startOfYesterday) return 'Yesterday'
+
+  // Within the same year the year adds nothing; across years it matters.
+  return value.getFullYear() === now.getFullYear()
+    ? value.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })
+    : value.toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' })
+}
+
+const formatLogTime = (value: Date | null) =>
+  value ? value.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }) : ''
+
 function useNow() {
   const [now, setNow] = useState(new Date())
   useEffect(() => { const t = setInterval(() => setNow(new Date()), 60000); return () => clearInterval(t) }, [])
@@ -573,14 +597,23 @@ function InventoryLogsContent() {
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                               </svg>
                             </td>
-                            {/* Date */}
-                            <td className="whitespace-nowrap px-3 py-3 font-medium text-slate-800">{formatDate(log.createdAt)}</td>
+                            {/* Date — day on top, time beneath, so the eye
+                                scans the times rather than eight repetitions
+                                of the same date. */}
+                            <td className="whitespace-nowrap px-3 py-3">
+                              <p className="font-semibold text-slate-800">{formatLogDay(log.createdAt, now)}</p>
+                              <p className="text-xs text-slate-500">{formatLogTime(log.createdAt)}</p>
+                            </td>
                             {/* Action */}
                             <td className="px-3 py-3"><ActionBadge action={log.resolvedAction} label={getStockLogActionLabel(log.resolvedAction)} /></td>
                             {/* Item */}
                             <td className="px-3 py-3">
+                              {/* The database id used to be printed under every
+                                  item name. It means nothing to the shop and it
+                                  was the noisiest thing in the table. It is
+                                  still searchable, and still shown in the
+                                  expanded row for anyone tracing a record. */}
                               <p className="font-semibold text-slate-900">{log.itemName}</p>
-                              <p className="font-mono text-[11px] text-slate-400">{log.itemId.slice(0, 16)}</p>
                               {log.condition && (
                                 <span className="mt-1 inline-block rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600">{log.condition}</span>
                               )}
@@ -591,13 +624,20 @@ function InventoryLogsContent() {
                             </td>
                             {/* Performed by */}
                             <td className="px-3 py-3">
-                              <p className="font-semibold text-slate-800">{log.userName}</p>
-                              {log.userEmail && <p className="text-xs text-slate-400 truncate max-w-[160px]">{log.userEmail}</p>}
+                              {/* Name only. The email was a second line of grey
+                                  text on every row that told the owner nothing
+                                  she did not already know from the name; it is
+                                  on hover, and still searchable. */}
+                              <p className="font-semibold text-slate-800" title={log.userEmail || undefined}>{log.userName}</p>
                             </td>
                             {/* Notes */}
                             <td className="px-3 py-3 max-w-[200px]">
+                              {/* The remark already names the receipt
+                                  ("Sale SALE-20260920-0002 completed"), which
+                                  is the reference the shop can actually look
+                                  up. The raw document id below it was a second
+                                  unreadable string saying the same thing. */}
                               {log.remarks ? <p className="text-sm text-slate-700">{log.remarks}</p> : <p className="text-slate-300">—</p>}
-                              {log.relatedId && <p className="mt-0.5 font-mono text-[11px] text-slate-400">Ref: {log.relatedId.slice(0, 20)}{log.relatedId.length > 20 ? ' …' : ''}</p>}
                             </td>
                             {/* Actions */}
                             <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
@@ -666,6 +706,17 @@ function InventoryLogsContent() {
                                       </div>
                                     </div>
                                   )}
+                                </div>
+
+                                {/* Technical detail, out of the table and into
+                                    the row you have to open on purpose. This is
+                                    what an auditor traces a record by; it is not
+                                    what the owner reads every day. */}
+                                <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 border-t border-slate-200 pt-2 text-[11px] text-slate-400">
+                                  <span>Recorded <span className="text-slate-600">{formatDate(log.createdAt)}</span></span>
+                                  {log.userEmail && <span>By <span className="text-slate-600">{log.userEmail}</span></span>}
+                                  <span>Item ID <span className="font-mono text-slate-600">{log.itemId}</span></span>
+                                  {log.relatedId && <span>Reference <span className="font-mono text-slate-600">{log.relatedId}</span></span>}
                                 </div>
                               </td>
                             </tr>

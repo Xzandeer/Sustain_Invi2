@@ -3,12 +3,18 @@
 export const STORE_NAME = 'JMGs JAPAN SURPLUS'
 export const STORE_TAGLINE = 'Sales & Inventory'
 export const SALES_THANK_YOU_NOTE = 'Thank you for your purchase.'
-export const RESERVATION_NOTICE = 'Please present this ticket when claiming your reserved item.'
+export const RESERVATION_NOTICE = 'Keep this ticket for your records.'
+
 // The customer keeps this slip, so it has to state the period the shop is
 // actually holding the goods for - taken from Settings, not fixed here.
+//
+// This used to demand the ticket AND a valid ID, and the notice beneath it
+// then repeated "present this ticket" a second time. A customer who lost the
+// slip can still be matched by name and ID, so the ID is what the shop
+// actually needs; asking for both, twice, made the ticket read like a warning.
 export const claimInstructionsFor = (holdDays: number) =>
-  `Present this reservation ticket and a valid ID upon claiming your reserved item. ` +
-  `Please claim within ${holdDays} day${holdDays === 1 ? '' : 's'} to avoid automatic release.`
+  `Bring a valid ID when you collect. ` +
+  `Unclaimed items are released after ${holdDays} day${holdDays === 1 ? '' : 's'}.`
 
 /** Fallback only, for records written before the period was configurable. */
 export const DEFAULT_CLAIM_INSTRUCTIONS = claimInstructionsFor(7)
@@ -142,50 +148,43 @@ export const buildManualEmailSubject = (document: CompletedTransactionDocument) 
 export const buildManualEmailBody = (document: CompletedTransactionDocument) => {
   const greeting = `Hello ${document.customer.fullName},`
 
-  // Format for sales invoice
+  // The customer is greeted by name and the store signs off at the bottom, so
+  // repeating "Customer Name:" and "Store Name:" in a details block told the
+  // reader nothing twice. Headings that labelled a single following line went
+  // the same way.
   if (document.type === 'sale') {
     return [
       greeting,
       '',
-      'Thank you for your purchase.',
+      'Thank you for your purchase. Here are the details of your transaction.',
       '',
-      'RECEIPT DETAILS',
-      `Store Name: ${document.storeName}`,
-      `Receipt Number: ${document.receiptNumber}`,
-      `Customer Name: ${document.customer.fullName}`,
-      `Transaction Date/Time: ${formatTransactionDateTime(document.transactionDate)}`,
+      `Invoice ${document.receiptNumber}`,
+      formatTransactionDateTime(document.transactionDate),
       '',
-      'ITEMS PURCHASED',
+      'ITEMS',
       formatSaleItemLines(document.items),
       '',
-      'TOTAL AMOUNT',
-      `${formatCurrency(document.totalAmount)}`,
+      `Total: ${formatCurrency(document.totalAmount)}`,
       '',
-      document.note,
-      '',
-      `Regards,`,
+      'Regards,',
       document.storeName,
     ].join('\n')
   }
 
-  // Format for reservation ticket
   return [
     greeting,
     '',
-    'Thank you for choosing our store.',
+    'Thank you for choosing our store. Your items are being held for you.',
     '',
-    `Reservation Number: ${document.reservationCode}`,
-    `Customer Name: ${document.customer.fullName}`,
-    'Reserved Items:',
+    `Reservation ${document.reservationCode}`,
+    formatTransactionDateTime(document.reservationDate),
+    '',
+    'RESERVED ITEMS',
     formatReservationItemLines(document.items),
-    `Reservation Date/Time: ${formatTransactionDateTime(document.reservationDate)}`,
     '',
-    'Claim Instructions:',
     document.claimInstructions,
     '',
-    document.notice,
-    '',
-    `Regards,`,
+    'Regards,',
     document.storeName,
   ].join('\n')
 }
