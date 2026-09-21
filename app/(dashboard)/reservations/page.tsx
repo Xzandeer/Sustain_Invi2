@@ -6,9 +6,15 @@
 // the books but can no longer be sold or deducted, which is why reserved
 // quantity is blocked in the stock adjustment screen.
 //
-// A reservation ends one of four ways: Completed (collected and paid),
+// A reservation ends one of four ways: Completed (paid and collected),
 // Cancelled (needs a reason), Expired (auto-released after the hold period,
-// see lib/reservations/reservationExpiration.ts), or still Active.
+// see app/api/reservations/expire), or still Active.
+//
+// AwaitingCollection sits between Active and Completed: the customer has paid
+// but left the goods in the shop. The sale is recorded and the stock deducted
+// at that point, so the money is in and the item cannot be sold twice - what
+// remains is the handover. The expiry sweep only touches Active holds, so a
+// paid reservation can never be auto-released out from under a customer.
 //
 // A customer name is required. Without it a reservation cannot be matched back
 // to the person when they return for the item.
@@ -44,7 +50,7 @@ import {
 } from '@/lib/transactions/transactionDocuments'
 import { expireReservations } from '@/lib/reservations/reservationExpiration'
 
-type ReservationStatus = 'Active' | 'Completed' | 'Cancelled' | 'Expired'
+type ReservationStatus = 'Active' | 'AwaitingCollection' | 'Completed' | 'Cancelled' | 'Expired'
 type TabId = 'all' | ReservationStatus
 
 interface ReservationItem {
@@ -129,13 +135,17 @@ function StatusBadge({ status }: { status: ReservationStatus }) {
   // colours to mean "this is something you can press".
   const map: Record<ReservationStatus, string> = {
     Active: 'bg-blue-50 text-blue-700 ring-blue-200',
+    // Paid, still in the shop. Amber because it is the one state that needs
+    // somebody to do something, and it is no longer confusable with the
+    // Extend button now that Extend is plain white.
+    AwaitingCollection: 'bg-amber-50 text-amber-800 ring-amber-200',
     Completed: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
     Expired: 'bg-slate-100 text-slate-600 ring-slate-200',
     Cancelled: 'bg-rose-50 text-rose-700 ring-rose-200',
   }
   return (
-    <span className={'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ' + map[status]}>
-      {status}
+    <span className={'inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ' + map[status]}>
+      {status === 'AwaitingCollection' ? 'To collect' : status}
     </span>
   )
 }
@@ -323,8 +333,14 @@ function ReservationsContent() {
               typeof data.customerContactNumber === 'string' ? data.customerContactNumber.trim() : '',
             createdAt: toDate(data.createdAt ?? data.reservationDate),
             expiresAt: toDate(data.expiresAt),
+            // Every status the system can write must be listed here. Anything
+            // missing falls through to 'Active', which is worse than an
+            // unknown badge: a paid reservation would read as still holding
+            // stock, and would sit in the Active tab waiting to be claimed a
+            // second time.
             status:
               data.status === 'Active' ||
+              data.status === 'AwaitingCollection' ||
               data.status === 'Completed' ||
               data.status === 'Cancelled' ||
               data.status === 'Expired'
@@ -361,6 +377,7 @@ function ReservationsContent() {
   const counts = useMemo(
     () => ({
       Active: reservations.filter((r) => r.status === 'Active').length,
+      AwaitingCollection: reservations.filter((r) => r.status === 'AwaitingCollection').length,
       Completed: reservations.filter((r) => r.status === 'Completed').length,
       Expired: reservations.filter((r) => r.status === 'Expired').length,
       Cancelled: reservations.filter((r) => r.status === 'Cancelled').length,
@@ -458,9 +475,15 @@ function ReservationsContent() {
 
   // ── Handlers ───────────────────────────────────────────────────────────────────
 
-  const handleCompleteReservation = async (reservation: Reservation) => {
+  // collected=false records the payment but leaves the goods in the shop.
+  // Either way the sale is written and the stock deducted - the difference is
+  // only whether the shop is still holding the item.
+  const handleCompleteReservation = async (reservation: Reservation, collected = true) => {
     if (reservation.status !== 'Active') return
-    if (!window.confirm('Complete reservation for ' + reservation.customer + '?')) return
+    const question = collected
+      ? 'Customer paid and is taking the items now?'
+      : 'Record payment and keep the items here for collection?'
+    if (!window.confirm(question + '\n\n' + reservation.customer)) return
     setActionId(reservation.id)
     try {
       const res = await apiFetch('/api/reservations/' + reservation.id, {
@@ -468,6 +491,7 @@ function ReservationsContent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'complete',
+          collected,
           processedBy: {
             uid: auth.currentUser?.uid ?? '',
             email: auth.currentUser?.email ?? '',
@@ -477,7 +501,11 @@ function ReservationsContent() {
       })
       const payload = (await res.json()) as { error?: string }
       if (!res.ok) throw new Error(payload.error || 'Failed to complete reservation.')
-      toast.success('Reservation completed successfully.')
+      toast.success(
+        collected
+          ? 'Reservation completed successfully.'
+          : 'Payment recorded. Items are waiting to be collected.'
+      )
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to complete reservation.'
       setPageError(msg)
@@ -534,6 +562,37 @@ function ReservationsContent() {
       ),
       notice: RESERVATION_NOTICE,
     })
+  }
+
+  // The customer came back for goods they had already paid for. No stock
+  // moves - it was deducted at payment - this only closes the handover.
+  const handleCollectReservation = async (reservation: Reservation) => {
+    if (reservation.status !== 'AwaitingCollection') return
+    if (!window.confirm('Hand the items to ' + reservation.customer + '?')) return
+    setActionId(reservation.id)
+    try {
+      const res = await apiFetch('/api/reservations/' + reservation.id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'collect',
+          processedBy: {
+            uid: auth.currentUser?.uid ?? '',
+            email: auth.currentUser?.email ?? '',
+            name: auth.currentUser?.displayName ?? auth.currentUser?.email ?? '',
+          },
+        }),
+      })
+      const payload = (await res.json()) as { error?: string }
+      if (!res.ok) throw new Error(payload.error || 'Failed to record collection.')
+      toast.success('Items collected.')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to record collection.'
+      setPageError(msg)
+      toast.error(msg)
+    } finally {
+      setActionId(null)
+    }
   }
 
   const handleExtendReservation = async (reservation: Reservation) => {
@@ -644,6 +703,7 @@ function ReservationsContent() {
   const TABS: { id: TabId; label: string; count?: number }[] = [
     { id: 'all', label: 'All' },
     { id: 'Active', label: 'Active', count: counts.Active },
+    { id: 'AwaitingCollection', label: 'To Collect', count: counts.AwaitingCollection },
     { id: 'Completed', label: 'Completed', count: counts.Completed },
     { id: 'Cancelled', label: 'Cancelled', count: counts.Cancelled },
     { id: 'Expired', label: 'Expired', count: counts.Expired },
@@ -778,6 +838,7 @@ function ReservationsContent() {
               >
                 <option value="all">All Statuses</option>
                 <option value="Active">Active</option>
+                <option value="AwaitingCollection">To Collect</option>
                 <option value="Completed">Completed</option>
                 <option value="Cancelled">Cancelled</option>
                 <option value="Expired">Expired</option>
@@ -1086,6 +1147,20 @@ function ReservationsContent() {
                                   <Timer className="h-4 w-4 shrink-0" />
                                   Extend
                                 </button>
+                                {/* Paid, goods stay here. Records the sale and
+                                    deducts stock exactly as Claim does - the
+                                    money is in and nobody can sell the item
+                                    twice - but the reservation stays visible
+                                    under To Collect until it is handed over. */}
+                                <button
+                                  disabled={actionId === r.id}
+                                  onClick={() => handleCompleteReservation(r, false)}
+                                  title="Customer paid but is leaving the items here"
+                                  className="flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50 disabled:opacity-50"
+                                >
+                                  <Clock className="h-4 w-4 shrink-0" />
+                                  Pay only
+                                </button>
                                 <button
                                   disabled={actionId === r.id}
                                   onClick={() => handleCancelReservation(r)}
@@ -1093,6 +1168,25 @@ function ReservationsContent() {
                                   className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-400 transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-50"
                                 >
                                   <XCircle className="h-4 w-4" />
+                                </button>
+                              </div>
+                            ) : r.status === 'AwaitingCollection' ? (
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  disabled={actionId === r.id}
+                                  onClick={() => handleCollectReservation(r)}
+                                  title="Customer has taken the items"
+                                  className="flex h-8 items-center gap-1.5 rounded-lg bg-emerald-500 px-2.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-emerald-600 disabled:opacity-50"
+                                >
+                                  <CheckCircle2 className="h-4 w-4 shrink-0" />
+                                  Collected
+                                </button>
+                                <button
+                                  onClick={() => setTicketRes(r)}
+                                  title="View this reservation's ticket"
+                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-400 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-600"
+                                >
+                                  <ReceiptText className="h-4 w-4" />
                                 </button>
                               </div>
                             ) : r.status === 'Completed' ? (

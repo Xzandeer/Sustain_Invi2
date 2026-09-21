@@ -14,14 +14,20 @@ interface RouteContext {
 }
 
 interface ReservationActionPayload {
-  action?: unknown // 'complete', 'cancel', 'expire'
+  action?: unknown // 'complete', 'collect', 'cancel', 'expire', 'extend', 'reinstate'
+  /** complete only: false when the customer paid but is leaving the goods. */
+  collected?: unknown
   processedBy?: unknown
   cancellationReason?: unknown
   cancellationReasonType?: unknown
   customCancellationReason?: unknown
 }
 
-type ReservationStatus = 'Active' | 'Completed' | 'Cancelled' | 'Expired'
+// AwaitingCollection: the customer has paid but left the goods in the shop.
+// The sale is already recorded and the stock already deducted - only the
+// handover is outstanding, which is why it is a reservation state and not a
+// second kind of sale.
+type ReservationStatus = 'Active' | 'AwaitingCollection' | 'Completed' | 'Cancelled' | 'Expired'
 
 interface ReservationItemRecord {
   id: string
@@ -71,6 +77,9 @@ export async function PATCH(req: Request, context: RouteContext) {
     const { id } = await context.params
     const body = (await req.json()) as ReservationActionPayload
     const action = typeof body.action === 'string' ? body.action.trim().toLowerCase() : ''
+    // Default true: a plain "complete" is the ordinary case where the customer
+    // pays and walks out with the goods.
+    const tookGoods = body.collected !== false
 
     // Completing, cancelling or expiring a reservation releases or consumes
     // reserved stock, so the same permission applies as creating one.
@@ -86,7 +95,7 @@ export async function PATCH(req: Request, context: RouteContext) {
     const cancellationReasonType = body.cancellationReasonType === 'manual' ? 'manual' : 'system'
 
     // Step 3: Validate action and ID
-    if (!id || !['complete', 'cancel', 'expire', 'extend', 'reinstate'].includes(action)) {
+    if (!id || !['complete', 'collect', 'cancel', 'expire', 'extend', 'reinstate'].includes(action)) {
       return NextResponse.json({ error: 'Invalid reservation action.' }, { status: 400 })
     }
 
@@ -125,13 +134,32 @@ export async function PATCH(req: Request, context: RouteContext) {
       const data = reservationSnapshot.data() as Record<string, unknown>
       const status = data.status as ReservationStatus
 
-      // reinstate revives a lapsed hold; everything else needs a live one
+      // reinstate revives a lapsed hold; collect finishes a paid one;
+      // everything else needs a live one
       if (action === 'reinstate') {
         if (status !== 'Expired' && status !== 'Cancelled') {
           throw new Error('RESERVATION_NOT_LAPSED')
         }
+      } else if (action === 'collect') {
+        if (status !== 'AwaitingCollection') {
+          throw new Error('RESERVATION_NOT_AWAITING')
+        }
       } else if (status !== 'Active') {
         throw new Error('RESERVATION_NOT_ACTIVE')
+      }
+
+      // ── Collect: the customer came back for goods already paid for ──
+      //
+      // No stock moves. It was deducted when they paid, and the sale exists
+      // already; this only records that the goods physically left the shop.
+      if (action === 'collect') {
+        transaction.update(reservationRef, {
+          status: 'Completed',
+          collectedAt: FieldValue.serverTimestamp(),
+          collectedByName: processedBy.name,
+          updatedAt: nowIso,
+        })
+        return
       }
 
       const reservationItems = parseReservationItems(data.items)
@@ -374,10 +402,16 @@ export async function PATCH(req: Request, context: RouteContext) {
         })
 
         saleId = saleRef.id
+        // Paying and collecting are separate events. Either way the sale is
+        // recorded and the stock deducted now - the money is in and nobody can
+        // sell the item twice. What differs is whether the shop is still
+        // holding it, which is what the shop needs to see on the floor.
         transaction.update(reservationRef, {
-          status: 'Completed',
-          completedAt: FieldValue.serverTimestamp(),
+          status: tookGoods ? 'Completed' : 'AwaitingCollection',
+          paidAt: FieldValue.serverTimestamp(),
+          completedAt: tookGoods ? FieldValue.serverTimestamp() : null,
           completedByName: processedBy.name,
+          saleId: saleRef.id,
           updatedAt: nowIso,
         })
 
@@ -531,6 +565,13 @@ export async function PATCH(req: Request, context: RouteContext) {
 
       if (error.message === 'RESERVATION_NOT_ACTIVE') {
         return NextResponse.json({ error: 'Reservation is no longer active.' }, { status: 400 })
+      }
+
+      if (error.message === 'RESERVATION_NOT_AWAITING') {
+        return NextResponse.json(
+          { error: 'Only a paid reservation awaiting collection can be marked as collected.' },
+          { status: 400 }
+        )
       }
 
       if (error.message === 'RESERVATION_ITEMS_MISSING') {

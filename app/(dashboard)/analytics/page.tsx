@@ -131,13 +131,14 @@ interface CategoryForecastRow {
 // Tracks reservation status counts for the Reservation Activity panel
 interface ReservationRecord {
   id: string
-  status: 'Active' | 'Completed' | 'Cancelled' | 'Expired'
+  status: 'Active' | 'AwaitingCollection' | 'Completed' | 'Cancelled' | 'Expired'
   createdAt: Date | null
 }
 
 // Color map for each reservation status used in the donut chart and legend
 const RESERVATION_STATUS_COLORS: Record<ReservationRecord['status'], string> = {
   Active: '#3b82f6',
+  AwaitingCollection: '#f59e0b',
   Completed: '#22c55e',
   Cancelled: '#ef4444',
   Expired: '#94a3b8',
@@ -742,7 +743,7 @@ function AnalyticsContent() {
         const resRows: ReservationRecord[] = resSnap.docs.map((resDoc) => {
           const data = resDoc.data() as Record<string, unknown>
           const rawStatus = typeof data.status === 'string' ? data.status : ''
-          const status = (['Active', 'Completed', 'Cancelled', 'Expired'] as const).includes(
+          const status = (['Active', 'AwaitingCollection', 'Completed', 'Cancelled', 'Expired'] as const).includes(
             rawStatus as ReservationRecord['status']
           )
             ? (rawStatus as ReservationRecord['status'])
@@ -1176,6 +1177,7 @@ function AnalyticsContent() {
     const filtered = reservations.filter((r) => inRange(r.createdAt, activeRange.start, activeRange.end))
     const counts: Record<ReservationRecord['status'], number> = {
       Active: 0,
+      AwaitingCollection: 0,
       Completed: 0,
       Cancelled: 0,
       Expired: 0,
@@ -2163,10 +2165,10 @@ function AnalyticsContent() {
                 <div className="mx-auto h-32 w-32">
                   <Doughnut
                     data={{
-                      labels: ['Active', 'Completed', 'Cancelled', 'Expired'],
+                      labels: ['Active', 'To Collect', 'Completed', 'Cancelled', 'Expired'],
                       datasets: [{
-                        data: [reservationActivity.counts.Active, reservationActivity.counts.Completed, reservationActivity.counts.Cancelled, reservationActivity.counts.Expired],
-                        backgroundColor: [RESERVATION_STATUS_COLORS.Active, RESERVATION_STATUS_COLORS.Completed, RESERVATION_STATUS_COLORS.Cancelled, RESERVATION_STATUS_COLORS.Expired],
+                        data: [reservationActivity.counts.Active, reservationActivity.counts.AwaitingCollection, reservationActivity.counts.Completed, reservationActivity.counts.Cancelled, reservationActivity.counts.Expired],
+                        backgroundColor: [RESERVATION_STATUS_COLORS.Active, RESERVATION_STATUS_COLORS.AwaitingCollection, RESERVATION_STATUS_COLORS.Completed, RESERVATION_STATUS_COLORS.Cancelled, RESERVATION_STATUS_COLORS.Expired],
                         borderWidth: 0,
                         hoverOffset: 4,
                       }],
@@ -2191,7 +2193,7 @@ function AnalyticsContent() {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  {(['Active', 'Completed', 'Cancelled', 'Expired'] as ReservationRecord['status'][]).map((status) => {
+                  {(['Active', 'AwaitingCollection', 'Completed', 'Cancelled', 'Expired'] as ReservationRecord['status'][]).map((status) => {
                     const count = reservationActivity.counts[status]
                     const pct = reservationActivity.total > 0 ? Math.round((count / reservationActivity.total) * 100) : 0
                     return (
