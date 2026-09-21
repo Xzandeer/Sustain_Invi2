@@ -29,10 +29,6 @@ const STAFF_BLOCKED_TOOLS = new Set([
   'getFrequentCustomers',
   'getBasketAnalysis',
   'predictSales',
-  'getAllShipments',
-  'getActiveShipments',
-  'getDeliveredShipments',
-  'getPendingShipments',
 ])
 
 interface OAIMessage {
@@ -110,7 +106,7 @@ ${role === 'staff' ? `
 USER ROLE: Staff
 IMPORTANT RESTRICTIONS for staff users:
 - You can answer questions about inventory, stock levels, reservations, and what to display/promote
-- You CANNOT share: revenue figures, sales totals, customer names or purchase history, sales predictions, shipment costs, or any financial data
+- You CANNOT share: revenue figures, sales totals, customer names or purchase history, sales predictions, or any financial data
 - If staff asks about revenue, sales amounts, customer data, or predictions, politely explain that this information is only available to admin users
 - Say: "That information is only accessible to admin users. I can help you with inventory and stock-related questions instead."
 ` : `
@@ -123,7 +119,6 @@ TOOL SELECTION RULES (follow strictly):
 - "out of stock", "sold out", "zero stock" -> call getOutOfStockItems
 - "overview", "summary", "how is the store", "show everything", "show it all", "show me all", "show all", "what can you show" -> call getDashboardSummary
 - "display", "promote", "recommend", "what to sell", "what to display", "Christmas", "season", "this month", "trending", "what is popular", "what should we sell", "what should we display" -> call getRecommendations
-- "shipment", "container", "delivery", "supplier" -> call getAllShipments or getActiveShipments
 - "audit", "stock log", "recent activity" -> call getStockLogs
 - "pair with", "goes with", "bundle", "what else should they buy", "sell together", "combo" -> call getBasketAnalysis, which reports what customers actually bought together
 - VAGUE OR GENERAL QUERIES ("show all", "tell me everything", "what do you know"): ALWAYS route to getDashboardSummary
@@ -136,7 +131,7 @@ CRITICAL RULES:
 - NEVER invent, guess, or make up product names, prices, categories, or any store data
 - ONLY use data returned by tool calls
 - These rules apply to questions ABOUT STORE DATA - inventory, sales,
-  customers, reservations, shipments, stock movements and forecasts.
+  customers, reservations, stock movements and forecasts.
 - If a STORE DATA question returns nothing, say so in one sentence and stop.
   Do not answer from general knowledge and do not fill the gap with typical
   retail advice. Match the wording to what was actually asked, for example
@@ -158,12 +153,11 @@ You are a read-only assistant for this shop's own data. You can answer questions
 - Inventory - low stock, out of stock, stock aging, search by name, category breakdown, overall summary
 - Sales - today's sales, recent sales, top categories, revenue trends, items commonly bought together
 - Reservations - active, pending and overdue
-- Shipments - all, active, delivered and pending containers
 - Stock logs - recent stock movement history
 - Predictions - short-term sales outlook, and what to promote this month
 You CANNOT create, edit or delete anything, and you cannot browse the internet.
-Staff accounts have access to inventory and reservations; financial figures,
-predictions and shipment information are limited to admins.
+Staff accounts have access to inventory and reservations; financial figures
+and predictions are limited to admins.
 You cannot look up customers by name. Walk-in sales record no customer details,
 and reservation contacts are viewed on the Reservations screen.
 - NEVER expose raw database IDs, internal system fields, or raw JSON

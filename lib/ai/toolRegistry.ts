@@ -5,7 +5,7 @@
 //   TOOL_HANDLERS    - the actual functions, keyed by the same names
 //
 // Every tool is READ-ONLY. The assistant can look at inventory, sales,
-// reservations, containers and stock logs, but it can never write, delete or
+// reservations and stock logs, but it can never write, delete or
 // modify anything. Adding a write tool here would let the model change store
 // data on its own, so don't.
 //
@@ -20,7 +20,6 @@ import { getActiveReservations, getOverdueReservations, getPendingReservations }
 import { getTodaySales, getRecentSales, getTopCategories, getTrendData, getFrequentCustomers, getBasketAnalysis, getDashboardSummary, getRecommendations } from './tools/sales'
 import { getStockLogs } from './tools/stockLogs'
 import { predictSales } from './tools/prediction'
-import { getAllShipments, getActiveShipments, getDeliveredShipments, getPendingShipments } from './tools/containers'
 
 // Customer lookup tools (lib/ai/tools/customers.ts) are intentionally NOT
 // registered. Browsing customers by name is a privacy exposure the shop does not
@@ -150,28 +149,6 @@ export const TOOL_DEFINITIONS = [
     parameters: { type: 'object', properties: {}, required: [] },
   },
 
-  // ── Shipments / Containers ─────────────────────────────────────────────────
-  {
-    name: 'getAllShipments',
-    description: 'Get all supplier shipments and containers with their status, cost, and arrival date.',
-    parameters: { type: 'object', properties: {}, required: [] },
-  },
-  {
-    name: 'getActiveShipments',
-    description: 'Get currently active, in-transit, or pending shipments from suppliers.',
-    parameters: { type: 'object', properties: {}, required: [] },
-  },
-  {
-    name: 'getDeliveredShipments',
-    description: 'Get completed and delivered shipment containers.',
-    parameters: { type: 'object', properties: {}, required: [] },
-  },
-  {
-    name: 'getPendingShipments',
-    description: 'Get shipments that have not yet arrived or been processed.',
-    parameters: { type: 'object', properties: {}, required: [] },
-  },
-
   // ── Stock Logs ─────────────────────────────────────────────────────────────
   {
     name: 'getStockLogs',
@@ -211,11 +188,6 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
     case 'getActiveReservations':   return getActiveReservations()
     case 'getOverdueReservations':  return getOverdueReservations()
     case 'getPendingReservations':  return getPendingReservations()
-    // Shipments
-    case 'getAllShipments':         return getAllShipments()
-    case 'getActiveShipments':      return getActiveShipments()
-    case 'getDeliveredShipments':   return getDeliveredShipments()
-    case 'getPendingShipments':     return getPendingShipments()
     // Logs
     case 'getStockLogs':            return getStockLogs()
     // Prediction

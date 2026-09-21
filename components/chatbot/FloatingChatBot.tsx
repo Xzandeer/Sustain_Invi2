@@ -58,10 +58,6 @@ const INTENT_LABELS: Record<string, string> = {
   getPendingReservations: 'Reservations',
   getAllCustomers:         'Customers',
   getCustomerHistory:     'Customers',
-  getAllShipments:         'Shipments',
-  getActiveShipments:     'Shipments',
-  getDeliveredShipments:  'Shipments',
-  getPendingShipments:    'Shipments',
   getStockLogs:           'Stock Logs',
   predictSales:           'Prediction',
 }
@@ -249,7 +245,7 @@ export default function FloatingChatBot() {
     const map: Record<string, string> = {
       dashboard: 'Dashboard', inventory: 'Inventory', sales: 'Sales',
       reservations: 'Reservations', analytics: 'Analytics', customers: 'Customers',
-      containers: 'Shipments', users: 'Users', logs: 'Stock Logs', trash: 'Trash',
+      users: 'Users', logs: 'Stock Logs', trash: 'Trash',
     }
     return map[last] ?? last
   })()
