@@ -26,8 +26,15 @@ export interface WeightedForecastResult {
  * Algorithm:
  *  1. Apply exponential decay weights to the last N days (more recent = higher weight)
  *  2. Compute weighted average daily revenue
- *  3. Detect trend by comparing last 7 days vs prior 7 days
- *  4. Project 7 days forward, incorporating the trend factor
+ *  3. Report the week-over-week trend (last 7 vs prior 7 days) for display only
+ *  4. Project 7 days forward at the weighted level (flat - no trend multiplier)
+ *
+ * Why the forecast is flat: a rolling backtest on the shop's 2026 daily sales
+ * (see SUSTAIN_Forecast_Validation) showed that extending the recent trend
+ * forward made the forecast worse, not better. Japan-surplus sales jump when a
+ * container arrives and fall back afterwards, so a busy week does not predict
+ * a busier one. On held-out data (May-Aug) removing the trend raised weekly
+ * accuracy from 59.5% to 63.7% and cut the bias from +5.6% to -0.1%.
  */
 export function buildWeightedForecast(daily: DailyStat[]): WeightedForecastResult {
   // Use up to last 14 days for the weighted average
@@ -55,44 +62,28 @@ export function buildWeightedForecast(daily: DailyStat[]): WeightedForecastResul
     ? prior7.reduce((s, d) => s + d.revenue, 0) / prior7.length
     : avg7
 
-  // Dampen the trend factor so projections stay conservative
-  // Raw trend: avg7 / avgPrior7, then blend with 1.0 (60% trend, 40% neutral)
-  // The raw ratio must be bounded before it is used, because it compounds.
-  //
-  // A small category can easily have a quiet week followed by a busy one -
-  // ₱150/day then ₱900/day gives a ratio of 6. Raised to the power below, day 7
-  // would be multiplied by roughly 128, turning a ₱500 forecast into ₱64,000.
-  //
-  // The cap is chosen from the OUTPUT we are willing to accept, not from the
-  // input. Over a 7-day horizon the compounding exponent is 3.5, so a ratio
-  // capped at 1.2 gives trendFactor 1.12 and a day-7 multiplier of 1.12^3.5,
-  // which is about 1.5. In other words the forecast may move at most ~50% over
-  // the week in either direction - enough to show a real trend, never enough to
-  // produce a figure the shop would not recognise.
-  const rawTrendUnbounded = avgPrior7 > 0 ? avg7 / avgPrior7 : 1.0
-  const rawTrend = Math.min(1.2, Math.max(0.8, rawTrendUnbounded))
-  const trendFactor = 0.6 * rawTrend + 0.4 * 1.0
-  const trendPct = parseFloat(((trendFactor - 1) * 100).toFixed(1))
+  // Week-over-week change, shown to the user as context ("sales are up 12%
+  // on last week"). It is NOT applied to the projection - see the note above.
+  const rawTrend = avgPrior7 > 0 ? avg7 / avgPrior7 : 1.0
+  const trendFactor = rawTrend
+  const trendPct = parseFloat(((rawTrend - 1) * 100).toFixed(1))
   const trendDirection: 'increasing' | 'decreasing' | 'stable' =
     trendPct > 2 ? 'increasing' : trendPct < -2 ? 'decreasing' : 'stable'
 
-  // Project 7 days forward
-  // Each day applies the trend factor raised to its offset (compound trend)
+  // Project 7 days forward. Every day carries the same weighted level: the
+  // validated method, and the honest one - the model has no information that
+  // tells one future day apart from another.
+  const level = Math.max(0, Math.round(avgDailyRevenue))
   const today = new Date()
   const forecast: WeightedDay[] = Array.from({ length: 7 }, (_, i) => {
     const projDate = new Date(today)
     projDate.setDate(projDate.getDate() + i + 1)
     const dateStr = projDate.toISOString().split('T')[0]
 
-    // Compound trend: slight acceleration/deceleration over the 7 days
-    // Use a mild exponent (0.5 damping) to prevent runaway projections
-    const dayMultiplier = Math.pow(trendFactor, (i + 1) * 0.5)
-    const projected = Math.round(avgDailyRevenue * dayMultiplier)
-
     return {
       day: `Day ${i + 1}`,
       date: dateStr,
-      weighted: Math.max(0, projected),
+      weighted: level,
     }
   })
 

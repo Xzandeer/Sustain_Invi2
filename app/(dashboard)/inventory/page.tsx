@@ -10,7 +10,7 @@
 //   • Sorting        - 9 options; 'recent' is the default so newly added items
 //                      appear at the top, which is how staff actually work
 //   • Column visibility - toggled from the Table Options menu (the burger icon)
-// Both are saved to localStorage under 'sustain.inventory.tablePrefs', so each
+// Both are saved to localStorage under 'sustain.inventory.tablePrefs.v3', so each
 // person's layout survives a refresh.
 //
 // Actions are permission-gated: canManageInventory for add/edit/adjust,
@@ -60,6 +60,8 @@ export interface Product {
   // Short scannable code, one per variant. Assigned on creation; older items
   // get one from the Assign Barcodes action.
   barcode?: string | null
+  isSingleItem?: boolean
+  conditionNotes?: string
   createdAtMs?: number
 }
 
@@ -100,13 +102,15 @@ const COLUMN_LABELS: { key: ColumnKey; label: string }[] = [
   { key: 'barcode',   label: 'Barcode' },
 ]
 
+// Every column is shown until the user hides it from Table Options. Their
+// choice is saved in this browser and restored on the next visit.
 const DEFAULT_COLUMNS: Record<ColumnKey, boolean> = {
   category: true, price: true, stock: true,
   reserved: true, available: true, condition: true, status: true,
-  // Off by default - useful for staff and for testing, but most days it is
-  // noise. Turned on from Table Options.
-  barcode: false,
+  barcode: true,
 }
+
+const TABLE_PREFS_KEY = 'sustain.inventory.tablePrefs.v3'
 
 const toNumber = (value: unknown, fallback = 0) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -147,16 +151,25 @@ function InventoryContent() {
     return raw === 'Low Stock' || raw === 'Out of Stock' || raw === 'Available' ? raw : 'all'
   })()
   const [stockStatusFilter, setStockStatusFilter] = useState(initialStatus)
+  // 'stocked' = ordinary items kept in quantity; 'single' = one-off pieces.
+  const [typeFilter, setTypeFilter] = useState<'all' | 'stocked' | 'single'>('all')
+  const [reservedOnly, setReservedOnly] = useState(false)
   const [minPrice, setMinPrice] = useState('')
   const [maxPrice, setMaxPrice] = useState('')
   const [sortBy, setSortBy] = useState<SortOption>('recent')
   const [showTableOptions, setShowTableOptions] = useState(false)
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>(DEFAULT_COLUMNS)
 
-  // Restore the user's saved table preferences
+  // Restore the user's saved table preferences.
+  //
+  // `prefsLoaded` stops the save effect below from running before this one
+  // has read the stored value. Without it the first render's defaults are
+  // written straight over the user's saved choices (React runs both effects
+  // on mount, and twice in development), so hidden columns came back.
+  const [prefsLoaded, setPrefsLoaded] = useState(false)
   useEffect(() => {
     try {
-      const raw = localStorage.getItem('sustain.inventory.tablePrefs')
+      const raw = localStorage.getItem(TABLE_PREFS_KEY)
       if (!raw) return
       const saved = JSON.parse(raw) as { sortBy?: SortOption; columns?: Record<string, boolean> }
       if (saved.sortBy) setSortBy(saved.sortBy)
@@ -172,15 +185,17 @@ function InventoryContent() {
         setVisibleColumns(prev => ({ ...prev, ...clean }))
       }
     } catch { /* ignore malformed preferences */ }
+    finally { setPrefsLoaded(true) }
   }, [])
 
-  // Persist whenever they change
+  // Persist whenever they change - but only once the saved value has been read.
   useEffect(() => {
+    if (!prefsLoaded) return
     try {
-      localStorage.setItem('sustain.inventory.tablePrefs',
+      localStorage.setItem(TABLE_PREFS_KEY,
         JSON.stringify({ sortBy, columns: visibleColumns }))
     } catch { /* storage unavailable */ }
-  }, [sortBy, visibleColumns])
+  }, [prefsLoaded, sortBy, visibleColumns])
 
   const [isProductModalOpen, setIsProductModalOpen] = useState(false)
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false)
@@ -255,6 +270,8 @@ function InventoryContent() {
               voidReason: typeof data.voidReason === 'string' ? data.voidReason : null,
               voidedUnits: typeof data.voidedUnits === 'number' ? data.voidedUnits : null,
               barcode: typeof data.barcode === 'string' ? data.barcode : null,
+              isSingleItem: data.isSingleItem === true,
+              conditionNotes: typeof data.conditionNotes === 'string' ? data.conditionNotes.trim() : '',
               createdAtMs: (() => {
                 const raw = data.createdAt as { seconds?: number } | string | undefined
                 if (raw && typeof raw === 'object' && typeof raw.seconds === 'number') return raw.seconds * 1000
@@ -303,12 +320,17 @@ function InventoryContent() {
         return (
           product.name.toLowerCase().includes(searchTerm) ||
           product.category.toLowerCase().includes(searchTerm) ||
-          (product.barcode ?? '').toLowerCase().includes(searchTerm)
+          (product.barcode ?? '').toLowerCase().includes(searchTerm) ||
+          (product.conditionNotes ?? '').toLowerCase().includes(searchTerm)
         )
       })
       .filter((product) => (categoryFilter === 'all' ? true : product.category === categoryFilter))
       .filter((product) => (conditionFilter === 'all' ? true : product.condition === conditionFilter))
       .filter((product) => (stockStatusFilter === 'all' ? true : product.stockStatus === stockStatusFilter))
+      .filter((product) =>
+        typeFilter === 'all' ? true : typeFilter === 'single' ? product.isSingleItem === true : product.isSingleItem !== true
+      )
+      .filter((product) => (reservedOnly ? product.reservedStock > 0 : true))
       .filter((product) =>
         minPriceValue == null || Number.isNaN(minPriceValue) ? true : product.price >= minPriceValue
       )
@@ -330,7 +352,7 @@ function InventoryContent() {
           default:           return 0
         }
       })
-  }, [inventory, search, categoryFilter, conditionFilter, stockStatusFilter, minPrice, maxPrice, voidTab, sortBy])
+  }, [inventory, search, categoryFilter, conditionFilter, stockStatusFilter, typeFilter, reservedOnly, minPrice, maxPrice, voidTab, sortBy])
 
   const handleSaveProduct = async (values: ProductFormValues) => {
     setError('')
@@ -354,6 +376,8 @@ function InventoryContent() {
           quantity: values.quantity,
           minStock: values.minStock,
           condition: values.condition,
+          isSingleItem: values.isSingleItem === true,
+          conditionNotes: values.conditionNotes ?? '',
           processedBy: {
             uid: auth.currentUser?.uid ?? '',
             email: auth.currentUser?.email ?? '',
@@ -598,7 +622,12 @@ function InventoryContent() {
   }
 
   const categoryOptions = useMemo(() => categories, [categories])
-  const categoryNames = useMemo(() => categories.map((category) => category.name), [categories])
+  // Unique names: the filter matches by name, so two category documents with
+  // the same name must appear once (and would otherwise break React keys).
+  const categoryNames = useMemo(
+    () => Array.from(new Set(categories.map((category) => category.name))),
+    [categories]
+  )
 
 
   // ── Pagination state ──────────────────────────────
@@ -606,7 +635,7 @@ function InventoryContent() {
   const [itemsPerPage, setItemsPerPage] = useState(10)
 
   // Reset to page 1 when filters change
-  useEffect(() => { setCurrentPage(1) }, [search, categoryFilter, conditionFilter, stockStatusFilter, minPrice, maxPrice])
+  useEffect(() => { setCurrentPage(1) }, [search, categoryFilter, conditionFilter, stockStatusFilter, typeFilter, reservedOnly, minPrice, maxPrice])
 
   const totalPages = Math.max(1, Math.ceil(filteredProducts.length / itemsPerPage))
   const paginatedProducts = useMemo(
@@ -692,6 +721,39 @@ function InventoryContent() {
   const kpiLowStock     = sellableInventory.filter((p) => p.stockStatus === 'Low Stock').length
   const kpiOutOfStock   = sellableInventory.filter((p) => p.stockStatus === 'Out of Stock').length
   const kpiVoided       = inventory.filter((p) => p.isVoided).length
+  const kpiSingle       = sellableInventory.filter((p) => p.isSingleItem).length
+  const kpiWrittenOff   = inventory.filter((p) => p.isVoided || (p.voidedUnits ?? 0) > 0).length
+
+  const hasActiveFilters =
+    search.trim() !== '' || categoryFilter !== 'all' || conditionFilter !== 'all' ||
+    stockStatusFilter !== 'all' || typeFilter !== 'all' || reservedOnly ||
+    minPrice !== '' || maxPrice !== ''
+
+  const clearFilters = () => {
+    setSearch(''); setCategoryFilter('all'); setConditionFilter('all')
+    setStockStatusFilter('all'); setTypeFilter('all'); setReservedOnly(false)
+    setMinPrice(''); setMaxPrice('')
+  }
+
+  // The summary cards double as one-click filters. Clicking the active card
+  // again clears it.
+  type QuickKey = 'all' | 'available' | 'low' | 'out' | 'reserved' | 'single'
+  const activeQuick: QuickKey =
+    reservedOnly ? 'reserved'
+    : typeFilter === 'single' ? 'single'
+    : stockStatusFilter === 'Available' ? 'available'
+    : stockStatusFilter === 'Low Stock' ? 'low'
+    : stockStatusFilter === 'Out of Stock' ? 'out'
+    : 'all'
+  const applyQuick = (key: QuickKey) => {
+    const next = key === activeQuick ? 'all' : key
+    setVoidTab('active')
+    setStockStatusFilter(
+      next === 'available' ? 'Available' : next === 'low' ? 'Low Stock' : next === 'out' ? 'Out of Stock' : 'all'
+    )
+    setReservedOnly(next === 'reserved')
+    setTypeFilter(next === 'single' ? 'single' : 'all')
+  }
 
   // ── Export CSV ────────────────────────────────────
   const exportCSV = () => {
@@ -735,7 +797,31 @@ function InventoryContent() {
               <p className="text-sm text-slate-500">Manage your inventory items and track stock availability.</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {canManageInventory && (
+              <button
+                onClick={() => setIsCategoryModalOpen(true)}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
+              >
+                <svg className="h-4 w-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a2 2 0 012-2z" />
+                </svg>
+                Categories
+              </button>
+            )}
+            {isAdmin && (
+              <button
+                onClick={handleAssignBarcodes}
+                disabled={assigningBarcodes}
+                title="Give a barcode to any item that does not have one yet"
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
+              >
+                <svg className="h-4 w-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v16M8 4v16M12 4v16M16 4v16M20 4v16" />
+                </svg>
+                {assigningBarcodes ? 'Assigning…' : 'Assign Barcodes'}
+              </button>
+            )}
             <Link
               href="/inventory/trash"
               className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
@@ -743,7 +829,7 @@ function InventoryContent() {
               <svg className="h-4 w-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
               </svg>
-              View Trash
+              Trash
             </Link>
             {canManageInventory && (
               <button
@@ -759,11 +845,53 @@ function InventoryContent() {
           </div>
         </div>
 
-        {/* ── Filters card ── */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm space-y-3">
-          {/* Row 1: search + dropdowns */}
-          <div className="flex flex-wrap gap-3">
-            <div className="relative flex flex-1 min-w-52 items-center">
+        {/* ── Summary cards - each one is also a one-click filter ── */}
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+          {([
+            { key: 'all', label: 'All items', value: kpiTotal, hint: kpiVoided > 0 ? `${kpiVoided} written off not counted` : 'Everything on sale', tone: 'blue' },
+            { key: 'available', label: 'Available', value: kpiAvailable, hint: 'Above minimum stock', tone: 'emerald' },
+            { key: 'low', label: 'Low stock', value: kpiLowStock, hint: 'At or below minimum', tone: 'amber' },
+            { key: 'out', label: 'Out of stock', value: kpiOutOfStock, hint: 'Needs restocking', tone: 'red' },
+            { key: 'reserved', label: 'Reserved', value: kpiReserved, hint: 'Items with units on hold', tone: 'violet' },
+            { key: 'single', label: 'Single items', value: kpiSingle, hint: 'One-off pieces', tone: 'sky' },
+          ] as const).map((card) => {
+            const tones = {
+              blue: { dot: 'bg-blue-500', ring: 'ring-blue-400 border-blue-300 bg-blue-50/60', num: 'text-slate-900' },
+              emerald: { dot: 'bg-emerald-500', ring: 'ring-emerald-400 border-emerald-300 bg-emerald-50/60', num: 'text-emerald-700' },
+              amber: { dot: 'bg-amber-500', ring: 'ring-amber-400 border-amber-300 bg-amber-50/60', num: 'text-amber-700' },
+              red: { dot: 'bg-red-500', ring: 'ring-red-400 border-red-300 bg-red-50/60', num: 'text-red-600' },
+              violet: { dot: 'bg-violet-500', ring: 'ring-violet-400 border-violet-300 bg-violet-50/60', num: 'text-violet-700' },
+              sky: { dot: 'bg-sky-500', ring: 'ring-sky-400 border-sky-300 bg-sky-50/60', num: 'text-sky-700' },
+            }[card.tone]
+            const active = activeQuick === card.key && voidTab === 'active'
+            return (
+              <button
+                key={card.key}
+                type="button"
+                onClick={() => applyQuick(card.key)}
+                aria-pressed={active}
+                title={card.key === 'all' ? 'Show all items' : `Show only: ${card.label.toLowerCase()}`}
+                className={`rounded-2xl border bg-white p-3 text-left shadow-sm transition hover:border-slate-300 hover:shadow ${
+                  active ? `ring-2 ${tones.ring}` : 'border-slate-200'
+                }`}
+              >
+                <p className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                  <span className={`h-2 w-2 rounded-full ${tones.dot}`} />
+                  {card.label}
+                </p>
+                <p className={`mt-1 text-2xl font-bold tabular-nums ${card.value > 0 ? tones.num : 'text-slate-300'}`}>
+                  {card.value}
+                </p>
+                <p className="truncate text-[11px] text-slate-400">{card.hint}</p>
+              </button>
+            )
+          })}
+        </div>
+
+        {/* ── Filters: everything applies as you type or pick ── */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative flex min-w-56 flex-1 items-center">
               <svg className="absolute left-3 h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <circle cx="11" cy="11" r="8" /><path strokeLinecap="round" d="M21 21l-4.35-4.35" />
               </svg>
@@ -771,214 +899,130 @@ function InventoryContent() {
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search by item name, category or barcode..."
-                className="w-full rounded-lg border border-slate-200 py-2.5 pl-9 pr-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none"
+                placeholder="Search name, category, barcode or condition notes…"
+                className="w-full rounded-lg border border-slate-200 py-2 pl-9 pr-8 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none"
               />
+              {search && (
+                <button
+                  type="button"
+                  onClick={() => setSearch('')}
+                  aria-label="Clear search"
+                  className="absolute right-2 rounded p-0.5 text-slate-400 hover:text-slate-600"
+                >
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+              )}
             </div>
             <select
               value={categoryFilter}
               onChange={(e) => setCategoryFilter(e.target.value)}
-              className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 focus:outline-none"
+              aria-label="Category"
+              className={`rounded-lg border bg-white px-3 py-2 text-sm focus:outline-none ${categoryFilter !== 'all' ? 'border-blue-300 text-blue-700' : 'border-slate-200 text-slate-700'}`}
             >
-              <option value="all">All Categories</option>
+              <option value="all">All categories</option>
               {categoryNames.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
             <select
               value={conditionFilter}
               onChange={(e) => setConditionFilter(e.target.value)}
-              className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 focus:outline-none"
+              aria-label="Condition"
+              className={`rounded-lg border bg-white px-3 py-2 text-sm focus:outline-none ${conditionFilter !== 'all' ? 'border-blue-300 text-blue-700' : 'border-slate-200 text-slate-700'}`}
             >
-              <option value="all">All Conditions</option>
+              <option value="all">Any condition</option>
               <option value="New">New</option>
               <option value="Refurbished">Refurbished</option>
             </select>
             <select
               value={stockStatusFilter}
               onChange={(e) => setStockStatusFilter(e.target.value)}
-              className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 focus:outline-none"
+              aria-label="Stock status"
+              className={`rounded-lg border bg-white px-3 py-2 text-sm focus:outline-none ${stockStatusFilter !== 'all' ? 'border-blue-300 text-blue-700' : 'border-slate-200 text-slate-700'}`}
             >
-              <option value="all">All Status</option>
+              <option value="all">Any stock status</option>
               <option value="Available">Available</option>
-              <option value="Low Stock">Low Stock</option>
-              <option value="Out of Stock">Out of Stock</option>
+              <option value="Low Stock">Low stock</option>
+              <option value="Out of Stock">Out of stock</option>
             </select>
-          </div>
-          {/* Row 2: price range */}
-          <div className="flex flex-wrap gap-3">
-            <input
-              type="number"
-              min={0}
-              value={minPrice}
-              onChange={(e) => setMinPrice(e.target.value)}
-              placeholder="Min price"
-              className="w-40 rounded-lg border border-slate-200 px-3 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none"
-            />
-            <input
-              type="number"
-              min={0}
-              value={maxPrice}
-              onChange={(e) => setMaxPrice(e.target.value)}
-              placeholder="Max price"
-              className="w-40 rounded-lg border border-slate-200 px-3 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none"
-            />
+            <select
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value as 'all' | 'stocked' | 'single')}
+              aria-label="Item type"
+              className={`rounded-lg border bg-white px-3 py-2 text-sm focus:outline-none ${typeFilter !== 'all' ? 'border-blue-300 text-blue-700' : 'border-slate-200 text-slate-700'}`}
+            >
+              <option value="all">All item types</option>
+              <option value="stocked">Stocked items</option>
+              <option value="single">Single items</option>
+            </select>
+            <div className="flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1">
+              <span className="text-xs text-slate-400">₱</span>
+              <input
+                type="number"
+                min={0}
+                value={minPrice}
+                onChange={(e) => setMinPrice(e.target.value)}
+                placeholder="Min"
+                aria-label="Minimum price"
+                className="w-16 bg-transparent py-1 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none"
+              />
+              <span className="text-xs text-slate-300">–</span>
+              <input
+                type="number"
+                min={0}
+                value={maxPrice}
+                onChange={(e) => setMaxPrice(e.target.value)}
+                placeholder="Max"
+                aria-label="Maximum price"
+                className="w-16 bg-transparent py-1 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none"
+              />
+            </div>
             <select
               value={sortBy}
               onChange={(e) => { setSortBy(e.target.value as SortOption); setCurrentPage(1) }}
-              className="w-52 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 focus:border-blue-400 focus:outline-none"
+              aria-label="Sort by"
+              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none"
             >
-              {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>Sort: {o.label}</option>)}
             </select>
           </div>
-          {/* Row 3: action buttons */}
-          <div className="flex flex-wrap items-center gap-2">
-            {canManageInventory && (
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <p className="text-slate-500">
+              Showing <span className="font-semibold text-slate-800">{filteredProducts.length}</span>
+              {' '}of {voidTab === 'active' ? kpiTotal : voidTab === 'voided' ? kpiWrittenOff : inventory.length} item{filteredProducts.length !== 1 ? 's' : ''}
+              {hasActiveFilters ? ' matching your filters' : ''}
+            </p>
+            {hasActiveFilters && (
               <button
-                onClick={() => setIsCategoryModalOpen(true)}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                type="button"
+                onClick={clearFilters}
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium text-blue-600 transition hover:bg-blue-50"
               >
-                <svg className="h-4 w-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a2 2 0 012-2z" />
-                </svg>
-                Manage Categories
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                Clear all filters
               </button>
             )}
-            {isAdmin && (
-              <button
-                onClick={handleAssignBarcodes}
-                disabled={assigningBarcodes}
-                title="Give a barcode to any item that does not have one yet"
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-violet-300 hover:text-violet-700 disabled:opacity-50"
-              >
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v16M8 4v16M12 4v16M16 4v16M20 4v16" />
-                </svg>
-                {assigningBarcodes ? 'Assigning…' : 'Assign Barcodes'}
-              </button>
-            )}
-            <button
-              onClick={() => { setCurrentPage(1) }}
-              className="inline-flex items-center gap-2 rounded-lg bg-[#1e3a5f] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#162d4a]"
-            >
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L13 13.414V19a1 1 0 01-.553.894l-4 2A1 1 0 017 21v-7.586L3.293 6.707A1 1 0 013 6V4z" />
-              </svg>
-              Apply Filters
-            </button>
-            <button
-              onClick={() => { setSearch(''); setCategoryFilter('all'); setConditionFilter('all'); setStockStatusFilter('all'); setMinPrice(''); setMaxPrice(''); setSortBy('recent') }}
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-            >
-              <svg className="h-4 w-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              Reset
-            </button>
           </div>
-          {error && <p className="text-sm text-red-600">{error}</p>}
-        </div>
-
-        {/* ── Void filter tabs ── */}
-        <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm w-fit">
-          {(['active', 'voided', 'all'] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => { setVoidTab(tab); setCurrentPage(1) }}
-              className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${
-                voidTab === tab
-                  ? 'bg-[#1e3a5f] text-white shadow-sm'
-                  : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              {tab === 'active' ? 'Active' : tab === 'voided' ? 'Written off' : 'All Items'}
-            </button>
-          ))}
-        </div>
-
-        {/* ── KPI cards ── */}
-        <div className="grid grid-cols-2 gap-2 sm:gap-3 sm:grid-cols-3 xl:grid-cols-5">
-          {/* Total Items */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-            <div className="flex items-start gap-3">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50">
-                <svg className="h-5 w-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                </svg>
-              </div>
-              <div>
-                <p className="text-xs font-medium text-slate-500">Total Items</p>
-                <p className="text-xl font-bold text-slate-900">{kpiTotal}</p>
-                <p className="text-xs text-slate-400">
-                  {kpiVoided > 0 ? `Excludes ${kpiVoided} written off` : 'All inventory items'}
-                </p>
-              </div>
-            </div>
-          </div>
-          {/* Available Items */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex items-start gap-3">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-50">
-                <svg className="h-5 w-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </div>
-              <div>
-                <p className="text-xs font-medium text-slate-500">Available Items</p>
-                <p className="text-xl font-bold text-slate-900">{kpiAvailable}</p>
-                <p className="text-xs text-slate-400">Ready for sale</p>
-              </div>
-            </div>
-          </div>
-          {/* Reserved Items */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex items-start gap-3">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-50">
-                <svg className="h-5 w-5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-                </svg>
-              </div>
-              <div>
-                <p className="text-xs font-medium text-slate-500">Reserved Items</p>
-                <p className="text-xl font-bold text-slate-900">{kpiReserved}</p>
-                <p className="text-xs text-slate-400">On hold</p>
-              </div>
-            </div>
-          </div>
-          {/* Low Stock */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex items-start gap-3">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-violet-50">
-                <svg className="h-5 w-5 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-              </div>
-              <div>
-                <p className="text-xs font-medium text-slate-500">Low Stock Items</p>
-                <p className="text-xl font-bold text-slate-900">{kpiLowStock}</p>
-                <p className="text-xs text-slate-400">Below minimum stock</p>
-              </div>
-            </div>
-          </div>
-          {/* Out of Stock */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex items-start gap-3">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-red-50">
-                <svg className="h-5 w-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-                </svg>
-              </div>
-              <div>
-                <p className="text-xs font-medium text-slate-500">Out of Stock</p>
-                <p className="text-2xl font-bold text-slate-900">{kpiOutOfStock}</p>
-                <p className="text-xs text-slate-400">Need restocking</p>
-              </div>
-            </div>
-          </div>
+          {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
         </div>
 
         {/* ── Inventory List ── */}
         <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex items-center justify-between border-b border-slate-100 px-3 py-3">
-            <h2 className="text-base font-semibold text-slate-900">Inventory List</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-3 py-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <h2 className="text-base font-semibold text-slate-900">Inventory List</h2>
+              <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-0.5">
+                {(['active', 'voided', 'all'] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => { setVoidTab(tab); setCurrentPage(1) }}
+                    className={`rounded-md px-3 py-1 text-xs font-semibold transition ${
+                      voidTab === tab ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    {tab === 'active' ? `On sale (${kpiTotal})` : tab === 'voided' ? `Written off (${kpiWrittenOff})` : `All (${inventory.length})`}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="flex items-center gap-2">
               <button
                 onClick={exportCSV}
@@ -1057,12 +1101,23 @@ function InventoryContent() {
             {loading ? (
               <p className="px-5 py-10 text-center text-sm text-slate-400">Loading products...</p>
             ) : filteredProducts.length === 0 ? (
-              <p className="px-5 py-10 text-center text-sm text-slate-400">No products match your filters.</p>
+              <div className="px-5 py-12 text-center">
+                <p className="text-sm font-medium text-slate-600">No items match your filters.</p>
+                {hasActiveFilters && (
+                  <button
+                    type="button"
+                    onClick={clearFilters}
+                    className="mt-2 text-sm font-medium text-blue-600 hover:underline"
+                  >
+                    Clear all filters
+                  </button>
+                )}
+              </div>
             ) : (
               <table className="w-full text-sm">
                 <thead className="border-b border-slate-100 bg-slate-50 text-xs font-medium text-slate-500">
                   <tr>
-                    <th className="px-3 py-2 text-left">
+                    <th className="px-4 py-2.5 text-left">
                       {(() => { const d = sortDir('name'); return (
                         <button type="button" onClick={() => toggleSort('name')}
                           className={`flex items-center gap-1 rounded transition hover:text-slate-900 ${d ? 'text-blue-700 font-semibold' : ''}`} title="Sort by item name">
@@ -1071,7 +1126,7 @@ function InventoryContent() {
                         </button>) })()}
                     </th>
                     {visibleColumns.category && (
-                    <th className="px-3 py-2 text-left">
+                    <th className="px-4 py-2.5 text-left">
                       {(() => { const d = sortDir('category'); return (
                         <button type="button" onClick={() => toggleSort('category')}
                           className={`flex items-center gap-1 rounded transition hover:text-slate-900 ${d ? 'text-blue-700 font-semibold' : ''}`} title="Sort by category">
@@ -1080,7 +1135,7 @@ function InventoryContent() {
                         </button>) })()}
                     </th>)}
                     {visibleColumns.price && (
-                    <th className="px-3 py-2 text-left">
+                    <th className="px-4 py-2.5 text-left">
                       {(() => { const d = sortDir('price'); return (
                         <button type="button" onClick={() => toggleSort('price')}
                           className={`flex items-center gap-1 rounded transition hover:text-slate-900 ${d ? 'text-blue-700 font-semibold' : ''}`} title="Sort by price">
@@ -1089,7 +1144,7 @@ function InventoryContent() {
                         </button>) })()}
                     </th>)}
                     {visibleColumns.stock && (
-                    <th className="px-3 py-2 text-left">
+                    <th className="px-4 py-2.5 text-left">
                       {(() => { const d = sortDir('stock'); return (
                         <button type="button" onClick={() => toggleSort('stock')}
                           className={`flex items-center gap-1 rounded transition hover:text-slate-900 ${d ? 'text-blue-700 font-semibold' : ''}`} title="Sort by stock">
@@ -1098,48 +1153,92 @@ function InventoryContent() {
                         </button>) })()}
                     </th>)}
                     {visibleColumns.reserved && (
-                    <th className="px-3 py-2 text-left">
+                    <th className="px-4 py-2.5 text-left">
                       <span className="flex items-center gap-1">Reserved
                         <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                       </span>
                     </th>)}
                     {visibleColumns.available && (
-                    <th className="px-3 py-2 text-left">
+                    <th className="px-4 py-2.5 text-left">
                       <span className="flex items-center gap-1">Available
                         <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4" /></svg>
                       </span>
                     </th>)}
-                    {visibleColumns.condition && <th className="px-3 py-2 text-left">Condition</th>}
-                    {visibleColumns.status && <th className="px-3 py-2 text-left">Stock Status</th>}
-                    {visibleColumns.barcode && <th className="px-3 py-2 text-left">Barcode</th>}
+                    {visibleColumns.condition && <th className="px-4 py-2.5 text-left">Condition</th>}
+                    {visibleColumns.status && <th className="px-4 py-2.5 text-left">Stock Status</th>}
+                    {visibleColumns.barcode && <th className="px-4 py-2.5 text-left">Barcode</th>}
                     {/* Only on the Voided tab - the reason is meaningless for active items */}
-                    {voidTab === 'voided' && <th className="px-3 py-2 text-left">Write-off Reason</th>}
-                    <th className="px-3 py-2 text-left">Actions</th>
+                    {voidTab === 'voided' && <th className="px-4 py-2.5 text-left">Write-off Reason</th>}
+                    <th className="px-4 py-2.5 text-left">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
                   {paginatedProducts.map((product) => (
-                    <tr key={product.id} className="hover:bg-slate-50">
-                      <td className="px-5 py-3.5">
-                        <p className="font-medium text-slate-900">{product.name}</p>
-                        <p className="text-xs text-slate-400">Variant: {product.condition}</p>
+                    <tr
+                      key={product.id}
+                      className={`hover:bg-slate-50 ${
+                        product.isVoided ? 'bg-slate-50/60 text-slate-400'
+                        : product.stockStatus === 'Out of Stock' ? 'bg-red-50/30'
+                        : product.stockStatus === 'Low Stock' ? 'bg-amber-50/30' : ''
+                      }`}
+                    >
+                      {/* Coloured left edge: red = out of stock, amber = low stock. */}
+                      <td className={`px-4 py-3 ${
+                        product.isVoided ? ''
+                        : product.stockStatus === 'Out of Stock' ? 'shadow-[inset_3px_0_0_#ef4444]'
+                        : product.stockStatus === 'Low Stock' ? 'shadow-[inset_3px_0_0_#f59e0b]' : ''
+                      }`}>
+                        <p className="font-medium text-slate-900">
+                          {product.name}
+                          {product.isSingleItem && (
+                            <span className="ml-1.5 inline-flex rounded-full bg-sky-50 px-1.5 py-0.5 align-middle text-[10px] font-semibold text-sky-700 ring-1 ring-inset ring-sky-200">
+                              Single item
+                            </span>
+                          )}
+                        </p>
+                        {!visibleColumns.barcode && product.barcode && (
+                          <p className="font-mono text-[11px] tracking-wider text-slate-400">#{product.barcode}</p>
+                        )}
+                        {product.conditionNotes ? (
+                          <p className="mt-0.5 line-clamp-2 max-w-[300px] text-xs italic text-slate-500" title={product.conditionNotes}>
+                            “{product.conditionNotes}”
+                          </p>
+                        ) : null}
                       </td>
-                      {visibleColumns.category && <td className="px-5 py-3.5 text-slate-600">{product.category}</td>}
-                      {visibleColumns.price && <td className="px-5 py-3.5 font-medium text-slate-800">{formatPrice(product.price)}</td>}
+                      {visibleColumns.category && <td className="px-4 py-3 text-slate-600">{product.category}</td>}
+                      {visibleColumns.price && <td className="px-4 py-3 font-medium text-slate-800">{formatPrice(product.price)}</td>}
                       {visibleColumns.stock && (
-                      <td className="px-5 py-3.5">
-                        <span className="font-semibold text-slate-900">{product.quantity}</span>
-                        <span className="ml-1.5 text-xs text-slate-400">Min: {product.minStock}</span>
+                      <td className="px-4 py-3">
+                        {product.isSingleItem ? (
+                          <div>
+                            <p className={`text-sm font-semibold ${product.availableStock > 0 ? 'text-slate-900' : 'text-red-600'}`}>
+                              {product.quantity === 0 ? 'Sold' : product.reservedStock > 0 ? 'On hold' : 'In stock'}
+                            </p>
+                            <p className="text-[11px] text-slate-400">One unit</p>
+                          </div>
+                        ) : (
+                          <div>
+                            <p className={`text-sm font-semibold tabular-nums ${product.quantity > 0 ? 'text-slate-900' : 'text-red-600'}`}>
+                              {product.quantity}
+                            </p>
+                            <p className="text-[11px] text-slate-400">min {product.minStock}</p>
+                          </div>
+                        )}
                       </td>)}
-                      {visibleColumns.reserved && <td className="px-5 py-3.5 text-slate-600">{product.reservedStock}</td>}
+                      {visibleColumns.reserved && (
+                      <td className="px-4 py-3">
+                        <span className={product.reservedStock > 0 ? 'font-semibold text-violet-600' : 'text-slate-400'}>
+                          {product.reservedStock}
+                        </span>
+                      </td>)}
                       {visibleColumns.available && (
-                      <td className="px-5 py-3.5">
+                      <td className="px-4 py-3">
                         <span className={`font-semibold ${product.availableStock > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
                           {product.availableStock}
                         </span>
                       </td>)}
                       {visibleColumns.condition && (
-                      <td className="px-5 py-3.5">
+                      <td className="px-4 py-3">
                         <span className={`inline-flex rounded-md px-2.5 py-0.5 text-xs font-semibold ${
                           product.condition === 'New' ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-600'
                         }`}>
@@ -1147,7 +1246,7 @@ function InventoryContent() {
                         </span>
                       </td>)}
                       {visibleColumns.status && (
-                      <td className="px-5 py-3.5">
+                      <td className="px-4 py-3">
                         <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold ${
                           product.stockStatus === 'Available'
                             ? 'bg-emerald-50 text-emerald-700'
@@ -1164,7 +1263,7 @@ function InventoryContent() {
                         </span>
                       </td>)}
                       {visibleColumns.barcode && (
-                      <td className="px-5 py-3.5">
+                      <td className="px-4 py-3">
                         {product.barcode ? (
                           <span className="font-mono text-xs tracking-wider text-slate-700">
                             {product.barcode}
@@ -1174,7 +1273,7 @@ function InventoryContent() {
                         )}
                       </td>)}
                       {voidTab === 'voided' && (
-                      <td className="px-5 py-3.5">
+                      <td className="px-4 py-3">
                         <span className={`inline-flex rounded-md px-2.5 py-0.5 text-xs font-semibold ${
                           product.isVoided ? 'bg-red-50 text-red-700' : 'bg-orange-50 text-orange-700'
                         }`}>
@@ -1196,7 +1295,7 @@ function InventoryContent() {
                           </p>
                         )}
                       </td>)}
-                      <td className="px-5 py-3.5">
+                      <td className="px-4 py-3">
                         {(canManageInventory || canVoid) ? (
                           <div className="flex items-center gap-2">
                             {/* The Voided tab is for managing write-offs, so it offers
@@ -1209,7 +1308,8 @@ function InventoryContent() {
                             {canManageInventory && voidTab !== 'voided' && !product.isVoided && (<>
                             <button
                               onClick={() => openEditModal(product)}
-                              title="Edit"
+                              title="Edit item"
+                              aria-label={`Edit ${product.name}`}
                               className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-blue-300 hover:text-blue-600"
                             >
                               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1236,6 +1336,7 @@ function InventoryContent() {
                                 )
                               }}
                               title="Print barcode labels"
+                              aria-label={`Print labels for ${product.name}`}
                               className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-violet-300 hover:text-violet-600"
                             >
                               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1245,6 +1346,7 @@ function InventoryContent() {
                             <button
                               onClick={() => openAdjustModal(product)}
                               title="Adjust stock"
+                              aria-label={`Adjust stock of ${product.name}`}
                               className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-amber-300 hover:text-amber-600"
                             >
                               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1380,6 +1482,8 @@ function InventoryContent() {
                 condition: editingProduct.condition,
                 reservedStock: editingProduct.reservedStock,
                 availableStock: editingProduct.availableStock,
+                isSingleItem: editingProduct.isSingleItem === true,
+                conditionNotes: editingProduct.conditionNotes ?? '',
               }
             : undefined
         }

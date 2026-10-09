@@ -19,6 +19,7 @@ interface Product {
   reservedStock: number
   availableStock: number
   minStock: number
+  isSingleItem?: boolean
 }
 
 type StockAction = 'add' | 'deduct' | 'transfer'
@@ -50,7 +51,8 @@ export default function StockAdjustmentModal({
 
   useEffect(() => {
     if (!isOpen || !product) return
-    setAction('add')
+    // A single item can only be deducted - see the adjust route.
+    setAction(product.isSingleItem ? 'deduct' : 'add')
     setQuantity('1')
     setTargetCondition(product.condition === 'New' ? 'Refurbished' : 'New')
     setRemarks('')
@@ -115,10 +117,15 @@ export default function StockAdjustmentModal({
                 onChange={(event) => setAction(event.target.value as StockAction)}
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
               >
-                <option value="add">Add Stock</option>
+                {!product.isSingleItem && <option value="add">Add Stock</option>}
                 <option value="deduct">Deduct Stock</option>
-                <option value="transfer">Transfer to Another Condition</option>
+                {!product.isSingleItem && <option value="transfer">Transfer to Another Condition</option>}
               </select>
+              {product.isSingleItem && (
+                <p className="text-xs text-slate-500">
+                  This is a single item, so it can only be deducted. Add another unit as its own item.
+                </p>
+              )}
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-900">Quantity</label>

@@ -127,6 +127,9 @@ const TransactionDocument = forwardRef<HTMLDivElement, TransactionDocumentProps>
                 <td className="px-3 py-2 text-[13px] text-slate-700">
                   <p className="font-medium leading-snug text-slate-900">{item.name}</p>
                   <p className="text-[11px] text-slate-500">{item.condition}</p>
+                  {item.conditionNotes ? (
+                    <p className="text-[11px] italic text-slate-500">{item.conditionNotes}</p>
+                  ) : null}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-right text-[13px] text-slate-700">{item.quantity}</td>
                 {isSale ? (

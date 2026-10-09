@@ -8,14 +8,20 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAdminDb } from '@/lib/firebaseAdmin'
-import { requireAdminRequest } from '@/lib/server/authorize'
+import { requireActiveUserRequest, requireAdminRequest } from '@/lib/server/authorize'
 
 interface CategoryPayload {
   name?: unknown
   requestedByUid?: unknown
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  // Read access is checked here, not left to the database rules: this route
+  // uses the Admin SDK, which bypasses the rules entirely. Without this line
+  // the data below is returned to anyone on the internet who calls the URL.
+  const denied = await requireActiveUserRequest(req)
+  if (denied) return denied
+
   try {
     const snapshot = await getAdminDb().collection('categories').orderBy('name', 'asc').get()
     const data = snapshot.docs.map((categoryDoc) => ({

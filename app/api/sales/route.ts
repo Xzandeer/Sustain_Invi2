@@ -8,7 +8,7 @@ import {
   getProcessedByInfo,
 } from '@/lib/server/inventory'
 import { createTransactionNumber } from '@/lib/server/transactionNumbers'
-import { requireActiveUserRequest } from '@/lib/server/authorize'
+import { guardRequest, requireActiveUserRequest } from '@/lib/server/authorize'
 import { getStoreSettings } from '@/lib/server/storeSettings'
 import { parseDateRange, toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import {
@@ -50,6 +50,14 @@ const parseCustomerDetails = (input: unknown): CustomerDetails | null => {
 
 // GET /api/sales - List sales with optional filtering by date and category
 export async function GET(req: NextRequest) {
+  // Read access is checked here, not left to the database rules: this route
+  // uses the Admin SDK, which bypasses the rules entirely. Without this line
+  // the data below is returned to anyone on the internet who calls the URL.
+  // Every sale with its customer's contact details and the full revenue
+  // history - the same figures the dashboard shows only with View Analytics.
+  const denied = await guardRequest(req, 'canViewAnalytics')
+  if (denied) return denied
+
   try {
     // Step 1: Parse query parameters
     const { searchParams } = new URL(req.url)
@@ -124,8 +132,8 @@ export async function POST(req: NextRequest) {
       body.processedBy && typeof body.processedBy === 'object'
         ? (body.processedBy as Record<string, unknown>).uid
         : undefined
-    const denied = await requireActiveUserRequest(req)
-    if (denied) return denied
+  const denied = await requireActiveUserRequest(req)
+  if (denied) return denied
 
     const customerDetails = parseCustomerDetails(body.customerDetails)
     const processedBy = await getProcessedByInfo(body.processedBy)
@@ -203,6 +211,7 @@ export async function POST(req: NextRequest) {
       categoryId: string
       categoryName: string
       condition: string
+      conditionNotes: string
       stockBefore: number
       stockAfter: number
       reservedBefore: number
@@ -249,6 +258,10 @@ export async function POST(req: NextRequest) {
           categoryId: inventoryItem.categoryId,
           categoryName: inventoryItem.categoryName,
           condition: inventoryItem.condition,
+          // From the database, not the request: the sale records what the item
+          // was actually described as when it left the shop, which is what a
+          // refund dispute about its condition would turn on.
+          conditionNotes: inventoryItem.conditionNotes,
           stockBefore: currentStock,
           stockAfter: nextStock,
           reservedBefore: currentReservedStock,
@@ -300,6 +313,7 @@ export async function POST(req: NextRequest) {
         categoryId: item.categoryId,
         categoryName: item.categoryName,
         condition: item.condition,
+        ...(item.conditionNotes ? { conditionNotes: item.conditionNotes } : {}),
         warrantyDays: saleWarrantyDays,
         status: 'completed',
       })),
@@ -353,6 +367,7 @@ export async function POST(req: NextRequest) {
       price: item.price,
       categoryName: item.categoryName,
       condition: item.condition,
+      ...(item.conditionNotes ? { conditionNotes: item.conditionNotes } : {}),
       subtotal: item.quantity * item.price,
     }))
 

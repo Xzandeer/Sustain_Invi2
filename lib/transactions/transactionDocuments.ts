@@ -32,6 +32,8 @@ export interface TransactionLineItem {
   price: number
   condition: string
   categoryName?: string
+  /** What this particular item was described as when sold. */
+  conditionNotes?: string
   subtotal: number
 }
 

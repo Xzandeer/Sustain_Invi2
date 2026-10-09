@@ -1,6 +1,6 @@
 // Inventory item detail API - PUT to edit, DELETE to move to trash, PATCH to restore/permanently delete
 import { NextResponse } from 'next/server'
-import { MAX_STOCK } from '@/lib/constants/limits'
+import { MAX_STOCK, cleanConditionNotes } from '@/lib/constants/limits'
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { assertAdminUser, createStockLog, findInventoryVariant, getProcessedByInfo } from '@/lib/server/inventory'
@@ -25,6 +25,7 @@ interface InventoryUpdatePayload {
   condition?: unknown
   processedBy?: unknown
   remarks?: unknown
+  conditionNotes?: unknown
 }
 
 // PUT /api/inventory/[id] - Update item details (name, price, category, etc.)
@@ -162,7 +163,18 @@ export async function PUT(req: Request, context: RouteContext) {
       )
     }
 
-    const duplicateVariant = await findInventoryVariant({ name, categoryId, condition: currentCondition })
+    // Single items may share a name - two different second-hand fridges are
+    // still two records - so the duplicate rule only applies to stock lines.
+    const isSingleItem = current.isSingleItem === true
+    // Absent from the request means "leave as is"; an empty string clears them.
+    const conditionNotes =
+      body.conditionNotes === undefined
+        ? (typeof current.conditionNotes === 'string' ? current.conditionNotes : '')
+        : cleanConditionNotes(body.conditionNotes)
+
+    const duplicateVariant = isSingleItem
+      ? null
+      : await findInventoryVariant({ name, categoryId, condition: currentCondition })
     if (duplicateVariant && duplicateVariant.id !== id) {
       return NextResponse.json(
         { error: 'An inventory variant with the same item, category, and condition already exists.' },
@@ -186,6 +198,7 @@ export async function PUT(req: Request, context: RouteContext) {
       condition: currentCondition,
       description,
       imageUrl,
+      conditionNotes,
       isDeleted: false,
       deletedAt: null,
       updatedAt,

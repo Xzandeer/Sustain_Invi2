@@ -53,10 +53,13 @@ TREND CONTEXT:
 - Week-over-week revenue change: ${summary.wowChange > 0 ? '+' : ''}${summary.wowChange}%
 
 TASK:
-Analyze the trend and slightly adjust the base forecast.
+Review the base forecast and adjust it only where the recent daily pattern gives a clear reason.
 Rules:
 1. Adjustments must be small and realistic (max ±15% of the base value per day)
-2. Do not change all 7 days the same way — vary by trend acceleration/deceleration
+2. Do NOT extend the week-over-week trend into the coming days. Testing on this store's
+   real sales showed that carrying a recent rise or fall forward makes the forecast less
+   accurate: busy weeks follow stock arrivals and do not continue on their own.
+   If there is no clear reason to adjust a day, keep the base value.
 3. Write a 1-sentence business insight explaining the pattern
 4. Set confidence based on data quality: high = 14+ days data, medium = 7-13 days, low = 3-6 days
    Current data: ${summary.totalDaysWithData} days
@@ -189,32 +192,49 @@ interface CacheDocument {
   result: AIEnhancementResult
   cachedAt: number     // Unix ms
   expiresAt: number    // Unix ms
+  // The statistical forecast the AI result was built on. A cached result is
+  // only reused while the current baseline is the same: if sales have changed
+  // since (new sales, imported history, deleted seed data) the old AI line
+  // would sit against a different baseline and break the ±15% rule.
+  baseKey?: string
 }
+
+const baseKeyOf = (base: WeightedForecastResult) =>
+  base.forecast.map(d => Math.round(d.weighted)).join(',')
 
 // Cache key varies per category so category forecasts don't collide
 const cacheDocId = (category?: string) =>
   category ? `${CACHE_DOC}_${category.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_')}` : CACHE_DOC
 
-async function readFromFirestore(category?: string): Promise<AIEnhancementResult | null> {
+async function readFromFirestore(
+  base: WeightedForecastResult,
+  category?: string
+): Promise<AIEnhancementResult | null> {
   try {
     const db = getAdminDb()
     const snap = await db.collection(CACHE_COLLECTION).doc(cacheDocId(category)).get()
     if (!snap.exists) return null
     const doc = snap.data() as CacheDocument
     if (Date.now() > doc.expiresAt) return null   // expired
+    if (doc.baseKey !== baseKeyOf(base)) return null // sales changed since
     return { ...doc.result, fromCache: true }
   } catch {
     return null   // Firestore unavailable — proceed without cache
   }
 }
 
-async function writeToFirestore(result: AIEnhancementResult, category?: string): Promise<void> {
+async function writeToFirestore(
+  result: AIEnhancementResult,
+  base: WeightedForecastResult,
+  category?: string
+): Promise<void> {
   try {
     const db = getAdminDb()
     const doc: CacheDocument = {
       result,
       cachedAt: Date.now(),
       expiresAt: Date.now() + CACHE_TTL_MS,
+      baseKey: baseKeyOf(base),
     }
     await db.collection(CACHE_COLLECTION).doc(cacheDocId(category)).set(doc)
   } catch {
@@ -233,7 +253,7 @@ export async function enhanceWithAI(
 ): Promise<AIEnhancementResult> {
   // 1. Try Firestore cache first — skip if force=true (user clicked Regenerate)
   if (!force) {
-    const cached = await readFromFirestore(category)
+    const cached = await readFromFirestore(base, category)
     if (cached) return cached
   }
 
@@ -266,7 +286,7 @@ export async function enhanceWithAI(
 
   // 4. Persist to Firestore (non-blocking)
   if (!result.error) {
-    writeToFirestore(result, category).catch(() => {})
+    writeToFirestore(result, base, category).catch(() => {})
   }
 
   return result

@@ -4,15 +4,19 @@
 // Pipeline:
 //  1. Fetch summarized Firestore sales data (last 28 days)
 //  2. Run statistical weighted forecast (base model)
-//  3. Enhance with GPT-4o-mini (AI layer, bounded to ±15%)
+//  3. Enhance with GPT-4o-mini (AI layer, bounded to ±15%) - optional
 //  4. Return combined response for dashboard chart rendering
+//
+// The statistical forecast is the validated method and is always returned.
+// Without an OPENAI_API_KEY the route still answers, just without aiForecast,
+// so the chart shows the same numbers the validation tested.
 //
 // Response shape:
 // {
 //   success: true,
 //   canForecast: true,
 //   baseForecast: WeightedForecastResult,
-//   aiForecast:   AIEnhancementResult,
+//   aiForecast:   AIEnhancementResult | null   (null when no API key)
 //   summary: { wowChange, trendDirection, topCategories, totalDaysWithData },
 //   generatedAt: ISO string,
 //   fromCache: boolean
@@ -38,15 +42,6 @@ export async function GET(req: NextRequest) {
   const category = categoryParam && categoryParam.toLowerCase() !== 'all' ? categoryParam : undefined
 
   try {
-    // ── 1. Check API key ──────────────────────────────────────────────────────
-    const apiKey = process.env.OPENAI_API_KEY
-    if (!apiKey) {
-      return NextResponse.json(
-        { success: false, error: 'AI forecasting is not configured (missing API key).' },
-        { status: 503 }
-      )
-    }
-
     // ── 2. Fetch summarized sales data ────────────────────────────────────────
     const summary = await getSalesSummary(category)
 
@@ -63,8 +58,11 @@ export async function GET(req: NextRequest) {
     // ── 3. Statistical base forecast ──────────────────────────────────────────
     const baseForecast = buildWeightedForecast(summary.daily)
 
-    // ── 4. AI enhancement layer ───────────────────────────────────────────────
-    const aiForecast = await enhanceWithAI(baseForecast, summary, apiKey, force, category)
+    // ── 4. AI enhancement layer (optional) ────────────────────────────────────
+    const apiKey = process.env.OPENAI_API_KEY
+    const aiForecast = apiKey
+      ? await enhanceWithAI(baseForecast, summary, apiKey, force, category)
+      : null
 
     // ── 5. Return combined result ─────────────────────────────────────────────
     return NextResponse.json({
@@ -79,13 +77,15 @@ export async function GET(req: NextRequest) {
         trendDirection: baseForecast.trendDirection,
         dataPoints: baseForecast.dataPoints,
       },
-      aiForecast: {
-        forecast: aiForecast.forecast,
-        insight: aiForecast.insight,
-        confidence: aiForecast.confidence,
-        fromCache: aiForecast.fromCache ?? false,
-        ...(aiForecast.error ? { warning: aiForecast.error } : {}),
-      },
+      aiForecast: aiForecast
+        ? {
+            forecast: aiForecast.forecast,
+            insight: aiForecast.insight,
+            confidence: aiForecast.confidence,
+            fromCache: aiForecast.fromCache ?? false,
+            ...(aiForecast.error ? { warning: aiForecast.error } : {}),
+          }
+        : null,
       summary: {
         wowChange: summary.wowChange,
         last7Revenue: summary.last7Revenue,

@@ -136,6 +136,8 @@ interface InventoryItem {
   barcode?: string
   isDeleted?: boolean
   isVoided?: boolean
+  isSingleItem?: boolean
+  conditionNotes?: string
 }
 
 interface Category {
@@ -151,6 +153,7 @@ interface CartItem {
   availableStock: number
   categoryName: string
   condition: 'New' | 'Refurbished'
+  conditionNotes?: string
 }
 
 
@@ -389,6 +392,8 @@ function SalesContent() {
               barcode: typeof data.barcode === 'string' ? data.barcode : undefined,
               isDeleted: data.isDeleted === true,
               isVoided: data.isVoided === true,
+              isSingleItem: data.isSingleItem === true,
+              conditionNotes: typeof data.conditionNotes === 'string' ? data.conditionNotes.trim() : '',
             }
           })
           .filter((item) => item.name && item.isDeleted !== true && item.isVoided !== true)
@@ -1018,6 +1023,7 @@ function SalesContent() {
           availableStock: item.availableStock,
           categoryName: item.categoryName,
           condition: item.condition,
+          conditionNotes: item.conditionNotes,
         },
       ]
     })
@@ -1384,7 +1390,21 @@ function SalesContent() {
                         const isLowStock = item.availableStock > 0 && item.availableStock <= 5
                         return (
                           <tr key={item.id} className="hover:bg-slate-50">
-                            <td className="px-4 py-2.5 font-medium text-slate-900">{item.name}</td>
+                            <td className="px-4 py-2.5">
+                              <p className="font-medium text-slate-900">
+                                {item.name}
+                                {item.isSingleItem && (
+                                  <span className="ml-1.5 rounded-full bg-blue-50 px-1.5 py-0.5 align-middle text-[10px] font-semibold text-blue-700">
+                                    Single
+                                  </span>
+                                )}
+                              </p>
+                              {item.conditionNotes ? (
+                                <p className="max-w-[240px] truncate text-xs italic text-slate-500" title={item.conditionNotes}>
+                                  {item.conditionNotes}
+                                </p>
+                              ) : null}
+                            </td>
                             <td className="px-4 py-2.5 text-slate-500 text-xs">{item.categoryName}</td>
                             <td className="px-4 py-2.5">
                               <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${item.condition === 'New' ? 'bg-green-50 text-green-700' : 'bg-orange-50 text-orange-600'}`}>
@@ -1658,6 +1678,11 @@ function SalesContent() {
                       <div className="min-w-0 flex-1">
                         <p className="text-xs font-medium text-slate-900 leading-tight">{item.name}</p>
                         <p className="text-xs text-slate-400">{item.condition} · {currency(item.price)}</p>
+                        {item.conditionNotes ? (
+                          <p className="truncate text-[11px] italic text-slate-500" title={item.conditionNotes}>
+                            {item.conditionNotes}
+                          </p>
+                        ) : null}
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         <button type="button" onClick={() => updateCartQuantity(item.id, item.quantity - 1)} disabled={isCompletedMode} className="flex h-5 w-5 items-center justify-center rounded border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40">

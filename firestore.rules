@@ -45,17 +45,40 @@ service cloud.firestore {
       return isAdmin() || (isSignedIn() && userDoc().canViewStockLogs == true);
     }
 
+    // Mirrors resolvePermissions() in lib/auth/permissions.ts, including its
+    // default: a staff account with no canManageReservations field is allowed,
+    // because DEFAULT_STAFF_PERMISSIONS grants it. Only an explicit false denies.
+    // Without the default here, every existing staff account would lose the
+    // Reservations page the moment these rules were deployed.
+    function canManageReservations() {
+      return isAdmin() || (
+        isSignedIn() &&
+        userDoc().get('isDisabled', false) != true &&
+        userDoc().get('canManageReservations', true) == true
+      );
+    }
+
     // ── users — the only collection the browser writes ──────────────────────
     match /users/{userId} {
-      // A new account creates its own profile document at sign-up.
-      allow create: if isSignedIn() && request.auth.uid == userId;
+      // Accounts are created only by the server (api/admin/create-user), which
+      // bypasses these rules. The browser never creates one. Allowing it here
+      // would let anyone with a login on this Firebase project write their own
+      // user record with role 'admin' and take over the shop.
+      allow create: if false;
 
       // You can read yourself; an admin can read everyone.
       allow read: if isAdmin() || (isSignedIn() && request.auth.uid == userId);
 
       // Roles and permissions are an admin decision. A staff member must not be
-      // able to grant themselves canProcessRefunds by writing their own row.
-      allow update, delete: if isAdmin();
+      // able to grant themselves canProcessRefunds by writing their own row -
+      // but they may change their own display name on Settings, and nothing
+      // else. affectedKeys() is the set of fields this write actually changes.
+      allow update: if isAdmin() || (
+        isSignedIn() &&
+        request.auth.uid == userId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name'])
+      );
+      allow delete: if isAdmin();
     }
 
     // ── stock logs — the audit trail ────────────────────────────────────────
@@ -71,8 +94,13 @@ service cloud.firestore {
     // ── everything else — read for signed-in users, writes via the API ──────
     match /inventory/{docId}            { allow read: if isSignedIn(); allow write: if false; }
     match /sales/{docId}                { allow read: if isSignedIn(); allow write: if false; }
-    match /reservations/{docId}         { allow read: if isSignedIn(); allow write: if false; }
+    // Reservations hold customers' names and contact numbers, so reading them
+    // needs the same permission as working with them.
+    match /reservations/{docId}         { allow read: if canManageReservations(); allow write: if false; }
     match /categories/{docId}           { allow read: if isSignedIn(); allow write: if false; }
+    // Imported notebook history (daily totals only). Written by
+    // scripts/import-sales-history.js with the Admin SDK.
+    match /salesHistory/{docId}         { allow read: if isSignedIn(); allow write: if false; }
     match /receipts/{docId}             { allow read: if isSignedIn(); allow write: if false; }
     match /storeSettings/{docId}        { allow read: if isSignedIn(); allow write: if false; }
     match /transactionCounters/{docId}  { allow read: if isSignedIn(); allow write: if false; }

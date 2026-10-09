@@ -9,6 +9,15 @@
 export const MAX_STOCK = 999
 export const MAX_PRICE = 999999
 
+// Condition notes describe one item's actual state - "scratch on lid, cord
+// replaced". Short enough to read at the counter and to fit a receipt line.
+export const MAX_CONDITION_NOTES = 200
+
+/** Trim and cap condition notes. Anything that is not a string becomes ''. */
+export function cleanConditionNotes(value: unknown): string {
+  return typeof value === 'string' ? value.trim().slice(0, MAX_CONDITION_NOTES) : ''
+}
+
 // `max` on <input type="number"> does NOT stop typing. It only marks the field
 // invalid on submit, so a user can still type 11111111111111 and watch it sit
 // there looking accepted. This is what the adviser found during consultation.

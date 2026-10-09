@@ -28,6 +28,18 @@ export const setReceiptPaperWidth = (width: ReceiptPaperWidth) => {
 }
 
 // Open receipt in new window with print dialog auto-opened
+// Everything typed into the system - item names, condition notes, customer
+// names, the seller's address - is escaped before it goes into the receipt
+// HTML. Unescaped, a note like "lid <cracked> & taped" breaks the printed
+// layout, and markup in a customer name would run in the print window.
+const esc = (value: unknown): string =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+
 export const openReceiptPrintWindow = (
   document: CompletedTransactionDocument,
   paperWidth: ReceiptPaperWidth = getReceiptPaperWidth()
@@ -353,9 +365,9 @@ export const openReceiptPrintWindow = (
       <div class="receipt-header">
         <div class="store-name">${document.storeName}</div>
         ${!isSale ? `<div class="store-tagline">${document.storeTagline}</div>` : ''}
-        ${isSale && document.sellerRegisteredName ? `<div class="seller-name">${document.sellerRegisteredName}</div>` : ''}
-        ${isSale && document.sellerAddress ? `<div class="seller-line">${document.sellerAddress}</div>` : ''}
-        ${isSale && document.sellerTin ? `<div class="seller-line">TIN: ${document.sellerTin}</div>` : ''}
+        ${isSale && document.sellerRegisteredName ? `<div class="seller-name">${esc(document.sellerRegisteredName)}</div>` : ''}
+        ${isSale && document.sellerAddress ? `<div class="seller-line">${esc(document.sellerAddress)}</div>` : ''}
+        ${isSale && document.sellerTin ? `<div class="seller-line">TIN: ${esc(document.sellerTin)}</div>` : ''}
         <div class="receipt-number">${isSale ? document.receiptNumber : document.reservationCode}</div>
         <div class="receipt-date">${formatTransactionDateTime(isSale ? document.transactionDate : document.reservationDate)}</div>
       </div>
@@ -363,14 +375,14 @@ export const openReceiptPrintWindow = (
       ${!isSale ? `
       <div class="section customer-info">
         <div class="section-label">Customer</div>
-        <div class="customer-name">${document.customer.fullName}</div>
-        <div class="customer-detail">${document.customer.email || 'No email'}</div>
-        <div class="customer-detail">${document.customer.contactNumber}</div>
+        <div class="customer-name">${esc(document.customer.fullName)}</div>
+        <div class="customer-detail">${esc(document.customer.email || 'No email')}</div>
+        <div class="customer-detail">${esc(document.customer.contactNumber)}</div>
       </div>
 
       <div class="section">
         <div class="section-label">Processed By</div>
-        <div class="section-content">${document.processedBy}</div>
+        <div class="section-content">${esc(document.processedBy)}</div>
       </div>` : ''}
 
       <table class="items-table">
@@ -388,8 +400,8 @@ export const openReceiptPrintWindow = (
               (item) => `
             <tr>
               <td class="item-col-name">
-                <div class="item-name">${item.name}</div>
-                <div class="item-condition">${item.condition}</div>
+                <div class="item-name">${esc(item.name)}</div>
+                <div class="item-condition">${esc(item.condition)}${item.conditionNotes ? ` &middot; ${esc(item.conditionNotes)}` : ''}</div>
               </td>
               <td class="item-col-qty">${item.quantity}</td>
               ${isSale ? `<td class="item-col-price">${formatCurrency(item.price)}</td>` : ''}

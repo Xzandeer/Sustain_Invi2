@@ -4,6 +4,7 @@
 // Only reads summarized aggregates — never passes raw documents to AI.
 
 import { getAdminDb } from '@/lib/firebaseAdmin'
+import { getSalesHistoryTotals } from '@/lib/server/salesHistory'
 
 const toNum = (v: unknown, fb = 0): number => {
   if (typeof v === 'number' && isFinite(v)) return v
@@ -119,6 +120,21 @@ export async function getSalesSummary(categoryFilter?: string): Promise<SalesSum
       })
     }
   })
+
+  // Imported notebook history (whole-store totals only, so not used when the
+  // forecast is scoped to one category). On a date that has an imported total,
+  // that total replaces whatever was recorded - the two are never added.
+  if (!wantedCategory) {
+    // Up to yesterday: today is always what the counter has rung up.
+    const yesterday = new Date(now.getTime() - 86400000)
+    const history = await getSalesHistoryTotals(
+      since.toISOString().split('T')[0],
+      yesterday.toISOString().split('T')[0]
+    )
+    history.forEach((total, key) => {
+      byDay[key] = { revenue: total, transactions: Math.max(1, byDay[key]?.transactions ?? 0) }
+    })
+  }
 
   // Build sorted daily array (ascending date, last 28 days)
   const daily: DailyStat[] = Object.entries(byDay)

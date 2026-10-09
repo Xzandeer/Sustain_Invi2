@@ -7,11 +7,17 @@ import { FieldValue } from 'firebase-admin/firestore'
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { getStoreSettings } from '@/lib/server/storeSettings'
 import { SETTINGS_COLLECTION, SETTINGS_DOC } from '@/lib/constants/warranty'
-import { requireAdminRequest } from '@/lib/server/authorize'
+import { requireActiveUserRequest, requireAdminRequest } from '@/lib/server/authorize'
 
 export const dynamic = 'force-dynamic'
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  // Read access is checked here, not left to the database rules: this route
+  // uses the Admin SDK, which bypasses the rules entirely. Without this line
+  // the data below is returned to anyone on the internet who calls the URL.
+  const denied = await requireActiveUserRequest(req)
+  if (denied) return denied
+
   const settings = await getStoreSettings()
   return NextResponse.json(settings)
 }

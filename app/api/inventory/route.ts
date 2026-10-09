@@ -1,10 +1,10 @@
 // Inventory API endpoint - GET to list items, POST to create items
 import { NextRequest, NextResponse } from 'next/server'
-import { MAX_STOCK } from '@/lib/constants/limits'
+import { MAX_STOCK, cleanConditionNotes } from '@/lib/constants/limits'
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { createInventoryVariant, createStockLog, findInventoryVariant, getProcessedByInfo } from '@/lib/server/inventory'
-import { guardRequest } from '@/lib/server/authorize'
+import { guardRequest, requireActiveUserRequest } from '@/lib/server/authorize'
 
 interface InventoryPayload {
   name?: unknown
@@ -19,12 +19,20 @@ interface InventoryPayload {
   minStock?: unknown
   status?: unknown
   condition?: unknown
+  isSingleItem?: unknown
+  conditionNotes?: unknown
   processedBy?: unknown
   remarks?: unknown
 }
 
 // GET /api/inventory - List inventory items (optionally filtered to show trash)
 export async function GET(req: NextRequest) {
+  // Read access is checked here, not left to the database rules: this route
+  // uses the Admin SDK, which bypasses the rules entirely. Without this line
+  // the data below is returned to anyone on the internet who calls the URL.
+  const denied = await requireActiveUserRequest(req)
+  if (denied) return denied
+
   try {
     // Step 1: Parse view parameter (default: active items, 'trash': deleted items)
     const view = new URL(req.url).searchParams.get('view')
@@ -97,8 +105,13 @@ export async function POST(req: NextRequest) {
           ? body.category.trim()
           : ''
     const price = toNumber(body.price, Number.NaN)
-    const quantity = toNumber(body.stock ?? body.quantity, Number.NaN)
-    const minStock = toNumber(body.minStock, Number.NaN)
+    // A single item is one physical unit with its own record. The quantity and
+    // minimum are fixed here rather than trusted from the request, so a single
+    // item can never be created holding 5 units.
+    const isSingleItem = body.isSingleItem === true
+    const quantity = isSingleItem ? 1 : toNumber(body.stock ?? body.quantity, Number.NaN)
+    const minStock = isSingleItem ? 0 : toNumber(body.minStock, Number.NaN)
+    const conditionNotes = cleanConditionNotes(body.conditionNotes)
     const condition = normalizeInventoryCondition(body.condition)
     const description = typeof body.description === 'string' ? body.description.trim() : ''
     const imageUrl = typeof body.imageUrl === 'string' ? body.imageUrl.trim() : ''
@@ -165,7 +178,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid category' }, { status: 400 })
     }
 
-    const existingVariant = await findInventoryVariant({ name, categoryId, condition })
+    // A single item never merges: two "Rice Cooker - Panasonic" units in
+    // different states are two records. findInventoryVariant also ignores
+    // single items, so adding ordinary stock never lands on one of them.
+    const existingVariant = isSingleItem ? null : await findInventoryVariant({ name, categoryId, condition })
 
     if (existingVariant) {
       const now = new Date().toISOString()
@@ -183,6 +199,7 @@ export async function POST(req: NextRequest) {
         category: categoryName,
         description,
         imageUrl,
+        ...(conditionNotes ? { conditionNotes } : {}),
         isDeleted: false,
         deletedAt: null,
         updatedAt: now,
@@ -241,6 +258,8 @@ export async function POST(req: NextRequest) {
       condition,
       description,
       imageUrl,
+      isSingleItem,
+      conditionNotes,
     })
 
     await createStockLog({

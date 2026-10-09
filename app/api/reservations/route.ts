@@ -46,6 +46,14 @@ const parseCustomerDetails = (input: unknown): CustomerDetails | null => {
 
 // GET /api/reservations - List reservations with optional date filtering
 export async function GET(req: NextRequest) {
+  // Read access is checked here, not left to the database rules: this route
+  // uses the Admin SDK, which bypasses the rules entirely. Without this line
+  // the data below is returned to anyone on the internet who calls the URL.
+  // Customer names and contact numbers - same permission as the Reservations
+  // page and the reservations rule in firestore.rules.
+  const denied = await guardRequest(req, 'canManageReservations')
+  if (denied) return denied
+
   try {
     // Step 1: Parse query parameters
     const { searchParams } = new URL(req.url)
@@ -99,8 +107,8 @@ export async function POST(req: NextRequest) {
     const customerDetails = parseCustomerDetails(body.customerDetails)
 
     // Creating a reservation moves stock into reserved, so it is gated.
-    const denied = await guardRequest(req, 'canManageReservations')
-    if (denied) return denied
+  const denied = await guardRequest(req, 'canManageReservations')
+  if (denied) return denied
 
     const processedBy = await getProcessedByInfo(body.processedBy)
     const items = Array.isArray(body.items) ? body.items : []

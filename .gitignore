@@ -159,3 +159,6 @@ envs/
 # Firebase Admin service account key, if one is used instead of .env.local.
 # A private key with full database access - never commit it.
 serviceAccountKey.json
+
+# Imported sales history (scaled notebook data) - kept out of the repository
+scripts/data/

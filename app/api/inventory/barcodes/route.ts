@@ -14,9 +14,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { createItemBarcode, normalizeBarcode } from '@/lib/server/barcodes'
 import { getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
-import { guardRequest } from '@/lib/server/authorize'
+import { guardRequest, requireActiveUserRequest } from '@/lib/server/authorize'
 
 export async function GET(req: NextRequest) {
+  // Read access is checked here, not left to the database rules: this route
+  // uses the Admin SDK, which bypasses the rules entirely. Without this line
+  // the data below is returned to anyone on the internet who calls the URL.
+  const denied = await requireActiveUserRequest(req)
+  if (denied) return denied
+
   try {
     const code = normalizeBarcode(new URL(req.url).searchParams.get('code'))
     if (!code) {
@@ -67,6 +73,10 @@ export async function GET(req: NextRequest) {
         reservedStock: reserved,
         availableStock: Math.max(0, stock - reserved),
         stockStatus: getStockStatus(data),
+        // Carried into the cart so a scanned one-off shows its own condition
+        // notes, the same as one picked from the list.
+        isSingleItem: data.isSingleItem === true,
+        conditionNotes: typeof data.conditionNotes === 'string' ? data.conditionNotes : '',
       },
     })
   } catch (error) {

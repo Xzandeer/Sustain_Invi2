@@ -20,6 +20,8 @@ export interface StoreSettings {
   sellerRegisteredName: string
   sellerTin: string
   sellerAddress: string
+  /** When the last full backup was downloaded, or '' if never. */
+  lastBackupAt: string
 }
 
 const str = (value: unknown, fallback: string) =>
@@ -31,6 +33,7 @@ const FALLBACK: StoreSettings = {
   sellerRegisteredName: DEFAULT_SELLER_REGISTERED_NAME,
   sellerTin: DEFAULT_SELLER_TIN,
   sellerAddress: DEFAULT_SELLER_ADDRESS,
+  lastBackupAt: '',
 }
 
 export async function getStoreSettings(): Promise<StoreSettings> {
@@ -61,6 +64,7 @@ export async function getStoreSettings(): Promise<StoreSettings> {
       sellerRegisteredName: str(data.sellerRegisteredName, DEFAULT_SELLER_REGISTERED_NAME),
       sellerTin: str(data.sellerTin, DEFAULT_SELLER_TIN),
       sellerAddress: str(data.sellerAddress, DEFAULT_SELLER_ADDRESS),
+      lastBackupAt: typeof data.lastBackupAt === 'string' ? data.lastBackupAt : '',
     }
   } catch {
     // Firestore unavailable — fail safe to the built-in defaults

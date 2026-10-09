@@ -27,6 +27,8 @@ export interface InventoryVariant {
   condition: InventoryCondition
   isDeleted: boolean
   isVoided: boolean
+  isSingleItem: boolean
+  conditionNotes: string
   data: Record<string, unknown>
 }
 
@@ -166,7 +168,14 @@ export const findInventoryVariant = async (params: {
     .get()
   const match = duplicateSnapshot.docs.find((docItem) => {
     const data = docItem.data() as Record<string, unknown>
-    return data.isDeleted !== true && normalizeName(typeof data.name === 'string' ? data.name : '') === normalizeName(params.name)
+    return (
+      data.isDeleted !== true &&
+      // A single item is one specific unit, never a stock line to add to.
+      // Without this, adding 3 ordinary rice cookers would raise the count on
+      // a one-off unit with its own condition and price.
+      data.isSingleItem !== true &&
+      normalizeName(typeof data.name === 'string' ? data.name : '') === normalizeName(params.name)
+    )
   })
 
   if (!match) return null
@@ -244,6 +253,8 @@ const parseInventoryVariant = (id: string, data: Record<string, unknown>): Inven
     condition: normalizeInventoryCondition(data.condition),
     isDeleted: data.isDeleted === true,
     isVoided: data.isVoided === true,
+    isSingleItem: data.isSingleItem === true,
+    conditionNotes: typeof data.conditionNotes === 'string' ? data.conditionNotes : '',
     data,
   }
 }
@@ -290,6 +301,9 @@ export const createInventoryVariant = async (input: {
   condition: InventoryCondition
   description?: string
   imageUrl?: string
+  /** One physical unit, tracked on its own. Quantity is always 1. */
+  isSingleItem?: boolean
+  conditionNotes?: string
 }) => {
   const now = new Date().toISOString()
   const stockStatus = getStockStatus({ stock: input.quantity, minStock: input.minStock })
@@ -314,6 +328,8 @@ export const createInventoryVariant = async (input: {
     sku,
     description: input.description ?? '',
     imageUrl: input.imageUrl ?? '',
+    isSingleItem: input.isSingleItem === true,
+    conditionNotes: input.conditionNotes ?? '',
     stockStatus,
     isDeleted: false,
     deletedAt: null,

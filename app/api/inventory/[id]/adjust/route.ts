@@ -81,6 +81,23 @@ export async function POST(req: Request, context: RouteContext) {
       )
     }
 
+    // A single item is one physical unit. Adding stock would turn it into a
+    // count of several "identical" units, which is exactly what it exists to
+    // avoid; transferring it would merge it into an ordinary stock line and
+    // lose its own condition and price. Only a deduction - the unit is gone -
+    // makes sense.
+    if (data.isSingleItem === true && action !== 'deduct') {
+      return NextResponse.json(
+        {
+          error:
+            action === 'add'
+              ? 'This is a single item and always holds one unit. Add the other unit as its own item.'
+              : 'A single item cannot be transferred. Edit its condition notes instead.',
+        },
+        { status: 400 }
+      )
+    }
+
     const sourceCondition = normalizeInventoryCondition(data.condition)
     const itemName = typeof data.name === 'string' ? data.name.trim() : ''
     const categoryId = typeof data.categoryId === 'string' ? data.categoryId.trim() : ''

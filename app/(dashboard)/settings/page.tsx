@@ -29,7 +29,7 @@ import {
   type ReceiptPaperWidth,
 } from '@/lib/transactions/receiptPrint'
 
-type Section = 'profile' | 'password' | 'policy'
+type Section = 'profile' | 'password' | 'policy' | 'backup'
 
 export default function SettingsPage() {
   return (
@@ -64,6 +64,11 @@ function SettingsContent() {
   const [policyLoading, setPolicyLoading] = useState(false)
   const [policyError, setPolicyError] = useState('')
   const [policySuccess, setPolicySuccess] = useState('')
+
+  // Data backup
+  const [lastBackupAt, setLastBackupAt] = useState('')
+  const [backupLoading, setBackupLoading] = useState(false)
+  const [backupError, setBackupError] = useState('')
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -152,6 +157,7 @@ function SettingsContent() {
         if (!cancelled && d) {
           if (typeof d.warrantyDays === 'number') setWarrantyDays(String(d.warrantyDays))
           if (typeof d.reservationDays === 'number') setReservationDays(String(d.reservationDays))
+          if (typeof d.lastBackupAt === 'string') setLastBackupAt(d.lastBackupAt)
         }
       })
       .catch(() => {})
@@ -217,9 +223,47 @@ function SettingsContent() {
         </svg>
       ),
     },
+    {
+      key: 'backup',
+      label: 'Data Backup',
+      icon: (
+        <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+        </svg>
+      ),
+    },
   ]
 
-  const navItems = allNavItems.filter((item) => item.key !== 'policy' || isAdmin)
+  // Store Policy and Data Backup are owner decisions. The backup file holds
+  // every sale and every customer's contact number.
+  const navItems = allNavItems.filter((item) => (item.key !== 'policy' && item.key !== 'backup') || isAdmin)
+
+  const handleDownloadBackup = async () => {
+    setBackupLoading(true)
+    setBackupError('')
+    try {
+      const res = await apiFetch('/api/admin/backup')
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(data.error || 'Backup failed.')
+      }
+      const blob = await res.blob()
+      const stamp = new Date().toISOString().slice(0, 10)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `sustain-backup-${stamp}.json`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      setLastBackupAt(new Date().toISOString())
+    } catch (e) {
+      setBackupError(e instanceof Error ? e.message : 'Backup failed.')
+    } finally {
+      setBackupLoading(false)
+    }
+  }
 
   return (
     <main className="min-h-[calc(100vh-64px)] bg-slate-100 px-4 py-8 sm:px-6 lg:px-8">
@@ -501,6 +545,50 @@ function SettingsContent() {
               </section>
             )}
 
+
+            {/* Data Backup Section */}
+            {activeSection === 'backup' && isAdmin && (
+              <section className="rounded-xl border bg-white shadow-sm">
+                <div className="border-b border-slate-100 px-6 py-4">
+                  <h2 className="text-base font-bold text-slate-900">Data Backup</h2>
+                  <p className="mt-0.5 text-sm text-slate-500">
+                    Download a complete copy of the store&apos;s records.
+                  </p>
+                </div>
+                <div className="space-y-4 px-6 py-5">
+                  <div className="rounded-lg bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                    <p>
+                      The file contains inventory, categories, sales, receipts, reservations, stock logs, staff
+                      accounts and store settings. It can be loaded back into the system if records are ever lost.
+                    </p>
+                    <p className="mt-2">
+                      <span className="font-semibold text-slate-800">Last backup:</span>{' '}
+                      {lastBackupAt
+                        ? new Date(lastBackupAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })
+                        : 'Never'}
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+                    This file includes customer names and contact numbers. Keep it somewhere only you can open,
+                    and do not send it by chat or email.
+                  </div>
+
+                  {backupError && (
+                    <p className="rounded-lg bg-rose-50 px-4 py-2 text-sm text-rose-700">{backupError}</p>
+                  )}
+
+                  <button
+                    onClick={handleDownloadBackup}
+                    disabled={backupLoading}
+                    className="inline-flex items-center gap-2 rounded-lg bg-slate-800 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-slate-900 disabled:opacity-60"
+                  >
+                    {backupLoading ? 'Preparing backup...' : 'Download backup'}
+                  </button>
+                  <p className="text-xs text-slate-400">Recommended at least once a week.</p>
+                </div>
+              </section>
+            )}
           </div>
         </div>
       </div>

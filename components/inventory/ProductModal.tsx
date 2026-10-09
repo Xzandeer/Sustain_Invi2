@@ -4,7 +4,7 @@
 // Exports ProductFormValues, the shape the Inventory page saves.
 
 import { useEffect, useMemo, useState } from 'react'
-import { MAX_STOCK, MAX_PRICE, clampIntegerInput, clampPriceInput } from '@/lib/constants/limits'
+import { MAX_STOCK, MAX_PRICE, MAX_CONDITION_NOTES, clampIntegerInput, clampPriceInput } from '@/lib/constants/limits'
 import { apiFetch } from '@/lib/apiFetch'
 import { X } from 'lucide-react'
 import { DEFAULT_WARRANTY_DAYS } from '@/lib/constants/warranty'
@@ -18,7 +18,12 @@ export interface ProductFormValues {
   condition: 'New' | 'Refurbished'
   reservedStock?: number
   availableStock?: number
+  /** One physical unit with its own record - see the Single item checkbox. */
+  isSingleItem?: boolean
+  /** Free-text description of this item's actual condition. */
+  conditionNotes?: string
 }
+
 
 interface CategoryOption {
   id: string
@@ -50,6 +55,8 @@ export default function ProductModal({
   const [quantity, setQuantity] = useState('')
   const [minStock, setMinStock] = useState('')
   const [condition, setCondition] = useState<'New' | 'Refurbished'>('New')
+  const [isSingleItem, setIsSingleItem] = useState(false)
+  const [conditionNotes, setConditionNotes] = useState('')
   const [policyDays, setPolicyDays] = useState<number>(DEFAULT_WARRANTY_DAYS)
 
   useEffect(() => {
@@ -72,6 +79,8 @@ export default function ProductModal({
       setQuantity(String(initialValues.quantity))
       setMinStock(String(initialValues.minStock))
       setCondition(initialValues.condition)
+      setIsSingleItem(initialValues.isSingleItem === true)
+      setConditionNotes(initialValues.conditionNotes ?? '')
       return
     }
 
@@ -81,6 +90,8 @@ export default function ProductModal({
     setQuantity('')
     setMinStock('')
     setCondition('New')
+    setIsSingleItem(false)
+    setConditionNotes('')
   }, [isOpen, initialValues, defaultCategory])
 
   if (!isOpen) return null
@@ -89,8 +100,10 @@ export default function ProductModal({
     event.preventDefault()
 
     const parsedPrice = Number(price)
-    const parsedQuantity = Math.floor(Number(quantity))
-    const parsedMinStock = Math.floor(Number(minStock))
+    // A single item is exactly one unit, and warning that it is "low" when its
+    // only unit is still on the shelf would be noise - so minimum stock is 0.
+    const parsedQuantity = isSingleItem ? 1 : Math.floor(Number(quantity))
+    const parsedMinStock = isSingleItem ? 0 : Math.floor(Number(minStock))
     if (
       !name.trim() ||
       !categoryId ||
@@ -112,6 +125,8 @@ export default function ProductModal({
       condition,
       reservedStock: initialValues?.reservedStock,
       availableStock: initialValues?.availableStock,
+      isSingleItem: initialValues ? initialValues.isSingleItem === true : isSingleItem,
+      conditionNotes: conditionNotes.trim().slice(0, MAX_CONDITION_NOTES),
     })
   }
 
@@ -176,6 +191,10 @@ export default function ProductModal({
                   <p><span className="font-medium text-slate-900">Reserved:</span> {initialValues.reservedStock ?? 0}</p>
                   <p><span className="font-medium text-slate-900">Available:</span> {initialValues.availableStock ?? initialValues.quantity}</p>
                 </div>
+              ) : isSingleItem ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-600">
+                  1 <span className="text-xs text-slate-400">(single item)</span>
+                </div>
               ) : (
                 <input
                   type="text"
@@ -188,6 +207,7 @@ export default function ProductModal({
                 />
               )}
             </div>
+            {!isSingleItem && (
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-900">Minimum Stock *</label>
               <input
@@ -200,6 +220,7 @@ export default function ProductModal({
                 className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
               />
             </div>
+            )}
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-900">Condition *</label>
               {initialValues ? (
@@ -217,6 +238,54 @@ export default function ProductModal({
                   <option value="Refurbished">Refurbished</option>
                 </select>
               )}
+            </div>
+
+            {/* Single item. For big or high-value goods - appliances,
+                furniture, electronics - where every unit differs and its own
+                condition affects its price. It gets its own record and never
+                merges with similar items. Fixed once created: turning an
+                existing stock line into a single item would mean deciding
+                which of its units it is. */}
+            <div className="space-y-2 sm:col-span-2">
+              {initialValues ? (
+                initialValues.isSingleItem ? (
+                  <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+                    This is a single item: one unit, tracked on its own.
+                  </p>
+                ) : null
+              ) : (
+                <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-slate-200 px-3 py-2.5">
+                  <input
+                    type="checkbox"
+                    checked={isSingleItem}
+                    onChange={(event) => setIsSingleItem(event.target.checked)}
+                    className="mt-0.5 h-4 w-4 accent-sky-900"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-slate-900">Single item</span>
+                    <span className="block text-xs text-slate-500">
+                      One unique unit with its own condition and price, for example an appliance or a piece of
+                      furniture. It will not be combined with similar items.
+                    </span>
+                  </span>
+                </label>
+              )}
+            </div>
+
+            <div className="space-y-2 sm:col-span-2">
+              <label className="text-sm font-medium text-slate-900">
+                Condition Notes <span className="font-normal text-slate-400">(optional)</span>
+              </label>
+              <textarea
+                value={conditionNotes}
+                onChange={(event) => setConditionNotes(event.target.value.slice(0, MAX_CONDITION_NOTES))}
+                rows={2}
+                placeholder="e.g. small dent on the side, works perfectly"
+                className="w-full resize-none rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
+              />
+              <p className="text-right text-[11px] text-slate-400">
+                {conditionNotes.length}/{MAX_CONDITION_NOTES}
+              </p>
             </div>
 
             <div className="space-y-2">

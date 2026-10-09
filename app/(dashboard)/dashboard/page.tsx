@@ -66,6 +66,10 @@ const toDate = (v: unknown): Date | null => {
   return null
 }
 
+// Local calendar date as YYYY-MM-DD - the key used by imported sales history.
+const dayKeyOf = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
 const fmt = (n: number) =>
   `₱${n.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
@@ -114,6 +118,8 @@ function DashboardContent() {
   const { isAdmin, canViewStockLogs, can } = useUserRole()
   const canSeeMoney = isAdmin || can('canViewAnalytics')
   const [sales, setSales]               = useState<SaleDoc[]>([])
+  // Imported notebook totals by YYYY-MM-DD (scripts/import-sales-history.js).
+  const [salesHistory, setSalesHistory] = useState<Map<string, number>>(new Map())
   const [inventory, setInventory]       = useState<InventoryDoc[]>([])
   const [reservations, setReservations] = useState<ReservationDoc[]>([])
   const [stockLogs, setStockLogs]       = useState<StockLogDoc[]>([])
@@ -155,7 +161,7 @@ function DashboardContent() {
         const sixtyDayCutoff = new Date()
         sixtyDayCutoff.setDate(sixtyDayCutoff.getDate() - 60)
 
-        const [invSnap, salesSnap, resSnap, logsSnap] = await Promise.all([
+        const [invSnap, salesSnap, resSnap, logsSnap, historySnap] = await Promise.all([
           getDocs(collection(db, 'inventory')),
           getDocs(
             query(
@@ -164,8 +170,22 @@ function DashboardContent() {
               orderBy('createdAt', 'desc')
             )
           ),
-          getDocs(query(collection(db, 'reservations'), orderBy('createdAt', 'desc'))),
-          getDocs(query(collection(db, 'stockLogs'), orderBy('createdAt', 'desc'), limit(20))),
+          // Reservations and stock logs are restricted by permission. For an
+          // account without it the read is refused, and inside Promise.all one
+          // refusal would blank the whole dashboard - so each degrades to an
+          // empty list instead, and that panel simply shows nothing.
+          getDocs(query(collection(db, 'reservations'), orderBy('createdAt', 'desc'))).catch(() => null),
+          getDocs(query(collection(db, 'stockLogs'), orderBy('createdAt', 'desc'), limit(20))).catch(() => null),
+          // Imported notebook history, up to yesterday. Today is always what
+          // the counter has actually rung up. Optional: absent or unreadable
+          // history just means the cards show recorded sales.
+          getDocs(
+            query(
+              collection(db, 'salesHistory'),
+              where('dateKey', '>=', dayKeyOf(sixtyDayCutoff)),
+              where('dateKey', '<', dayKeyOf(new Date()))
+            )
+          ).catch(() => null),
         ])
         if (cancelled) return
         setInventory(invSnap.docs.map(d => {
@@ -193,7 +213,14 @@ function DashboardContent() {
             createdAt: toDate(data.createdAt),
           }
         }))
-        setReservations(resSnap.docs.map(d => {
+        const history = new Map<string, number>()
+        ;(historySnap?.docs ?? []).forEach(d => {
+          const data = d.data() as Record<string, unknown>
+          const total = toNum(data.total)
+          if (typeof data.dateKey === 'string' && total > 0) history.set(data.dateKey, total)
+        })
+        setSalesHistory(history)
+        setReservations((resSnap?.docs ?? []).map(d => {
           const data = d.data() as Record<string, unknown>
           return {
             id: d.id,
@@ -204,7 +231,7 @@ function DashboardContent() {
             createdAt: toDate(data.createdAt),
           }
         }))
-        setStockLogs(logsSnap.docs.map(d => {
+        setStockLogs((logsSnap?.docs ?? []).map(d => {
           const data = d.data() as Record<string, unknown>
           return {
             id: d.id,
@@ -237,8 +264,33 @@ function DashboardContent() {
   // Revenue is the last 30 days, matching the sale count beside it. It used to
   // sum every sale ever made while the card next to it counted only 30 days,
   // so the two figures described different periods under the same subtitle.
-  const recentRevenue  = useMemo(() => recentSales.reduce((s, x) => s + toNum(x.totalAmount), 0), [recentSales])
-  const prevRevenue    = useMemo(() => previousSales.reduce((s, x) => s + toNum(x.totalAmount), 0), [previousSales])
+  //
+  // Revenue is built per calendar day so imported notebook history can take
+  // part: on a day with an imported total, that total replaces whatever was
+  // recorded (never added to it). Transaction counts below stay recorded-only,
+  // because the notebook does not say how many sales made up each day.
+  const dailyRevenue = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const s of completedSales) {
+      const d = toDate(s.createdAt); if (!d || d < sixtyDaysAgo) continue
+      const key = dayKeyOf(d)
+      map.set(key, (map.get(key) ?? 0) + toNum(s.totalAmount))
+    }
+    salesHistory.forEach((total, key) => map.set(key, total))
+    return map
+  }, [completedSales, salesHistory, sixtyDaysAgo])
+
+  const sumRevenue = (from: Date, to: Date | null) => {
+    const fromKey = dayKeyOf(from)
+    const toKey = to ? dayKeyOf(to) : null
+    let total = 0
+    dailyRevenue.forEach((v, key) => {
+      if (key >= fromKey && (toKey === null || key < toKey)) total += v
+    })
+    return total
+  }
+  const recentRevenue  = useMemo(() => sumRevenue(thirtyDaysAgo, null), [dailyRevenue, thirtyDaysAgo]) // eslint-disable-line react-hooks/exhaustive-deps
+  const prevRevenue    = useMemo(() => sumRevenue(sixtyDaysAgo, thirtyDaysAgo), [dailyRevenue, sixtyDaysAgo, thirtyDaysAgo]) // eslint-disable-line react-hooks/exhaustive-deps
   const revenueChange  = prevRevenue > 0 ? ((recentRevenue - prevRevenue) / prevRevenue) * 100 : null
 
   const recentSaleCount  = recentSales.length
@@ -287,15 +339,10 @@ function DashboardContent() {
     const d = new Date(); d.setDate(d.getDate() - (n - 1 - i)); d.setHours(0, 0, 0, 0); return d
   })
 
-  const revenueSparkline = useMemo(() => {
-    const buckets = buildDailyBuckets(14).map(() => 0)
-    for (const s of completedSales) {
-      const d = toDate(s.createdAt); if (!d) continue
-      const daysAgo = Math.floor((Date.now() - d.getTime()) / 86400000)
-      if (daysAgo >= 0 && daysAgo < 14) buckets[13 - daysAgo] += toNum(s.totalAmount)
-    }
-    return buckets
-  }, [completedSales])
+  const revenueSparkline = useMemo(
+    () => buildDailyBuckets(14).map(d => dailyRevenue.get(dayKeyOf(d)) ?? 0),
+    [dailyRevenue] // eslint-disable-line react-hooks/exhaustive-deps
+  )
 
   const salesSparkline = useMemo(() => {
     const buckets = buildDailyBuckets(14).map(() => 0)
@@ -381,7 +428,7 @@ function DashboardContent() {
             title="Revenue (30 days)"
             value={fmt(recentRevenue)}
             change={revenueChange}
-            subtitle="vs previous 30 days"
+            subtitle={salesHistory.size > 0 ? 'vs previous 30 days · incl. notebook data' : 'vs previous 30 days'}
             spark={<Sparkline values={revenueSparkline} stroke="#3b82f6" fill="rgba(59,130,246,0.1)" />}
             loading={loading}
             iconBg="bg-blue-100"
