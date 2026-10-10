@@ -76,9 +76,12 @@ export function buildWeightedForecast(daily: DailyStat[]): WeightedForecastResul
   const level = Math.max(0, Math.round(avgDailyRevenue))
   const today = new Date()
   const forecast: WeightedDay[] = Array.from({ length: 7 }, (_, i) => {
-    const projDate = new Date(today)
-    projDate.setDate(projDate.getDate() + i + 1)
-    const dateStr = projDate.toISOString().split('T')[0]
+    // Calendar dates in the Philippines, so they line up with holidays and
+    // owner-entered events regardless of the server's timezone.
+    const projDate = new Date(today.getTime() + (i + 1) * 86400000)
+    const dateStr = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(projDate)
 
     return {
       day: `Day ${i + 1}`,

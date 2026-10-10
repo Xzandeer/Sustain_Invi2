@@ -27,6 +27,7 @@ import { guardRequest } from '@/lib/server/authorize'
 import { getSalesSummary } from '@/lib/ai/forecast/salesSummary'
 import { buildWeightedForecast } from '@/lib/ai/forecast/weightedForecast'
 import { enhanceWithAI } from '@/lib/ai/forecast/aiEnhancement'
+import { getForecastEvents } from '@/lib/server/forecastEvents'
 
 export const dynamic = 'force-dynamic'
 // Room for the database reads plus the language-model call. The model call has
@@ -75,10 +76,17 @@ export async function GET(req: NextRequest) {
     // ── 3. Statistical base forecast ──────────────────────────────────────────
     const baseForecast = buildWeightedForecast(summary.daily)
 
-    // ── 4. AI enhancement layer (optional) ────────────────────────────────────
+    // ── 4. Owner events on the forecast days, then the AI review (optional) ──
+    const days = baseForecast.forecast
+    const events = days.length
+      ? await getForecastEvents(days[0].date, days[days.length - 1].date)
+      : []
     const apiKey = process.env.OPENAI_API_KEY
     const aiForecast = apiKey
-      ? await enhanceWithAI(baseForecast, summary, apiKey, force, category)
+      ? await enhanceWithAI(
+          baseForecast, summary, apiKey, force, category,
+          events.map(e => ({ date: e.date, note: e.note }))
+        )
       : null
 
     // ── 5. Return combined result ─────────────────────────────────────────────
@@ -112,6 +120,7 @@ export async function GET(req: NextRequest) {
         dataStart: summary.dataStart,
         dataEnd: summary.dataEnd,
       },
+      events: events.map(e => ({ id: e.id, date: e.date, note: e.note })),
       generatedAt: new Date().toISOString(),
     })
 

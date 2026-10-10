@@ -109,6 +109,8 @@ service cloud.firestore {
     // forecast cache is served through /api/forecast, and nothing reads
     // ai_forecast_cache directly.
     match /ai_forecast_cache/{docId}    { allow read, write: if false; }
+    // Owner-entered forecast events: served through /api/forecast/events.
+    match /forecastEvents/{docId}       { allow read, write: if false; }
 
     // Anything not named above is denied. Adding a collection means adding a
     // rule for it here - silence is not permission.

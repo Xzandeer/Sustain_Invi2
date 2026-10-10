@@ -51,6 +51,14 @@ interface AIForecastDay {
   weighted: number
   ai: number
   delta: number
+  reason?: string
+  status?: 'adjusted' | 'kept' | 'rejected'
+}
+
+interface ForecastEventRow {
+  id: string
+  date: string
+  note: string
 }
 
 interface AIForecastData {
@@ -810,6 +818,12 @@ function AnalyticsContent() {
   const [selectedCondition, setSelectedCondition] = useState<SaleItemCondition | 'All Conditions'>('All Conditions')
   const [openModal, setOpenModal] = useState<AnalyticsModalType>(null)
   const [aiForecast, setAiForecast] = useState<AIForecastData | null>(null)
+  // Owner-entered events the AI takes into account (deliveries, closures, sales).
+  const [forecastEvents, setForecastEvents] = useState<ForecastEventRow[]>([])
+  const [newEventDate, setNewEventDate] = useState('')
+  const [newEventNote, setNewEventNote] = useState('')
+  const [savingEvent, setSavingEvent] = useState(false)
+  const [eventError, setEventError] = useState('')
   const [forecastLoading, setForecastLoading] = useState(false)
   // Collapsed by default. The owner reads this chart every day and does not
   // need the explanation every time, but a staff member seeing it for the
@@ -924,6 +938,53 @@ function AnalyticsContent() {
     loadCachedForecast()
     return () => { cancelled = true }
   }, [forecastCategoryName])
+
+  const loadForecastEvents = async () => {
+    try {
+      const res = await apiFetch('/api/forecast/events')
+      if (!res.ok) return
+      const data = (await res.json()) as { events?: ForecastEventRow[] }
+      setForecastEvents(Array.isArray(data.events) ? data.events : [])
+    } catch { /* events are optional */ }
+  }
+
+  useEffect(() => { loadForecastEvents() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleAddEvent = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setEventError('')
+    if (!newEventDate || !newEventNote.trim()) {
+      setEventError('Pick a date and describe the event.')
+      return
+    }
+    setSavingEvent(true)
+    try {
+      const res = await apiFetch('/api/forecast/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: newEventDate, note: newEventNote.trim() }),
+      })
+      const data = (await res.json().catch(() => ({}))) as { error?: string }
+      if (!res.ok) { setEventError(data.error ?? 'Could not save the event.'); return }
+      setNewEventNote('')
+      await loadForecastEvents()
+      // The event changes what the AI should consider, so ask it again.
+      handleGenerateForecast(false)
+    } catch {
+      setEventError('Could not save the event. Check your connection.')
+    } finally {
+      setSavingEvent(false)
+    }
+  }
+
+  const handleRemoveEvent = async (id: string) => {
+    try {
+      const res = await apiFetch(`/api/forecast/events?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+      if (!res.ok) return
+      await loadForecastEvents()
+      handleGenerateForecast(false)
+    } catch { /* ignore */ }
+  }
 
   const handleGenerateForecast = async (force = false) => {
     setForecastLoading(true)
@@ -1082,23 +1143,17 @@ function AnalyticsContent() {
   // is empty or unreadable the chart simply shows recorded sales.
   useEffect(() => {
     let cancelled = false
-    // Up to yesterday only. History replayed onto later dates stays hidden
-    // until its day has passed, so it is never drawn as "actual" sales in the
-    // future, and today always shows what the counter has actually rung up.
+    // Up to and including today. History replayed onto later dates stays
+    // hidden until its day arrives, so it is never drawn as "actual" sales in
+    // the future. Today's total shows from the start of the day.
     const todayKey = formatDateInput(new Date())
     const endKey = formatDateInput(new Date(rangeEndMs))
     getDocs(
-      endKey < todayKey
-        ? query(
-            collection(db, 'salesHistory'),
-            where('dateKey', '>=', formatDateInput(new Date(rangeStartMs))),
-            where('dateKey', '<=', endKey)
-          )
-        : query(
-            collection(db, 'salesHistory'),
-            where('dateKey', '>=', formatDateInput(new Date(rangeStartMs))),
-            where('dateKey', '<', todayKey)
-          )
+      query(
+        collection(db, 'salesHistory'),
+        where('dateKey', '>=', formatDateInput(new Date(rangeStartMs))),
+        where('dateKey', '<=', endKey < todayKey ? endKey : todayKey)
+      )
     )
       .then((snap) => {
         if (cancelled) return
@@ -1658,6 +1713,7 @@ function AnalyticsContent() {
             : `AI adjusted the calculated ${currency(baseVal)} by ${adj > 0 ? '+' : ''}${adj.toFixed(1)}% (limit 15%)`
         )
       }
+      if (d.reason) lines.push(`Why: ${d.reason}`)
       pointInsights[actualLen + i] = lines
     })
 
@@ -2297,6 +2353,15 @@ function AnalyticsContent() {
                   <div className="rounded-xl bg-violet-50 p-2.5">
                     <p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-violet-400">📈 AI Insight</p>
                     <p className="text-xs leading-relaxed text-slate-600">{aiForecast.aiForecast.insight}</p>
+                    {/* Say so when the AI changed nothing, so two identical
+                        lines on the chart do not look like a fault. */}
+                    {!aiForecast.aiForecast.warning &&
+                      aiForecast.aiForecast.forecast.every((d) => d.ai === d.weighted) && (
+                        <p className="mt-1.5 border-t border-violet-100 pt-1.5 text-[11px] text-violet-700">
+                          The AI reviewed the 7-day forecast and found no clear reason to change it, so the
+                          calculated figures are kept.
+                        </p>
+                      )}
                   </div>
 
                   {/* Confidence Score bar */}
@@ -2373,6 +2438,142 @@ function AnalyticsContent() {
             <div className="border-t border-slate-50 px-3 py-1">
               <p className="text-[10px] text-slate-400">Predictive AI Engine · {trendSeries.granularity === 'day' ? '7-day' : '1-period'} window</p>
             </div>
+          </div>
+        </div>
+
+        {/* ── AI forecast review: what the AI decided for each day, and why ── */}
+        <div className="grid grid-cols-1 gap-2 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+            <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">AI forecast review</h2>
+                <p className="text-[11px] text-slate-400">
+                  The calculated forecast for each day, the AI&apos;s decision, and its reason. Changes are limited to 15%.
+                </p>
+              </div>
+              {aiForecast?.aiForecast?.forecast?.length ? (
+                <span className="text-[11px] text-slate-500">
+                  {aiForecast.aiForecast.forecast.filter((d) => d.status === 'adjusted').length} adjusted ·{' '}
+                  {aiForecast.aiForecast.forecast.filter((d) => d.status !== 'adjusted').length} kept
+                </span>
+              ) : null}
+            </div>
+            {aiForecast?.canForecast && aiForecast.aiForecast?.forecast?.length ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-[10px] uppercase tracking-wide text-slate-400">
+                    <tr className="border-b border-slate-100">
+                      <th className="py-1.5 pr-3 text-left font-semibold">Day</th>
+                      <th className="py-1.5 pr-3 text-right font-semibold">Calculated</th>
+                      <th className="py-1.5 pr-3 text-right font-semibold">After AI</th>
+                      <th className="py-1.5 pr-3 text-left font-semibold">Decision</th>
+                      <th className="py-1.5 text-left font-semibold">Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {aiForecast.aiForecast.forecast.map((d) => {
+                      const dt = new Date(`${d.date}T00:00:00`)
+                      const pct = d.weighted > 0 ? ((d.ai - d.weighted) / d.weighted) * 100 : 0
+                      const status = d.status ?? (d.ai !== d.weighted ? 'adjusted' : 'kept')
+                      const dayEvents = forecastEvents.filter((ev) => ev.date === d.date)
+                      return (
+                        <tr key={d.date}>
+                          <td className="py-1.5 pr-3 whitespace-nowrap text-slate-700">
+                            {dt.toLocaleDateString('en-PH', { weekday: 'short', month: 'short', day: 'numeric' })}
+                            {dayEvents.length > 0 && (
+                              <span className="ml-1 rounded bg-amber-50 px-1 text-[10px] font-semibold text-amber-700" title={dayEvents.map((ev) => ev.note).join('; ')}>
+                                event
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-1.5 pr-3 text-right tabular-nums text-slate-500">{currency(d.weighted)}</td>
+                          <td className="py-1.5 pr-3 text-right font-semibold tabular-nums text-slate-900">{currency(d.ai)}</td>
+                          <td className="py-1.5 pr-3 whitespace-nowrap">
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                              status === 'adjusted'
+                                ? (pct >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-orange-50 text-orange-700')
+                                : status === 'rejected' ? 'bg-red-50 text-red-600'
+                                : 'bg-slate-100 text-slate-500'
+                            }`}>
+                              {status === 'adjusted'
+                                ? `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`
+                                : status === 'rejected' ? 'Over limit – kept' : 'Kept'}
+                            </span>
+                          </td>
+                          <td className="py-1.5 text-slate-600">{d.reason ?? '—'}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="py-6 text-center text-xs text-slate-400">
+                {aiForecast?.canForecast && !aiForecast.aiForecast
+                  ? 'The AI layer is not configured on this server; the calculated forecast is shown on the chart.'
+                  : 'Generate a forecast to see the AI’s day-by-day review.'}
+              </p>
+            )}
+          </div>
+
+          {/* Upcoming events - what the AI cannot see in past sales */}
+          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+            <h2 className="text-sm font-bold text-slate-900">Upcoming events</h2>
+            <p className="mb-2 text-[11px] text-slate-400">
+              Tell the AI about things past sales cannot show, such as a delivery of new stock, a sale, or a day the store is closed.
+            </p>
+            <form onSubmit={handleAddEvent} className="flex flex-wrap gap-1.5">
+              <input
+                type="date"
+                value={newEventDate}
+                min={formatDateInput(new Date())}
+                max={formatDateInput(new Date(Date.now() + 30 * 86400000))}
+                onChange={(e) => setNewEventDate(e.target.value)}
+                aria-label="Event date"
+                className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-700 focus:border-violet-400 focus:outline-none"
+              />
+              <input
+                type="text"
+                value={newEventNote}
+                maxLength={120}
+                onChange={(e) => setNewEventNote(e.target.value)}
+                placeholder="e.g. New shipment of appliances arriving"
+                aria-label="Event description"
+                className="min-w-40 flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-700 placeholder:text-slate-400 focus:border-violet-400 focus:outline-none"
+              />
+              <button
+                type="submit"
+                disabled={savingEvent}
+                className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-violet-700 disabled:opacity-50"
+              >
+                {savingEvent ? 'Saving…' : 'Add'}
+              </button>
+            </form>
+            {eventError && <p className="mt-1.5 text-[11px] text-red-600">{eventError}</p>}
+            <ul className="mt-2 space-y-1">
+              {forecastEvents.length === 0 ? (
+                <li className="text-[11px] text-slate-400">No upcoming events.</li>
+              ) : (
+                forecastEvents.map((ev) => (
+                  <li key={ev.id} className="flex items-start justify-between gap-2 rounded-lg bg-amber-50/60 px-2 py-1.5">
+                    <span className="text-xs text-slate-700">
+                      <span className="font-semibold">
+                        {new Date(`${ev.date}T00:00:00`).toLocaleDateString('en-PH', { weekday: 'short', month: 'short', day: 'numeric' })}
+                      </span>{' '}
+                      · {ev.note}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveEvent(ev.id)}
+                      aria-label={`Remove event: ${ev.note}`}
+                      className="shrink-0 text-[11px] font-medium text-slate-400 hover:text-red-600"
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))
+              )}
+            </ul>
           </div>
         </div>
 

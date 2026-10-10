@@ -125,11 +125,13 @@ export async function getSalesSummary(categoryFilter?: string): Promise<SalesSum
   // forecast is scoped to one category). On a date that has an imported total,
   // that total replaces whatever was recorded - the two are never added.
   if (!wantedCategory) {
-    // Up to yesterday: today is always what the counter has rung up.
-    const yesterday = new Date(now.getTime() - 86400000)
+    // Up to and including today (Philippine date); later dates stay hidden.
+    const todayKey = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(now)
     const history = await getSalesHistoryTotals(
       since.toISOString().split('T')[0],
-      yesterday.toISOString().split('T')[0]
+      todayKey
     )
     history.forEach((total, key) => {
       byDay[key] = { revenue: total, transactions: Math.max(1, byDay[key]?.transactions ?? 0) }

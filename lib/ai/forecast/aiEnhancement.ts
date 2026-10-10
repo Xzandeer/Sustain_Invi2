@@ -8,6 +8,13 @@
 
 import type { WeightedDay, WeightedForecastResult } from './weightedForecast'
 import type { SalesSummary } from './salesSummary'
+import { describeDay } from './calendar'
+
+/** An owner-entered event on a forecast day (lib/server/forecastEvents.ts). */
+export interface ForecastEventInput {
+  date: string
+  note: string
+}
 
 export interface AIForecastDay {
   day: string       // "Day 1" ... "Day 7"
@@ -15,6 +22,11 @@ export interface AIForecastDay {
   weighted: number  // base model value (unchanged)
   ai: number        // AI-adjusted value
   delta: number     // difference: ai - weighted
+  // Why the AI changed this day or left it alone, in one short phrase.
+  reason?: string
+  // adjusted = change accepted; kept = AI chose no change;
+  // rejected = AI suggested more than the 15% limit, so the calculated value stands.
+  status?: 'adjusted' | 'kept' | 'rejected'
 }
 
 export interface AIEnhancementResult {
@@ -28,7 +40,12 @@ export interface AIEnhancementResult {
 // ── Prompt builder ─────────────────────────────────────────────────────────────
 // Compact prompt: gives GPT only what it needs, minimizing token usage.
 
-function buildPrompt(base: WeightedForecastResult, summary: SalesSummary, category?: string): string {
+function buildPrompt(
+  base: WeightedForecastResult,
+  summary: SalesSummary,
+  category?: string,
+  events: ForecastEventInput[] = []
+): string {
   const topCats = summary.topCategories
     .map(c => `${c.name}: ${c.units} units`)
     .join(', ')
@@ -42,8 +59,18 @@ function buildPrompt(base: WeightedForecastResult, summary: SalesSummary, catego
   return `You are a sales forecasting engine for a Philippine surplus retail store.
 ${category ? `\nSCOPE: This forecast covers ONLY the "${category}" category. All figures below are ${category} revenue only.\n` : ''}
 
-STATISTICAL BASE FORECAST (7 days):
-${base.forecast.map(d => `${d.day} (${d.date}): ${d.weighted}`).join('\n')}
+STATISTICAL BASE FORECAST (7 days), with what is known about each day:
+${base.forecast.map(d => {
+  const c = describeDay(d.date)
+  const dayEvents = events.filter(e => e.date === d.date).map(e => `OWNER EVENT: ${e.note}`)
+  const facts = [
+    c.weekday,
+    c.holiday ? `HOLIDAY: ${c.holiday}` : null,
+    c.payday ? 'payday' : null,
+    ...dayEvents,
+  ].filter(Boolean).join('; ')
+  return `${d.day} (${d.date}, ${facts}): ${d.weighted}`
+}).join('\n')}
 
 TREND CONTEXT:
 - Base average daily revenue: ${base.avgDailyRevenue}
@@ -53,15 +80,22 @@ TREND CONTEXT:
 - Week-over-week revenue change: ${summary.wowChange > 0 ? '+' : ''}${summary.wowChange}%
 
 TASK:
-Review the base forecast and adjust it only where the recent daily pattern gives a clear reason.
+Review each day of the base forecast and decide whether to adjust it.
 Rules:
-1. Adjustments must be small and realistic (max ±15% of the base value per day)
-2. Do NOT extend the week-over-week trend into the coming days. Testing on this store's
+1. Adjustments must be small and realistic: at most 15% above or below the base value.
+   Anything beyond that is rejected by the system and the base value is used.
+2. OWNER EVENTS are the strongest reason to adjust. A delivery of new stock or a sale
+   usually raises sales that day and the next; a closure or bad weather lowers them.
+3. Holidays are a moderate reason: shoppers may visit more or the store may be quieter,
+   depending on the holiday. Paydays showed no clear effect in this store's past sales,
+   so treat them as weak context only.
+4. Do NOT extend the week-over-week trend into the coming days. Testing on this store's
    real sales showed that carrying a recent rise or fall forward makes the forecast less
-   accurate: busy weeks follow stock arrivals and do not continue on their own.
-   If there is no clear reason to adjust a day, keep the base value.
-3. Write a 1-sentence business insight explaining the pattern
-4. Set confidence based on data quality: high = 14+ days data, medium = 7-13 days, low = 3-6 days
+   accurate. If there is no clear reason to adjust a day, keep the base value exactly.
+5. For EVERY day give a short reason (max 12 words) for your decision, naming the
+   event, holiday or pattern you used, or saying plainly that there was no reason to change.
+6. Write a 1-sentence business insight for the owner about the coming week.
+7. Set confidence based on data quality: high = 14+ days data, medium = 7-13 days, low = 3-6 days
    Current data: ${summary.totalDaysWithData} days
 
 IMPORTANT: Return ONLY valid JSON. No text outside JSON. No markdown. No code blocks.
@@ -69,13 +103,13 @@ IMPORTANT: Return ONLY valid JSON. No text outside JSON. No markdown. No code bl
 Required format:
 {
   "forecast": [
-    { "day": "Day 1", "weighted": 0, "ai": 0 },
-    { "day": "Day 2", "weighted": 0, "ai": 0 },
-    { "day": "Day 3", "weighted": 0, "ai": 0 },
-    { "day": "Day 4", "weighted": 0, "ai": 0 },
-    { "day": "Day 5", "weighted": 0, "ai": 0 },
-    { "day": "Day 6", "weighted": 0, "ai": 0 },
-    { "day": "Day 7", "weighted": 0, "ai": 0 }
+    { "day": "Day 1", "weighted": 0, "ai": 0, "reason": "short reason" },
+    { "day": "Day 2", "weighted": 0, "ai": 0, "reason": "short reason" },
+    { "day": "Day 3", "weighted": 0, "ai": 0, "reason": "short reason" },
+    { "day": "Day 4", "weighted": 0, "ai": 0, "reason": "short reason" },
+    { "day": "Day 5", "weighted": 0, "ai": 0, "reason": "short reason" },
+    { "day": "Day 6", "weighted": 0, "ai": 0, "reason": "short reason" },
+    { "day": "Day 7", "weighted": 0, "ai": 0, "reason": "short reason" }
   ],
   "insight": "one sentence",
   "confidence": "low"
@@ -125,7 +159,7 @@ async function callOpenAI(apiKey: string, prompt: string): Promise<string> {
         },
         { role: 'user', content: prompt },
       ],
-      max_tokens: 400,
+      max_tokens: 800,
       temperature: 0.2,   // low temperature = consistent, conservative adjustments
     }),
   })
@@ -140,7 +174,7 @@ async function callOpenAI(apiKey: string, prompt: string): Promise<string> {
 // ── AI response parser ─────────────────────────────────────────────────────────
 
 interface RawAIForecast {
-  forecast?: Array<{ day?: string; weighted?: number; ai?: number }>
+  forecast?: Array<{ day?: string; weighted?: number; ai?: number; reason?: string }>
   insight?: string
   confidence?: string
 }
@@ -168,12 +202,22 @@ function parseAndValidate(
     const weighted = base.weighted
     const aiRaw = typeof item.ai === 'number' && isFinite(item.ai) ? item.ai : weighted
     const ai = boundAI(aiRaw, weighted)
+    const suggestedChange = Math.round(aiRaw) !== weighted
+    const status: AIForecastDay['status'] =
+      ai !== weighted ? 'adjusted' : suggestedChange ? 'rejected' : 'kept'
+    const aiReason = typeof item.reason === 'string' ? item.reason.trim().slice(0, 120) : ''
+    const reason =
+      status === 'rejected'
+        ? `Suggested change exceeded the 15% limit, so the calculated figure is kept.${aiReason ? ` (AI: ${aiReason})` : ''}`
+        : aiReason || (status === 'kept' ? 'No clear reason to change this day.' : 'Adjusted by the AI.')
     return {
       day: base.day,
       date: base.date,
       weighted,
       ai,
       delta: ai - weighted,
+      reason,
+      status,
     }
   })
 
@@ -209,8 +253,11 @@ interface CacheDocument {
   baseKey?: string
 }
 
-const baseKeyOf = (base: WeightedForecastResult) =>
-  base.forecast.map(d => Math.round(d.weighted)).join(',')
+// The baseline and the owner's events together decide the AI's answer, so a
+// change to either makes the cached answer stale.
+const baseKeyOf = (base: WeightedForecastResult, events: ForecastEventInput[] = []) =>
+  base.forecast.map(d => Math.round(d.weighted)).join(',') +
+  '|' + events.map(e => `${e.date}:${e.note}`).sort().join(';')
 
 // Cache key varies per category so category forecasts don't collide
 const cacheDocId = (category?: string) =>
@@ -218,7 +265,8 @@ const cacheDocId = (category?: string) =>
 
 async function readFromFirestore(
   base: WeightedForecastResult,
-  category?: string
+  category?: string,
+  events: ForecastEventInput[] = []
 ): Promise<AIEnhancementResult | null> {
   try {
     const db = getAdminDb()
@@ -226,7 +274,7 @@ async function readFromFirestore(
     if (!snap.exists) return null
     const doc = snap.data() as CacheDocument
     if (Date.now() > doc.expiresAt) return null   // expired
-    if (doc.baseKey !== baseKeyOf(base)) return null // sales changed since
+    if (doc.baseKey !== baseKeyOf(base, events)) return null // sales or events changed
     return { ...doc.result, fromCache: true }
   } catch {
     return null   // Firestore unavailable — proceed without cache
@@ -236,7 +284,8 @@ async function readFromFirestore(
 async function writeToFirestore(
   result: AIEnhancementResult,
   base: WeightedForecastResult,
-  category?: string
+  category?: string,
+  events: ForecastEventInput[] = []
 ): Promise<void> {
   try {
     const db = getAdminDb()
@@ -244,7 +293,7 @@ async function writeToFirestore(
       result,
       cachedAt: Date.now(),
       expiresAt: Date.now() + CACHE_TTL_MS,
-      baseKey: baseKeyOf(base),
+      baseKey: baseKeyOf(base, events),
     }
     await db.collection(CACHE_COLLECTION).doc(cacheDocId(category)).set(doc)
   } catch {
@@ -259,22 +308,26 @@ export async function enhanceWithAI(
   summary: SalesSummary,
   apiKey: string,
   force = false,          // true = bypass cache, always call OpenAI fresh
-  category?: string       // optional: forecast scoped to a specific category
+  category?: string,      // optional: forecast scoped to a specific category
+  events: ForecastEventInput[] = [] // owner-entered events on the forecast days
 ): Promise<AIEnhancementResult> {
   // 1. Try Firestore cache first — skip if force=true (user clicked Regenerate)
   if (!force) {
-    const cached = await readFromFirestore(base, category)
+    const cached = await readFromFirestore(base, category, events)
     if (cached) return cached
   }
 
   // 2. Call OpenAI
-  const prompt = buildPrompt(base, summary, category)
+  const prompt = buildPrompt(base, summary, category, events)
   let raw: string
   try {
     raw = await callOpenAI(apiKey, prompt)
   } catch (err) {
     return {
-      forecast: base.forecast.map(d => ({ ...d, ai: d.weighted, delta: 0 })),
+      forecast: base.forecast.map(d => ({
+        ...d, ai: d.weighted, delta: 0, status: 'kept' as const,
+        reason: 'AI unavailable; calculated figure shown.',
+      })),
       insight: 'AI enhancement temporarily unavailable — showing statistical forecast.',
       confidence: 'low',
       error: err instanceof Error ? err.message : 'OpenAI call failed',
@@ -287,7 +340,10 @@ export async function enhanceWithAI(
     result = parseAndValidate(raw, base.forecast)
   } catch (err) {
     return {
-      forecast: base.forecast.map(d => ({ ...d, ai: d.weighted, delta: 0 })),
+      forecast: base.forecast.map(d => ({
+        ...d, ai: d.weighted, delta: 0, status: 'kept' as const,
+        reason: 'AI response unreadable; calculated figure shown.',
+      })),
       insight: 'AI response parsing failed — showing statistical forecast.',
       confidence: 'low',
       error: err instanceof Error ? err.message : 'Parse error',
@@ -296,7 +352,7 @@ export async function enhanceWithAI(
 
   // 4. Persist to Firestore (non-blocking)
   if (!result.error) {
-    writeToFirestore(result, base, category).catch(() => {})
+    writeToFirestore(result, base, category, events).catch(() => {})
   }
 
   return result

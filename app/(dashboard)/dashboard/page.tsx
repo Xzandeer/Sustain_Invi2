@@ -176,14 +176,14 @@ function DashboardContent() {
           // empty list instead, and that panel simply shows nothing.
           getDocs(query(collection(db, 'reservations'), orderBy('createdAt', 'desc'))).catch(() => null),
           getDocs(query(collection(db, 'stockLogs'), orderBy('createdAt', 'desc'), limit(20))).catch(() => null),
-          // Imported notebook history, up to yesterday. Today is always what
-          // the counter has actually rung up. Optional: absent or unreadable
+          // Imported notebook history, up to and including today (later
+          // dates stay hidden until their day). Optional: absent or unreadable
           // history just means the cards show recorded sales.
           getDocs(
             query(
               collection(db, 'salesHistory'),
               where('dateKey', '>=', dayKeyOf(sixtyDayCutoff)),
-              where('dateKey', '<', dayKeyOf(new Date()))
+              where('dateKey', '<=', dayKeyOf(new Date()))
             )
           ).catch(() => null),
         ])

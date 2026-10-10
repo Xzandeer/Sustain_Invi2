@@ -21,8 +21,8 @@
 //              results from this data as the store's real performance.
 //
 // DETAILS
-//   - Only days up to yesterday are filled. Re-run later to fill the days that
-//     have passed since; days that already have simulated sales are skipped.
+//   - Days up to and including today are filled. Re-run later to fill the days
+//     that have arrived since; days that already have simulated sales are skipped.
 //   - Stock is NOT deducted and no stock-log lines are written, so inventory
 //     levels are unaffected.
 //   - A day's simulated sales add up to the notebook total to within the price
@@ -93,7 +93,7 @@ async function main() {
 
   // ── Days to fill ──────────────────────────────────────────────────────────
   const todayKey = manilaKey(new Date())
-  const histSnap = await db.collection('salesHistory').where('dateKey', '<', todayKey).get()
+  const histSnap = await db.collection('salesHistory').where('dateKey', '<=', todayKey).get()
   const days = histSnap.docs
     .map((d) => d.data())
     .filter((d) => typeof d.dateKey === 'string' && Number(d.total) > 0)
