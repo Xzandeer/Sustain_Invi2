@@ -83,13 +83,17 @@ Required format:
 }
 
 // ── AI bounds enforcer ─────────────────────────────────────────────────────────
-// Clamps each AI day to ±15% of the weighted baseline.
-// Prevents GPT from hallucinating extreme values.
+// The statistical forecast is the forecast. The language model may only suggest
+// a small adjustment to each day: a suggestion within ±15% of the statistical
+// figure is accepted; anything outside that range is rejected and the
+// statistical figure is kept unchanged (it is not trimmed to the limit).
 
-function clampAI(aiValue: number, weighted: number): number {
-  const min = Math.round(weighted * 0.85)
-  const max = Math.round(weighted * 1.15)
-  return Math.max(min, Math.min(max, Math.round(aiValue)))
+const AI_LIMIT = 0.15
+
+function boundAI(aiValue: number, weighted: number): number {
+  const suggested = Math.round(aiValue)
+  const allowed = Math.abs(weighted) * AI_LIMIT
+  return Math.abs(suggested - weighted) <= allowed ? suggested : weighted
 }
 
 // ── OpenAI REST call ───────────────────────────────────────────────────────────
@@ -99,9 +103,15 @@ interface OAIResponse {
   error?: { message: string }
 }
 
+// The statistical forecast is always available, so a slow language model must
+// never hold the page up: after this long the call is abandoned and the
+// statistical figures are shown on their own.
+const OPENAI_TIMEOUT_MS = 12_000
+
 async function callOpenAI(apiKey: string, prompt: string): Promise<string> {
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
+    signal: AbortSignal.timeout(OPENAI_TIMEOUT_MS),
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
@@ -157,7 +167,7 @@ function parseAndValidate(
     const base = baseForecast[i]
     const weighted = base.weighted
     const aiRaw = typeof item.ai === 'number' && isFinite(item.ai) ? item.ai : weighted
-    const ai = clampAI(aiRaw, weighted)
+    const ai = boundAI(aiRaw, weighted)
     return {
       day: base.day,
       date: base.date,
@@ -271,7 +281,7 @@ export async function enhanceWithAI(
     }
   }
 
-  // 3. Parse and validate (clamps values to ±15%)
+  // 3. Parse and validate (rejects any day outside ±15% of the statistical figure)
   let result: AIEnhancementResult
   try {
     result = parseAndValidate(raw, base.forecast)

@@ -935,14 +935,26 @@ function AnalyticsContent() {
       const qs = params.toString()
       const url = `/api/forecast/ai-enhanced${qs ? `?${qs}` : ''}`
       const res = await apiFetch(url)
-      const data: AIForecastData = await res.json()
-      if (!res.ok) {
-        setForecastError(data.reason ?? 'Forecast generation failed.')
+      // Read as text first: a host error page (timeout, crash) is HTML, and
+      // parsing it as JSON used to be reported as a "network error", hiding
+      // what actually went wrong.
+      const text = await res.text()
+      let data: (AIForecastData & { error?: string }) | null = null
+      try { data = JSON.parse(text) } catch { data = null }
+
+      if (!res.ok || !data) {
+        const reason =
+          data?.error || data?.reason ||
+          (res.status === 504 ? 'The forecast took too long to respond. Please try again.'
+            : res.status === 401 || res.status === 403 ? 'Your account is not allowed to generate forecasts.'
+            : `The forecast service returned an error (HTTP ${res.status}).`)
+        setForecastError(reason)
       } else {
         setAiForecast(data)
       }
-    } catch (_) {
-      setForecastError('Network error — could not reach the forecast service.')
+    } catch (err) {
+      console.error('[analytics] Forecast request failed:', err)
+      setForecastError('Could not reach the forecast service. Check your internet connection and try again.')
     } finally {
       setForecastLoading(false)
     }
