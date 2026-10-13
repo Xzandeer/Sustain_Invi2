@@ -27,7 +27,9 @@ import { guardRequest } from '@/lib/server/authorize'
 import { getSalesSummary } from '@/lib/ai/forecast/salesSummary'
 import { buildWeightedForecast } from '@/lib/ai/forecast/weightedForecast'
 import { enhanceWithAI } from '@/lib/ai/forecast/aiEnhancement'
-import { getForecastEvents } from '@/lib/server/forecastEvents'
+import { eventsForScope, getForecastEvents } from '@/lib/server/forecastEvents'
+import { getAdminDb } from '@/lib/firebaseAdmin'
+import { getInventoryContext } from '@/lib/server/inventorySnapshot'
 
 export const dynamic = 'force-dynamic'
 // Room for the database reads plus the language-model call. The model call has
@@ -78,14 +80,30 @@ export async function GET(req: NextRequest) {
 
     // ── 4. Owner events on the forecast days, then the AI review (optional) ──
     const days = baseForecast.forecast
-    const events = days.length
+    const allEvents = days.length
       ? await getForecastEvents(days[0].date, days[days.length - 1].date)
       : []
+    // Only events for this category (or the whole store) reach a category forecast.
+    let categoryNames: string[] = []
+    if (category && allEvents.length) {
+      const catSnap = await getAdminDb().collection('categories').get().catch(() => null)
+      categoryNames = (catSnap?.docs ?? [])
+        .map(d => String((d.data() as Record<string, unknown>).name ?? ''))
+        .filter(Boolean)
+    }
+    const events = eventsForScope(allEvents, category, categoryNames)
     const apiKey = process.env.OPENAI_API_KEY
+    const inventory = apiKey ? await getInventoryContext(category) : null
     const aiForecast = apiKey
       ? await enhanceWithAI(
           baseForecast, summary, apiKey, force, category,
-          events.map(e => ({ date: e.date, note: e.note }))
+          events.map(e => ({
+            date: e.date, note: e.note, type: e.type,
+            category: e.categoryMode === 'auto'
+              ? (e.aiWholeStore ? '' : (e.aiCategories ?? []).join(', '))
+              : e.category,
+          })),
+          inventory
         )
       : null
 
@@ -120,7 +138,11 @@ export async function GET(req: NextRequest) {
         dataStart: summary.dataStart,
         dataEnd: summary.dataEnd,
       },
-      events: events.map(e => ({ id: e.id, date: e.date, note: e.note })),
+      events: events.map(e => ({
+        id: e.id, date: e.date, type: e.type, note: e.note,
+        categoryMode: e.categoryMode, category: e.category,
+        aiWholeStore: e.aiWholeStore, aiCategories: e.aiCategories, aiReason: e.aiReason,
+      })),
       generatedAt: new Date().toISOString(),
     })
 

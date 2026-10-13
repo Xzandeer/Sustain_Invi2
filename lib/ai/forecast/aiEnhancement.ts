@@ -9,11 +9,23 @@
 import type { WeightedDay, WeightedForecastResult } from './weightedForecast'
 import type { SalesSummary } from './salesSummary'
 import { describeDay } from './calendar'
+import type { InventoryContext } from '@/lib/server/inventorySnapshot'
+
+export type ForecastEventType = 'shipment' | 'sale' | 'closure' | 'other'
 
 /** An owner-entered event on a forecast day (lib/server/forecastEvents.ts). */
 export interface ForecastEventInput {
   date: string
   note: string
+  type?: ForecastEventType
+  category?: string // '' or undefined = whole store
+}
+
+const EVENT_LABEL: Record<ForecastEventType, string> = {
+  shipment: 'NEW STOCK ARRIVING',
+  sale: 'SALE / PROMOTION',
+  closure: 'STORE CLOSED OR DISRUPTED',
+  other: 'OTHER',
 }
 
 export interface AIForecastDay {
@@ -44,7 +56,8 @@ function buildPrompt(
   base: WeightedForecastResult,
   summary: SalesSummary,
   category?: string,
-  events: ForecastEventInput[] = []
+  events: ForecastEventInput[] = [],
+  inventory: InventoryContext | null = null
 ): string {
   const topCats = summary.topCategories
     .map(c => `${c.name}: ${c.units} units`)
@@ -62,15 +75,23 @@ ${category ? `\nSCOPE: This forecast covers ONLY the "${category}" category. All
 STATISTICAL BASE FORECAST (7 days), with what is known about each day:
 ${base.forecast.map(d => {
   const c = describeDay(d.date)
-  const dayEvents = events.filter(e => e.date === d.date).map(e => `OWNER EVENT: ${e.note}`)
+  const dayEvents = events
+    .filter(e => e.date === d.date)
+    .map(e => `OWNER EVENT [${EVENT_LABEL[e.type ?? 'other']}${e.category ? `, ${e.category}` : ', whole store'}]: ${e.note}`)
   const facts = [
     c.weekday,
     c.holiday ? `HOLIDAY: ${c.holiday}` : null,
-    c.payday ? 'payday' : null,
     ...dayEvents,
   ].filter(Boolean).join('; ')
   return `${d.day} (${d.date}, ${facts}): ${d.weighted}`
 }).join('\n')}
+
+STOCK ON HAND (${inventory ? inventory.scope : 'unknown'}):
+${inventory
+  ? `- ${inventory.itemLines} item lines, ${inventory.unitsInStock} units in stock, ${inventory.unitsAvailable} available to sell (rest reserved)
+- ${inventory.lowStockLines} lines low on stock, ${inventory.outOfStockLines} lines out of stock
+- ${inventory.singleItemCount} unsold one-off items${inventory.singleItems.length ? `: ${inventory.singleItems.map(i => `${i.name} (${i.price})`).join(', ')}` : ''}`
+  : '- not available'}
 
 TREND CONTEXT:
 - Base average daily revenue: ${base.avgDailyRevenue}
@@ -82,34 +103,47 @@ TREND CONTEXT:
 TASK:
 Review each day of the base forecast and decide whether to adjust it.
 Rules:
-1. Adjustments must be small and realistic: at most 15% above or below the base value.
-   Anything beyond that is rejected by the system and the base value is used.
-2. OWNER EVENTS are the strongest reason to adjust. A delivery of new stock or a sale
-   usually raises sales that day and the next; a closure or bad weather lowers them.
-3. Holidays are a moderate reason: shoppers may visit more or the store may be quieter,
-   depending on the holiday. Paydays showed no clear effect in this store's past sales,
-   so treat them as weak context only.
-4. Do NOT extend the week-over-week trend into the coming days. Testing on this store's
+1. The system accepts a change of at most 15% above or below the base value. A larger
+   change is rejected and the base value is used, so stay within 15%.
+2. OWNER EVENTS are facts from the store owner and are ALWAYS a reason to adjust:
+   - [NEW STOCK ARRIVING]: +10% to +15% on that day, and +5% to +10%
+     on the following day, because customers come to see the new items.
+   - [SALE / PROMOTION]: +8% to +15% on the days it runs.
+   - [STORE CLOSED OR DISRUPTED] (closed, short hours, typhoon, bad weather): -10% to -15%.
+   - [OTHER]: judge from the description.
+   If one day has events pulling in opposite directions, weigh them and explain.
+   ${category
+     ? `This forecast covers only "${category}". Apply the full effect when the event concerns ${category} or the whole store; if it clearly concerns a different category, apply little or no change and say so.`
+     : 'This forecast covers the whole store, so apply the effect of every event.'}
+3. STOCK limits what can be sold. This is a surplus shop: items cannot be reordered on
+   demand. If units available are very low compared with recent sales, or most lines are
+   out of stock, lower the coming days (about 5% to 15%) and say stock is the reason. If an
+   owner shipment is due, stock recovers from that day. Plenty of stock is not a reason to
+   raise sales. Unsold high-value one-off items may be worth mentioning in the insight.
+4. Holidays are a moderate reason (about 5% to 10%): shoppers may visit more, or the store
+   may be quieter, depending on the holiday. Do NOT adjust for paydays or for the day of the
+   week: this store's past sales showed no measurable effect from either.
+5. Do NOT extend the week-over-week trend into the coming days. Testing on this store's
    real sales showed that carrying a recent rise or fall forward makes the forecast less
-   accurate. If there is no clear reason to adjust a day, keep the base value exactly.
-5. For EVERY day give a short reason (max 12 words) for your decision, naming the
-   event, holiday or pattern you used, or saying plainly that there was no reason to change.
-6. Write a 1-sentence business insight for the owner about the coming week.
-7. Set confidence based on data quality: high = 14+ days data, medium = 7-13 days, low = 3-6 days
+   accurate. A day with no event, holiday or other clear reason keeps its base value.
+6. For EVERY day give a short reason (max 12 words) in plain words for the owner, naming the
+   event, stock level, holiday or pattern you used, or saying plainly that there was no reason to change.
+   Do not copy the labels from this prompt (such as "OWNER EVENT" or text in square brackets).
+7. Write a 1-sentence business insight for the owner about the coming week. It must agree
+   with your day values: do not mention a boost you did not apply.
+8. Set confidence based on data quality: high = 14+ days data, medium = 7-13 days, low = 3-6 days
    Current data: ${summary.totalDaysWithData} days
+
+In "ai" put the value you choose for that day. The template below starts each day at its
+base value; change it wherever the rules above call for an adjustment. Never put 0 unless
+the store will truly sell nothing that day.
 
 IMPORTANT: Return ONLY valid JSON. No text outside JSON. No markdown. No code blocks.
 
 Required format:
 {
   "forecast": [
-    { "day": "Day 1", "weighted": 0, "ai": 0, "reason": "short reason" },
-    { "day": "Day 2", "weighted": 0, "ai": 0, "reason": "short reason" },
-    { "day": "Day 3", "weighted": 0, "ai": 0, "reason": "short reason" },
-    { "day": "Day 4", "weighted": 0, "ai": 0, "reason": "short reason" },
-    { "day": "Day 5", "weighted": 0, "ai": 0, "reason": "short reason" },
-    { "day": "Day 6", "weighted": 0, "ai": 0, "reason": "short reason" },
-    { "day": "Day 7", "weighted": 0, "ai": 0, "reason": "short reason" }
+${base.forecast.map(d => `    { "day": "${d.day}", "weighted": ${d.weighted}, "ai": ${d.weighted}, "reason": "short reason" }`).join(',\n')}
   ],
   "insight": "one sentence",
   "confidence": "low"
@@ -200,12 +234,17 @@ function parseAndValidate(
   const forecast: AIForecastDay[] = parsed.forecast.map((item, i) => {
     const base = baseForecast[i]
     const weighted = base.weighted
-    const aiRaw = typeof item.ai === 'number' && isFinite(item.ai) ? item.ai : weighted
+    // A missing, non-numeric or zero value is read as "no change": an empty
+    // template value must never be mistaken for a 100% cut.
+    const aiRaw = typeof item.ai === 'number' && isFinite(item.ai) && item.ai > 0 ? item.ai : weighted
     const ai = boundAI(aiRaw, weighted)
     const suggestedChange = Math.round(aiRaw) !== weighted
     const status: AIForecastDay['status'] =
       ai !== weighted ? 'adjusted' : suggestedChange ? 'rejected' : 'kept'
-    const aiReason = typeof item.reason === 'string' ? item.reason.trim().slice(0, 120) : ''
+    // Strip any prompt labels the model copied into its reason.
+    const aiReason = typeof item.reason === 'string'
+      ? item.reason.replace(/OWNER EVENT\s*(\[[^\]]*\])?:?\s*/gi, '').replace(/\[[A-Z /]+\]\s*/g, '').trim().slice(0, 120)
+      : ''
     const reason =
       status === 'rejected'
         ? `Suggested change exceeded the 15% limit, so the calculated figure is kept.${aiReason ? ` (AI: ${aiReason})` : ''}`
@@ -255,9 +294,21 @@ interface CacheDocument {
 
 // The baseline and the owner's events together decide the AI's answer, so a
 // change to either makes the cached answer stale.
-const baseKeyOf = (base: WeightedForecastResult, events: ForecastEventInput[] = []) =>
+// The baseline, the owner's events and the stock position together decide the
+// AI's answer, so a change to any of them makes the cached answer stale. Stock
+// is bucketed so that a single sale does not force a new AI call.
+const stockKeyOf = (inv: InventoryContext | null) =>
+  inv
+    ? `${Math.round(inv.unitsAvailable / 10)}:${inv.lowStockLines}:${inv.outOfStockLines}:${inv.singleItemCount}`
+    : 'none'
+const baseKeyOf = (
+  base: WeightedForecastResult,
+  events: ForecastEventInput[] = [],
+  inventory: InventoryContext | null = null
+) =>
   base.forecast.map(d => Math.round(d.weighted)).join(',') +
-  '|' + events.map(e => `${e.date}:${e.note}`).sort().join(';')
+  '|' + events.map(e => `${e.date}:${e.type ?? 'other'}:${e.category ?? ''}:${e.note}`).sort().join(';') +
+  '|' + stockKeyOf(inventory)
 
 // Cache key varies per category so category forecasts don't collide
 const cacheDocId = (category?: string) =>
@@ -266,7 +317,8 @@ const cacheDocId = (category?: string) =>
 async function readFromFirestore(
   base: WeightedForecastResult,
   category?: string,
-  events: ForecastEventInput[] = []
+  events: ForecastEventInput[] = [],
+  inventory: InventoryContext | null = null
 ): Promise<AIEnhancementResult | null> {
   try {
     const db = getAdminDb()
@@ -274,7 +326,7 @@ async function readFromFirestore(
     if (!snap.exists) return null
     const doc = snap.data() as CacheDocument
     if (Date.now() > doc.expiresAt) return null   // expired
-    if (doc.baseKey !== baseKeyOf(base, events)) return null // sales or events changed
+    if (doc.baseKey !== baseKeyOf(base, events, inventory)) return null // sales, events or stock changed
     return { ...doc.result, fromCache: true }
   } catch {
     return null   // Firestore unavailable — proceed without cache
@@ -285,7 +337,8 @@ async function writeToFirestore(
   result: AIEnhancementResult,
   base: WeightedForecastResult,
   category?: string,
-  events: ForecastEventInput[] = []
+  events: ForecastEventInput[] = [],
+  inventory: InventoryContext | null = null
 ): Promise<void> {
   try {
     const db = getAdminDb()
@@ -293,7 +346,7 @@ async function writeToFirestore(
       result,
       cachedAt: Date.now(),
       expiresAt: Date.now() + CACHE_TTL_MS,
-      baseKey: baseKeyOf(base, events),
+      baseKey: baseKeyOf(base, events, inventory),
     }
     await db.collection(CACHE_COLLECTION).doc(cacheDocId(category)).set(doc)
   } catch {
@@ -309,16 +362,17 @@ export async function enhanceWithAI(
   apiKey: string,
   force = false,          // true = bypass cache, always call OpenAI fresh
   category?: string,      // optional: forecast scoped to a specific category
-  events: ForecastEventInput[] = [] // owner-entered events on the forecast days
+  events: ForecastEventInput[] = [], // owner-entered events on the forecast days
+  inventory: InventoryContext | null = null // stock on hand for the same scope
 ): Promise<AIEnhancementResult> {
   // 1. Try Firestore cache first — skip if force=true (user clicked Regenerate)
   if (!force) {
-    const cached = await readFromFirestore(base, category, events)
+    const cached = await readFromFirestore(base, category, events, inventory)
     if (cached) return cached
   }
 
   // 2. Call OpenAI
-  const prompt = buildPrompt(base, summary, category, events)
+  const prompt = buildPrompt(base, summary, category, events, inventory)
   let raw: string
   try {
     raw = await callOpenAI(apiKey, prompt)
@@ -352,7 +406,7 @@ export async function enhanceWithAI(
 
   // 4. Persist to Firestore (non-blocking)
   if (!result.error) {
-    writeToFirestore(result, base, category, events).catch(() => {})
+    writeToFirestore(result, base, category, events, inventory).catch(() => {})
   }
 
   return result
