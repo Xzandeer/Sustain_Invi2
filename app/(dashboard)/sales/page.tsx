@@ -25,7 +25,7 @@
 
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { apiFetch } from '@/lib/apiFetch'
-import { collection, onSnapshot } from 'firebase/firestore'
+import { collection, onSnapshot, orderBy, query, Timestamp, where } from 'firebase/firestore'
 import { toPng } from 'html-to-image'
 import { Download, Mail, Minus, Plus, Printer, Search, ShoppingCart, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -176,6 +176,19 @@ export default function SalesPage() {
 function SalesContent() {
   const { can } = useUserRole()
   const [transactions, setTransactions] = useState<SaleTransaction[]>([])
+  // How far back sales are loaded (ms since epoch; 0 = all history).
+  //
+  // Listening to the whole sales collection re-read every sale ever recorded
+  // each time this page opened - thousands of reads - and was the main cause of
+  // hitting the Firebase free-plan daily limit. The counter only needs recent
+  // sales, so the page starts with the last 30 days and loads older sales only
+  // when All Sales asks for a longer range or "Load older sales" is pressed.
+  const [salesSinceMs, setSalesSinceMs] = useState(() => {
+    const d = new Date()
+    d.setHours(0, 0, 0, 0)
+    d.setDate(d.getDate() - 30)
+    return d.getTime()
+  })
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
@@ -192,9 +205,18 @@ function SalesContent() {
   const [rangeOpen, setRangeOpen] = useState(false)
   const [rangePreset, setRangePreset] = useState<
     'today' | 'week' | 'month' | 'lastMonth' | 'year' | 'all' | 'custom'
-  >('all')
-  const [startDate, setStartDate] = useState('')
-  const [endDate, setEndDate] = useState('')
+  >('month')
+  // Opens on This Month: "All Time" would load the entire sales history just to
+  // open the list. All Time is still one click away.
+  const [startDate, setStartDate] = useState(() => {
+    const now = new Date()
+    const first = new Date(now.getFullYear(), now.getMonth(), 1)
+    return new Date(first.getTime() - first.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+  })
+  const [endDate, setEndDate] = useState(() => {
+    const now = new Date()
+    return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+  })
   const [inventorySearch, setInventorySearch] = useState('')
   // A USB scanner types wherever the cursor happens to be, so the product
   // search must already hold focus or the first scan of a sale goes nowhere.
@@ -302,8 +324,55 @@ function SalesContent() {
       (snapshotError) => console.error('Error loading categories for sales:', snapshotError)
     )
 
+    const unsubscribeInventory = onSnapshot(
+      collection(db, 'inventory'),
+      (snapshot) => {
+        const list: InventoryItem[] = snapshot.docs
+          .map((itemDoc) => {
+            const data = itemDoc.data() as Record<string, unknown>
+            return {
+              id: itemDoc.id,
+              name: typeof data.name === 'string' ? data.name.trim() : '',
+              categoryName:
+                (typeof data.categoryName === 'string' && data.categoryName.trim()) ||
+                (typeof data.category === 'string' && data.category.trim()) ||
+                'Uncategorized',
+              price: Math.max(0, toNumber(data.price, 0)),
+              condition: normalizeInventoryCondition(data.condition),
+              stock: Math.max(0, toNumber(data.stock ?? data.quantity, 0)),
+              reservedStock: Math.max(0, toNumber(data.reservedStock, 0)),
+              availableStock: Math.max(
+                0,
+                Math.max(0, toNumber(data.stock ?? data.quantity, 0)) - Math.max(0, toNumber(data.reservedStock, 0))
+              ),
+              barcode: typeof data.barcode === 'string' ? data.barcode : undefined,
+              isDeleted: data.isDeleted === true,
+              isVoided: data.isVoided === true,
+              isSingleItem: data.isSingleItem === true,
+              conditionNotes: typeof data.conditionNotes === 'string' ? data.conditionNotes.trim() : '',
+            }
+          })
+          .filter((item) => item.name && item.isDeleted !== true && item.isVoided !== true)
+
+        list.sort((a, b) => a.name.localeCompare(b.name))
+        setInventoryItems(list)
+      },
+      (snapshotError) => console.error('Error loading inventory for sales:', snapshotError)
+    )
+
+    return () => {
+      unsubscribeCategories()
+      unsubscribeInventory()
+    }
+  }, [])
+
+  // Sales listener, re-subscribed when a longer range is needed.
+  useEffect(() => {
+    const salesQuery = salesSinceMs > 0
+      ? query(collection(db, 'sales'), where('createdAt', '>=', Timestamp.fromMillis(salesSinceMs)), orderBy('createdAt', 'desc'))
+      : query(collection(db, 'sales'))
     const unsubscribeSales = onSnapshot(
-      collection(db, 'sales'),
+      salesQuery,
       (snapshot) => {
         const list: SaleTransaction[] = snapshot.docs.map((saleDoc) => {
           const data = saleDoc.data() as Record<string, unknown>
@@ -368,48 +437,27 @@ function SalesContent() {
       }
     )
 
-    const unsubscribeInventory = onSnapshot(
-      collection(db, 'inventory'),
-      (snapshot) => {
-        const list: InventoryItem[] = snapshot.docs
-          .map((itemDoc) => {
-            const data = itemDoc.data() as Record<string, unknown>
-            return {
-              id: itemDoc.id,
-              name: typeof data.name === 'string' ? data.name.trim() : '',
-              categoryName:
-                (typeof data.categoryName === 'string' && data.categoryName.trim()) ||
-                (typeof data.category === 'string' && data.category.trim()) ||
-                'Uncategorized',
-              price: Math.max(0, toNumber(data.price, 0)),
-              condition: normalizeInventoryCondition(data.condition),
-              stock: Math.max(0, toNumber(data.stock ?? data.quantity, 0)),
-              reservedStock: Math.max(0, toNumber(data.reservedStock, 0)),
-              availableStock: Math.max(
-                0,
-                Math.max(0, toNumber(data.stock ?? data.quantity, 0)) - Math.max(0, toNumber(data.reservedStock, 0))
-              ),
-              barcode: typeof data.barcode === 'string' ? data.barcode : undefined,
-              isDeleted: data.isDeleted === true,
-              isVoided: data.isVoided === true,
-              isSingleItem: data.isSingleItem === true,
-              conditionNotes: typeof data.conditionNotes === 'string' ? data.conditionNotes.trim() : '',
-            }
-          })
-          .filter((item) => item.name && item.isDeleted !== true && item.isVoided !== true)
+    return () => unsubscribeSales()
+  }, [salesSinceMs])
 
-        list.sort((a, b) => a.name.localeCompare(b.name))
-        setInventoryItems(list)
-      },
-      (snapshotError) => console.error('Error loading inventory for sales:', snapshotError)
-    )
+  // All Sales asking for dates older than what is loaded pulls them in.
+  useEffect(() => {
+    if (!showAllSalesModal) return
+    const needed =
+      rangePreset === 'all' ? 0
+      : startDate ? new Date(`${startDate}T00:00:00`).getTime()
+      : null
+    if (needed === null) return
+    setSalesSinceMs((current) => (current === 0 ? 0 : needed === 0 ? 0 : Math.min(current, needed)))
+  }, [showAllSalesModal, rangePreset, startDate])
 
-    return () => {
-      unsubscribeCategories()
-      unsubscribeSales()
-      unsubscribeInventory()
-    }
-  }, [])
+  const loadOlderSales = () =>
+    setSalesSinceMs((current) => {
+      if (current === 0) return 0
+      const d = new Date(current)
+      d.setDate(d.getDate() - 30)
+      return d.getTime()
+    })
 
   useEffect(() => {
     setCart((currentCart) =>
@@ -1527,8 +1575,9 @@ function SalesContent() {
                           </td>
                           <td className="px-4 py-2.5 text-right text-xs font-medium text-slate-900">{currency(tx.totalAmount ?? 0)}</td>
                           <td className="px-4 py-2.5 text-center">
-                            <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${tx.status === 'voided' ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700'}`}>
-                              {tx.status === 'voided' ? 'Voided' : 'Completed'}
+                            {/* Same labels as View all sales, including refunds. */}
+                            <span className={`inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ${statusBadgeClass(tx.status)}`}>
+                              {statusLabel(tx.status)}
                             </span>
                           </td>
                           <td className="px-4 py-2.5 text-center">
@@ -2297,6 +2346,23 @@ function SalesContent() {
                   ))}
                 </tbody>
               </table>
+              {/* What is loaded, and a way to go further back. */}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-4 py-3 text-xs text-slate-500">
+                <span>
+                  {salesSinceMs === 0
+                    ? 'Showing the full sales history.'
+                    : `Sales loaded from ${new Date(salesSinceMs).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}. Choose All Time or an earlier date to see older sales.`}
+                </span>
+                {salesSinceMs !== 0 && (
+                  <button
+                    type="button"
+                    onClick={loadOlderSales}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-medium text-slate-700 transition hover:bg-slate-50"
+                  >
+                    Load older sales
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>

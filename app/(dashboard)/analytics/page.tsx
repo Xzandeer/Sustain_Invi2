@@ -19,7 +19,7 @@
 // Debugging tip: if a number on screen looks wrong, it is almost always a date
 // range problem, not a math problem. Check getPresetRange() and inRange() first.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { apiFetch } from '@/lib/apiFetch'
 import {
   Chart as ChartJS,
@@ -67,6 +67,7 @@ interface ForecastEventRow {
   aiCategories?: string[]
   aiReason?: string
   note: string
+  createdByName?: string
 }
 
 // Which categories an event applies to, as a short label for its chip.
@@ -80,11 +81,11 @@ const eventTarget = (ev: ForecastEventRow): { label: string; byAI: boolean } => 
   return { byAI: false, label: ev.category || 'Whole store' }
 }
 
-const EVENT_TYPE_META: Record<ForecastEventType, { label: string; icon: string; chip: string }> = {
-  shipment: { label: 'Shipment', icon: '📦', chip: 'bg-emerald-50 text-emerald-800 ring-emerald-200' },
-  sale:     { label: 'Sale',     icon: '🏷️', chip: 'bg-blue-50 text-blue-800 ring-blue-200' },
-  closure:  { label: 'Closed',   icon: '⛔', chip: 'bg-red-50 text-red-700 ring-red-200' },
-  other:    { label: 'Other',    icon: '•',  chip: 'bg-amber-50 text-amber-800 ring-amber-200' },
+const EVENT_TYPE_META: Record<ForecastEventType, { label: string; dot: string; chip: string }> = {
+  shipment: { label: 'Shipment', dot: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-800 ring-emerald-200' },
+  sale:     { label: 'Sale',     dot: 'bg-blue-500',    chip: 'bg-blue-50 text-blue-800 ring-blue-200' },
+  closure:  { label: 'Closed',   dot: 'bg-red-500',     chip: 'bg-red-50 text-red-700 ring-red-200' },
+  other:    { label: 'Other',    dot: 'bg-amber-500',   chip: 'bg-amber-50 text-amber-800 ring-amber-200' },
 }
 
 interface AIForecastData {
@@ -812,7 +813,7 @@ function ChartHelp({ what, use }: { what: string; use: string }) {
     <div className="mt-2">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="text-[10px] font-semibold text-blue-600 transition-colors hover:text-blue-700"
+        className="text-[11px] font-semibold text-blue-600 transition-colors hover:text-blue-700"
       >
         {open ? 'Hide explanation' : 'What this shows'}
       </button>
@@ -848,6 +849,9 @@ function AnalyticsContent() {
   const [aiForecast, setAiForecast] = useState<AIForecastData | null>(null)
   // Owner-entered events the AI takes into account (deliveries, closures, sales).
   const [forecastEvents, setForecastEvents] = useState<ForecastEventRow[]>([])
+  const [eventHistory, setEventHistory] = useState<ForecastEventRow[]>([])
+  const [eventsOpen, setEventsOpen] = useState(false)
+  const [eventsTab, setEventsTab] = useState<'upcoming' | 'history'>('upcoming')
   const [newEventDate, setNewEventDate] = useState('')
   const [newEventNote, setNewEventNote] = useState('')
 
@@ -950,30 +954,70 @@ function AnalyticsContent() {
     return match?.name ?? null
   }, [selectedCategory, categories])
 
-  // Auto-load AI forecast from cache on mount and when category changes
+  // ── Forecast loading: fast first, AI second, remembered per category ────
+  //
+  // Switching category used to wait for everything - including the language
+  // model, which can take several seconds - before the chart changed. Now:
+  //   1. A category already opened in the last few minutes is shown at once
+  //      from memory, with no request at all.
+  //   2. Otherwise two requests go out together: ?ai=0 returns the statistical
+  //      forecast quickly so the chart draws immediately, and the full request
+  //      adds the AI review when it arrives.
+  const forecastCacheRef = useRef(new Map<string, { data: AIForecastData; at: number }>())
+  const FORECAST_MEMORY_MS = 5 * 60 * 1000
+  const forecastKey = forecastCategoryName ?? 'all'
+  const [aiReviewing, setAiReviewing] = useState(false)
+
   useEffect(() => {
     let cancelled = false
-    async function loadCachedForecast() {
-      try {
-        const params = new URLSearchParams()
-        if (forecastCategoryName) params.set('category', forecastCategoryName)
-        const qs = params.toString()
-        const res = await apiFetch(`/api/forecast/ai-enhanced${qs ? `?${qs}` : ''}`)
-        if (!res.ok) return
-        const data: AIForecastData = await res.json()
-        if (!cancelled) setAiForecast(data)
-      } catch (_) {}
+    const key = forecastKey
+    const remembered = forecastCacheRef.current.get(key)
+    if (remembered) {
+      setAiForecast(remembered.data)
+      if (Date.now() - remembered.at < FORECAST_MEMORY_MS) return
     }
-    loadCachedForecast()
+
+    const params = new URLSearchParams()
+    if (forecastCategoryName) params.set('category', forecastCategoryName)
+    const qs = params.toString()
+    let fullArrived = false
+
+    // 1. Statistical forecast only - fast. Skipped when an older copy of this
+    //    category is already on screen, so its AI line does not blink out.
+    if (!remembered) {
+      apiFetch(`/api/forecast/ai-enhanced?${qs ? `${qs}&` : ''}ai=0`)
+        .then(async (res) => {
+          if (!res.ok || cancelled || fullArrived) return
+          const data: AIForecastData = await res.json()
+          if (!cancelled && !fullArrived) setAiForecast(data)
+        })
+        .catch(() => {})
+    }
+
+    // 2. With the AI review - may take a few seconds on a cache miss.
+    setAiReviewing(true)
+    apiFetch(`/api/forecast/ai-enhanced${qs ? `?${qs}` : ''}`)
+      .then(async (res) => {
+        if (!res.ok || cancelled) return
+        const data: AIForecastData = await res.json()
+        if (cancelled) return
+        fullArrived = true
+        setAiForecast(data)
+        forecastCacheRef.current.set(key, { data, at: Date.now() })
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setAiReviewing(false) })
+
     return () => { cancelled = true }
-  }, [forecastCategoryName])
+  }, [forecastKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadForecastEvents = async () => {
     try {
       const res = await apiFetch('/api/forecast/events')
       if (!res.ok) return
-      const data = (await res.json()) as { events?: ForecastEventRow[] }
+      const data = (await res.json()) as { events?: ForecastEventRow[]; history?: ForecastEventRow[] }
       setForecastEvents(Array.isArray(data.events) ? data.events : [])
+      setEventHistory(Array.isArray(data.history) ? data.history : [])
     } catch { /* events are optional */ }
   }
 
@@ -998,6 +1042,7 @@ function AnalyticsContent() {
       const data = (await res.json().catch(() => ({}))) as { error?: string }
       if (!res.ok) { setEventError(data.error ?? 'Could not save the event.'); return }
       setNewEventNote('')
+      forecastCacheRef.current.clear()
       await loadForecastEvents()
       // The event changes what the AI should consider, so ask it again.
       handleGenerateForecast(false)
@@ -1012,6 +1057,7 @@ function AnalyticsContent() {
     try {
       const res = await apiFetch(`/api/forecast/events?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
       if (!res.ok) return
+      forecastCacheRef.current.clear()
       await loadForecastEvents()
       handleGenerateForecast(false)
     } catch { /* ignore */ }
@@ -1043,6 +1089,7 @@ function AnalyticsContent() {
         setForecastError(reason)
       } else {
         setAiForecast(data)
+        forecastCacheRef.current.set(forecastKey, { data, at: Date.now() })
       }
     } catch (err) {
       console.error('[analytics] Forecast request failed:', err)
@@ -1742,7 +1789,7 @@ function AnalyticsContent() {
       const reason = (d.reason ?? '').replace(/^Suggested change exceeded the 15% limit, so the calculated figure is kept\.\s*/, '')
       if (reason && reason !== 'No clear reason to change this day.') lines.push(...wrap(reason.replace(/^\(AI: (.*)\)$/, '$1')))
       ;(aiForecast!.events ?? []).filter((ev) => ev.date === d.date).forEach((ev) =>
-        lines.push(...wrap(`${EVENT_TYPE_META[ev.type ?? 'other'].label}: ${ev.note}`)))
+        lines.push(...wrap(`Note (${EVENT_TYPE_META[ev.type ?? 'other'].label}): ${ev.note}`)))
       pointInsights[actualLen + i] = lines
     })
 
@@ -1787,24 +1834,24 @@ function AnalyticsContent() {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <main className="min-h-screen bg-[#F8FAFC] px-4 py-3">
-      <div className="mx-auto max-w-[1440px] space-y-3">
+    <main className="min-h-[calc(100vh-64px)] bg-slate-50 px-3 py-3 sm:px-5 sm:py-4">
+      <div className="mx-auto max-w-[1400px] space-y-3 sm:space-y-4">
 
         {/* ── PAGE HEADER ──────────────────────────────────────────────────── */}
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-600 shadow-sm">
-              <svg className="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
               </svg>
             </div>
             <div>
-              <h1 className="text-lg font-bold text-slate-900">Analytics</h1>
-              <p className="text-xs text-slate-400">Sales performance, demand &amp; AI forecasting</p>
+              <h1 className="text-lg font-bold text-slate-900 sm:text-2xl">Analytics</h1>
+              <p className="text-sm text-slate-500">Sales performance, demand and AI forecasting.</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 shadow-sm">
+            <div className="hidden items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-600 shadow-sm sm:flex">
               <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
               </svg>
@@ -1816,7 +1863,7 @@ function AnalyticsContent() {
               type="button"
               onClick={handleExportCsv}
               title="Download the current view as a CSV file"
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 transition"
+              className="inline-flex items-center gap-2 rounded-lg bg-[#1e3a5f] px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#162d4a]"
             >
               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
@@ -1827,7 +1874,7 @@ function AnalyticsContent() {
         </div>
 
         {/* ── FILTERS ──────────────────────────────────────────────────────── */}
-        <div className="rounded-xl border border-slate-100 bg-white px-4 py-3 shadow-sm">
+        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3.5 shadow-sm">
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div className="flex flex-wrap items-end gap-3">
               <div className="flex flex-col gap-1.5">
@@ -1919,124 +1966,124 @@ function AnalyticsContent() {
         )}
 
         {/* ── KPI CARDS ────────────────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
 
           {/* Total Sales */}
-          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-start justify-between">
               <div className="min-w-0">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Total Sales</p>
-                <p className="mt-1 text-base font-bold text-slate-900">{currency(currentSummary.totalSales)}</p>
+                <p className="text-sm font-medium text-slate-500">Total Sales</p>
+                <p className="mt-2 text-2xl font-extrabold tracking-tight text-slate-900">{currency(currentSummary.totalSales)}</p>
               </div>
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-50">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-50">
                 <svg className="h-4 w-4 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
               </div>
             </div>
             {comparisonMetrics.totalSales[0] && (
-              <div className="mt-1.5 flex items-center gap-1">
-                <span className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${(comparisonMetrics.totalSales[0].change ?? 0) >= 0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+              <div className="mt-2 flex items-center gap-1.5">
+                <span className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] font-semibold ${(comparisonMetrics.totalSales[0].change ?? 0) >= 0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
                   {(comparisonMetrics.totalSales[0].change ?? 0) >= 0 ? '↑' : '↓'} {percentFormatter.format(Math.abs(comparisonMetrics.totalSales[0].change ?? 0))}%
                 </span>
-                <span className="text-[10px] text-slate-400">vs last period</span>
+                <span className="text-[11px] text-slate-400">vs last period</span>
               </div>
             )}
           </div>
 
           {/* Items Sold */}
-          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Items Sold</p>
-                <p className="mt-1 text-base font-bold text-slate-900">{compactNumber.format(currentSummary.itemsSold)}</p>
+                <p className="text-sm font-medium text-slate-500">Items Sold</p>
+                <p className="mt-2 text-2xl font-extrabold tracking-tight text-slate-900">{compactNumber.format(currentSummary.itemsSold)}</p>
               </div>
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-green-50">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-green-50">
                 <svg className="h-4 w-4 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
                 </svg>
               </div>
             </div>
             {comparisonMetrics.itemsSold[0] && (
-              <div className="mt-1.5 flex items-center gap-1">
-                <span className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${(comparisonMetrics.itemsSold[0].change ?? 0) >= 0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+              <div className="mt-2 flex items-center gap-1.5">
+                <span className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] font-semibold ${(comparisonMetrics.itemsSold[0].change ?? 0) >= 0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
                   {(comparisonMetrics.itemsSold[0].change ?? 0) >= 0 ? '↑' : '↓'} {percentFormatter.format(Math.abs(comparisonMetrics.itemsSold[0].change ?? 0))}%
                 </span>
-                <span className="text-[10px] text-slate-400">vs last period</span>
+                <span className="text-[11px] text-slate-400">vs last period</span>
               </div>
             )}
           </div>
 
           {/* Average Order Value */}
-          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Avg Order</p>
-                <p className="mt-1 text-base font-bold text-slate-900">
+                <p className="text-sm font-medium text-slate-500">Avg Order</p>
+                <p className="mt-2 text-2xl font-extrabold tracking-tight text-slate-900">
                   {currentSummary.itemsSold > 0 ? currency(currentSummary.totalSales / currentSummary.itemsSold) : '₱0.00'}
                 </p>
               </div>
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-violet-50">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet-50">
                 <svg className="h-4 w-4 text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/>
                 </svg>
               </div>
             </div>
-            <p className="mt-2 text-[10px] text-slate-400">per item sold</p>
+            <p className="mt-2 text-[11px] text-slate-400">per item sold</p>
           </div>
 
           {/* Transactions */}
-          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Transactions</p>
-                <p className="mt-1 text-base font-bold text-slate-900">{filteredSales.length}</p>
+                <p className="text-sm font-medium text-slate-500">Transactions</p>
+                <p className="mt-2 text-2xl font-extrabold tracking-tight text-slate-900">{filteredSales.length}</p>
               </div>
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-orange-50">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-orange-50">
                 <svg className="h-4 w-4 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
                 </svg>
               </div>
             </div>
-            <p className="mt-2 text-[10px] text-slate-400">completed sales</p>
+            <p className="mt-2 text-[11px] text-slate-400">completed sales</p>
           </div>
 
           {/* Projected Demand */}
-          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-start justify-between">
               <div className="min-w-0 flex-1">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Proj. Demand</p>
-                <p className="mt-1.5 truncate text-sm font-bold text-indigo-700">{predictiveSummary.projectedFastMovingCategory}</p>
+                <p className="text-sm font-medium text-slate-500">Proj. Demand</p>
+                <p className="mt-2 truncate text-xl font-extrabold tracking-tight text-indigo-700">{predictiveSummary.projectedFastMovingCategory}</p>
               </div>
-              <div className="ml-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-indigo-50">
+              <div className="ml-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-indigo-50">
                 <svg className="h-4 w-4 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
                 </svg>
               </div>
             </div>
             <div className="mt-2">
-              <span className="inline-flex items-center rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">High</span>
-              <span className="ml-1.5 text-[10px] text-slate-400">demand</span>
+              <span className="inline-flex items-center rounded-full bg-indigo-50 px-1.5 py-0.5 text-[11px] font-semibold text-indigo-700">High</span>
+              <span className="ml-1.5 text-[11px] text-slate-400">demand</span>
             </div>
           </div>
 
           {/* AI Confidence Score */}
-          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">AI Confidence</p>
-                <p className="mt-1 text-base font-bold text-violet-700">
+                <p className="text-sm font-medium text-slate-500">AI Confidence</p>
+                <p className="mt-2 text-2xl font-extrabold tracking-tight text-violet-700">
                   {aiConfidenceNum !== null ? `${aiConfidenceNum}%` : '—'}
                 </p>
               </div>
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-violet-50">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet-50">
                 <svg className="h-4 w-4 text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17H3a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v10a2 2 0 01-2 2h-2"/>
                 </svg>
               </div>
             </div>
             <div className="mt-2">
-              <span className="inline-flex items-center rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">
+              <span className="inline-flex items-center rounded-full bg-violet-50 px-1.5 py-0.5 text-[11px] font-semibold text-violet-700">
                 {aiForecast?.aiForecast?.confidence ?? 'No forecast'}
               </span>
             </div>
@@ -2044,10 +2091,10 @@ function AnalyticsContent() {
         </div>
 
         {/* ── MAIN: Chart (75%) + AI Insights Panel (25%) ─────────────────── */}
-        <div className="grid grid-cols-1 gap-2 xl:grid-cols-[3fr_1fr]" style={{ alignItems: 'stretch' }}>
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[3fr_1fr]" style={{ alignItems: 'stretch' }}>
 
           {/* ── Sales Trend + AI Forecast chart card ────────────────────────── */}
-          <div className="flex flex-col overflow-hidden rounded-xl border border-slate-100 bg-white shadow-sm">
+          <div className="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
 
             {/* Card header */}
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-2.5">
@@ -2059,7 +2106,7 @@ function AnalyticsContent() {
                 </div>
                 <div>
                   <h2 className="text-sm font-bold text-slate-900">Sales Trend &amp; AI Forecast</h2>
-                  <p className="text-[10px] text-slate-400">
+                  <p className="text-[11px] text-slate-400">
                     {trendSeries.granularity === 'day' ? 'Daily' : 'Monthly'} ·{' '}
                     {activeRange.start.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })} –{' '}
                     {activeRange.end.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}
@@ -2069,27 +2116,27 @@ function AnalyticsContent() {
 
               <div className="flex shrink-0 flex-wrap items-center gap-2">
                 {/* Metadata chips */}
-                <span className="inline-flex items-center gap-1 rounded-full border border-violet-100 bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-700">
+                <span className="inline-flex items-center gap-1 rounded-full border border-violet-100 bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700">
                   <span className="h-1.5 w-1.5 rounded-full bg-violet-400"/>
                   {aiConfidenceNum !== null ? `${aiConfidenceNum}% Confidence` : 'No AI'}
                 </span>
-                <span className="inline-flex items-center gap-1 rounded-full border border-blue-100 bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+                <span className="inline-flex items-center gap-1 rounded-full border border-blue-100 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
                   <span className="h-1.5 w-1.5 rounded-full bg-blue-400"/>
                   {trendSeries.granularity === 'day' ? '7-day' : '1-period'} Forecast
                 </span>
                 {/* Legend */}
-                <span className="flex items-center gap-1 text-[10px] text-slate-500">
+                <span className="flex items-center gap-1 text-[11px] text-slate-500">
                   <span className="inline-block h-0.5 w-4 rounded-full bg-blue-600"/>Actual
                 </span>
                 {/* Statistical baseline is always drawn. When AI refinement is
                     active it sits beside the AI line, so the ±15% bound between
                     them is visible rather than merely claimed. */}
-                <span className="flex items-center gap-1 text-[10px] text-slate-500">
+                <span className="flex items-center gap-1 text-[11px] text-slate-500">
                   <svg width="16" height="4" viewBox="0 0 16 4"><line x1="0" y1="2" x2="16" y2="2" stroke={mergedChartData.hasAI ? '#cbd5e1' : '#94a3b8'} strokeWidth="2" strokeDasharray="4 3"/></svg>
                   {mergedChartData.hasAI ? 'EWMA baseline' : 'Forecast'}
                 </span>
                 {mergedChartData.hasAI && (
-                  <span className="flex items-center gap-1 text-[10px] text-slate-500">
+                  <span className="flex items-center gap-1 text-[11px] text-slate-500">
                     <svg width="16" height="4" viewBox="0 0 16 4"><line x1="0" y1="2" x2="16" y2="2" stroke="#7c3aed" strokeWidth="2" strokeDasharray="4 3"/></svg>AI refined
                   </span>
                 )}
@@ -2109,7 +2156,15 @@ function AnalyticsContent() {
                 // legend above the chart already states.
                 plugins={[]}
                 data={{
-                  labels: forecastSeries.labels,
+                  // Forecast days with a forecast note that applies to this view get a
+                  // dot beside the date, so notes show without opening anything.
+                  labels: forecastSeries.labels.map((label, idx) => {
+                    const actualLen = trendSeries.rows.length
+                    const day = aiForecast?.aiForecast?.forecast?.[idx - actualLen]
+                    if (idx < actualLen || !day) return label
+                    const hasNote = (aiForecast?.events ?? []).some((ev) => ev.date === day.date)
+                    return hasNote ? `${label} •` : label
+                  }),
                   datasets: [
                     // Confidence band upper → fills to next dataset (lower)
                     ...(mergedChartData.hasAI ? [{
@@ -2250,7 +2305,7 @@ function AnalyticsContent() {
                 <svg className="h-3 w-3 shrink-0 text-violet-400" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd"/>
                 </svg>
-                <p className="text-[10px] text-slate-400">
+                <p className="text-[11px] text-slate-400">
                   Forecast calculated from this store&apos;s own sales history.
                   {mergedChartData.hasAI && aiForecast?.fromCache && (
                     <span className="ml-1 text-violet-400">· Cached</span>
@@ -2258,7 +2313,7 @@ function AnalyticsContent() {
                 </p>
                 <button
                   onClick={() => setShowChartHelp((v) => !v)}
-                  className="ml-auto shrink-0 text-[10px] font-semibold text-blue-600 transition-colors hover:text-blue-700"
+                  className="ml-auto shrink-0 text-[11px] font-semibold text-blue-600 transition-colors hover:text-blue-700"
                 >
                   {showChartHelp ? 'Hide explanation' : 'How to read this chart'}
                 </button>
@@ -2316,21 +2371,160 @@ function AnalyticsContent() {
           </div>
 
           {/* ── AI Forecast Insights Panel ───────────────────────────────────── */}
-          <div className="flex flex-col overflow-hidden rounded-xl border border-slate-100 bg-white shadow-sm">
+          <div className="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
 
             {/* Panel header */}
             <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
               <div className="flex items-center gap-2">
-                <div className="flex h-6 w-6 items-center justify-center rounded-md bg-violet-100">
-                  <span className="text-xs leading-none">✨</span>
-                </div>
-                <h2 className="text-sm font-bold text-slate-900">AI Insights</h2>
+                <span className="h-2 w-2 rounded-full bg-violet-500" aria-hidden="true" />
+                <h2 className="text-sm font-bold text-slate-900">{eventsOpen ? 'Forecast Notes' : 'AI Insights'}</h2>
+                {!eventsOpen && aiForecast?.fromCache && (
+                  <span className="rounded-full bg-violet-50 px-1.5 py-0.5 text-[11px] font-semibold text-violet-500">CACHED</span>
+                )}
               </div>
-              {aiForecast?.fromCache && (
-                <span className="rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-500">CACHED</span>
-              )}
+              {/* Switches this panel between the AI's insights and the notes
+                  the owner gives the AI (deliveries, sales, closures). */}
+              <button
+                type="button"
+                onClick={() => { setEventsTab('upcoming'); setEventsOpen((v) => !v) }}
+                aria-pressed={eventsOpen}
+                title={eventsOpen ? 'Back to AI Insights' : 'Tell the forecast about deliveries, sales and closures'}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold transition ${
+                  eventsOpen
+                    ? 'border-violet-600 bg-violet-600 text-white hover:bg-violet-700'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-violet-300 hover:text-violet-700'
+                }`}
+              >
+                {eventsOpen ? (
+                  'Back to insights'
+                ) : (
+                  <>
+                    Notes
+                    {forecastEvents.length > 0 && (
+                      <span className="rounded-full bg-violet-600 px-1.5 text-[11px] font-bold text-white">{forecastEvents.length}</span>
+                    )}
+                  </>
+                )}
+              </button>
             </div>
 
+            {/* Forecast notes view - same panel, switched from the header */}
+            {eventsOpen ? (
+            <div className="flex flex-1 flex-col overflow-hidden">
+              <p className="px-3 pt-2 text-[11px] leading-relaxed text-slate-500">
+                Deliveries, sales or closures the forecast should know about. The AI reads each note and
+                decides which categories it affects.
+              </p>
+              {/* Composer */}
+              <form onSubmit={handleAddEvent} className="space-y-2 border-b border-slate-100 bg-slate-50/60 px-3 py-4">
+                <textarea
+                  value={newEventNote}
+                  maxLength={120}
+                  rows={2}
+                  onChange={(e) => setNewEventNote(e.target.value)}
+                  placeholder="What's happening? e.g. Container of big items arriving"
+                  aria-label="Event description"
+                  className="w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-violet-400 focus:outline-none"
+                />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="date"
+                    value={newEventDate}
+                    min={formatDateInput(new Date())}
+                    max={formatDateInput(new Date(Date.now() + 30 * 86400000))}
+                    onChange={(e) => setNewEventDate(e.target.value)}
+                    aria-label="Event date"
+                    className="flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700 focus:border-violet-400 focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    disabled={savingEvent}
+                    className="shrink-0 rounded-lg bg-violet-600 px-4 py-1.5 text-sm font-semibold text-white transition hover:bg-violet-700 disabled:opacity-50"
+                  >
+                    {savingEvent ? 'Reading note…' : 'Add note'}
+                  </button>
+                </div>
+                {eventError && <p className="text-xs text-red-600">{eventError}</p>}
+              </form>
+
+              {/* Tabs */}
+              <div className="flex gap-1 border-b border-slate-100 px-3 pt-3">
+                {([
+                  ['upcoming', `Upcoming (${forecastEvents.length})`],
+                  ['history', `History (${eventHistory.length})`],
+                ] as const).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setEventsTab(key)}
+                    className={`-mb-px border-b-2 px-3 pb-2 text-xs font-semibold transition ${
+                      eventsTab === key ? 'border-violet-600 text-violet-700' : 'border-transparent text-slate-400 hover:text-slate-600'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* List */}
+              <div className="flex-1 space-y-2 overflow-y-auto px-3 py-4">
+                {(eventsTab === 'upcoming' ? forecastEvents : eventHistory).length === 0 ? (
+                  <div className="py-10 text-center">
+                    <p className="text-sm font-medium text-slate-600">
+                      {eventsTab === 'upcoming' ? 'No upcoming notes' : 'No past notes yet'}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      {eventsTab === 'upcoming'
+                        ? 'Add a delivery, sale or closure above and the forecast will take it into account.'
+                        : 'Notes move here once their date has passed.'}
+                    </p>
+                  </div>
+                ) : (
+                  (eventsTab === 'upcoming' ? forecastEvents : eventHistory).map((ev) => {
+                    const meta = EVENT_TYPE_META[ev.type ?? 'other']
+                    const target = eventTarget(ev)
+                    const past = eventsTab === 'history'
+                    return (
+                      <div key={ev.id} className={`rounded-xl border border-slate-100 p-3 ${past ? 'bg-slate-50/60' : 'bg-white shadow-sm'}`}>
+                        <div className="flex items-start gap-3">
+                          <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${meta.dot}`} aria-hidden="true" />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                              {new Date(`${ev.date}T00:00:00`).toLocaleDateString('en-PH', { weekday: 'short', month: 'short', day: 'numeric' })}
+                              {' · '}{meta.label}
+                            </p>
+                            <p className={`text-sm ${past ? 'text-slate-500' : 'text-slate-800'}`}>{ev.note}</p>
+                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                              <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700">
+                                {target.byAI ? 'AI: ' : ''}{target.label}
+                              </span>
+                              {ev.createdByName && <span className="text-[11px] text-slate-400">by {ev.createdByName}</span>}
+                            </div>
+                            {target.byAI && ev.aiReason && (
+                              <p className="mt-1 text-[11px] italic text-slate-500">“{ev.aiReason}”</p>
+                            )}
+                          </div>
+                          {!past && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveEvent(ev.id)}
+                              aria-label={`Remove note: ${ev.note}`}
+                              title="Remove"
+                              className="shrink-0 rounded-lg p-1 text-slate-300 transition hover:bg-red-50 hover:text-red-600"
+                            >
+                              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+            </div>
+
+            ) : (
+            <>
             {/* Scrollable content */}
             <div className="flex flex-1 flex-col gap-1.5 overflow-y-auto px-3 py-2">
 
@@ -2377,9 +2571,6 @@ function AnalyticsContent() {
 
               {!forecastLoading && !aiForecast && (
                 <div className="flex flex-1 flex-col items-center justify-center gap-3 py-10 text-center">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-violet-50">
-                    <span className="text-2xl">🧠</span>
-                  </div>
                   <div>
                     <p className="text-sm font-semibold text-slate-700">No forecast yet</p>
                     <p className="mt-1 text-xs leading-relaxed text-slate-400">Click Generate to get an AI-powered 7-day demand prediction.</p>
@@ -2393,11 +2584,21 @@ function AnalyticsContent() {
                 </div>
               )}
 
+              {!forecastLoading && aiReviewing && aiForecast?.canForecast && !aiForecast.aiForecast && (
+                <div className="flex items-center gap-2 rounded-xl bg-violet-50 px-3 py-2.5 text-xs text-violet-700">
+                  <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z"/>
+                  </svg>
+                  AI is reviewing the forecast…
+                </div>
+              )}
+
               {!forecastLoading && aiForecast?.canForecast && aiForecast.aiForecast && (
                 <>
                   {/* AI Insight */}
                   <div className="rounded-xl bg-violet-50 p-2.5">
-                    <p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-violet-400">📈 AI Insight</p>
+                    <p className="mb-1 text-[11px] font-bold uppercase tracking-widest text-violet-400">AI Insight</p>
                     <p className="text-xs leading-relaxed text-slate-600">{aiForecast.aiForecast.insight}</p>
                     {/* Say so when the AI changed nothing, so two identical
                         lines on the chart do not look like a fault. */}
@@ -2412,7 +2613,7 @@ function AnalyticsContent() {
                   {/* Confidence Score bar */}
                   <div className="rounded-xl border border-slate-100 bg-slate-50 p-2.5">
                     <div className="mb-2 flex items-center justify-between">
-                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">🧠 Confidence</p>
+                      <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Confidence</p>
                       <span className="text-sm font-bold text-slate-900">{aiConfidenceNum !== null ? `${aiConfidenceNum}%` : '—'}</span>
                     </div>
                     <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
@@ -2421,7 +2622,7 @@ function AnalyticsContent() {
                         style={{ width: `${aiConfidenceNum ?? 0}%` }}
                       />
                     </div>
-                    <p className="mt-1.5 text-[10px] font-semibold text-slate-400">{aiForecast.aiForecast.confidence} Confidence · AI Predictive Engine</p>
+                    <p className="mt-1.5 text-[11px] font-semibold text-slate-400">{aiForecast.aiForecast.confidence} Confidence · AI Predictive Engine</p>
                   </div>
 
                   {/* Top seller. Named for what it measures - revenue over the
@@ -2430,7 +2631,7 @@ function AnalyticsContent() {
                       category because it reads a different window. */}
                   {aiForecast.summary && (
                     <div className="rounded-xl border border-slate-100 bg-slate-50 p-2.5">
-                      <p className="mb-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-400">Top seller · last 14 days</p>
+                      <p className="mb-1.5 text-[11px] font-bold uppercase tracking-widest text-slate-400">Top seller · last 14 days</p>
                       <p className="text-sm font-bold text-slate-900">{aiForecast.summary.topCategories[0]?.name ?? '—'}</p>
                       <p className="mt-0.5 text-xs text-slate-400">{currency(aiForecast.summary.topCategories[0]?.revenue ?? 0)} revenue</p>
                     </div>
@@ -2440,11 +2641,11 @@ function AnalyticsContent() {
                   {aiForecast.summary && (
                     <div className="grid grid-cols-2 gap-2">
                       <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Last 7d</p>
+                        <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Last 7d</p>
                         <p className="mt-1 text-xs font-bold tabular-nums text-slate-900">{currency(aiForecast.summary.last7Revenue)}</p>
                       </div>
                       <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">WoW</p>
+                        <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">WoW</p>
                         <p className={`mt-1 text-sm font-bold tabular-nums ${aiForecast.summary.wowChange >= 0 ? 'text-green-600' : 'text-red-500'}`}>
                           {aiForecast.summary.wowChange >= 0 ? '+' : ''}{aiForecast.summary.wowChange.toFixed(1)}%
                         </p>
@@ -2455,7 +2656,7 @@ function AnalyticsContent() {
                   {/* Recommended restock from top categories */}
                   {aiForecast.summary && aiForecast.summary.topCategories.length > 1 && (
                     <div className="rounded-xl border border-slate-100 bg-slate-50 p-2.5">
-                      <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">📦 Top Categories</p>
+                      <p className="mb-2 text-[11px] font-bold uppercase tracking-widest text-slate-400">Top Categories</p>
                       <div className="space-y-1.5">
                         {aiForecast.summary.topCategories.slice(0, 3).map((cat, i) => (
                           <div key={cat.name} className="flex items-center justify-between gap-2">
@@ -2463,7 +2664,7 @@ function AnalyticsContent() {
                               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${i === 0 ? 'bg-violet-500' : i === 1 ? 'bg-blue-400' : 'bg-slate-400'}`}/>
                               <span className="truncate text-xs text-slate-600">{cat.name}</span>
                             </span>
-                            <span className="shrink-0 text-xs font-semibold text-slate-900">{cat.units}u</span>
+                            <span className="shrink-0 text-xs font-semibold text-slate-900">{cat.units} {cat.units === 1 ? 'unit' : 'units'}</span>
                           </div>
                         ))}
                       </div>
@@ -2472,86 +2673,32 @@ function AnalyticsContent() {
 
                   {aiForecast.aiForecast.warning && (
                     <div className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2.5">
-                      <p className="text-xs text-amber-700">⚠ {aiForecast.aiForecast.warning}</p>
+                      <p className="text-xs text-amber-700"><span className="font-semibold">Note:</span> {aiForecast.aiForecast.warning}</p>
                     </div>
                   )}
                 </>
               )}
             </div>
 
+            </>
+            )}
+
             {/* Panel footer */}
             <div className="border-t border-slate-50 px-3 py-1">
-              <p className="text-[10px] text-slate-400">Predictive AI Engine · {trendSeries.granularity === 'day' ? '7-day' : '1-period'} window</p>
+              <p className="text-[11px] text-slate-400">
+                {eventsOpen
+                  ? 'Notes for the next 30 days are used in the forecast'
+                  : `Predictive AI Engine · ${trendSeries.granularity === 'day' ? '7-day' : '1-period'} window`}
+              </p>
             </div>
           </div>
         </div>
 
-        {/* ── Upcoming events the AI should know about (one compact strip) ── */}
-        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-100 bg-white px-3 py-2 shadow-sm">
-          <h2 className="shrink-0 text-sm font-bold text-slate-900">
-            Upcoming events <span className="font-normal text-slate-400">· ✨ AI sorts them</span>
-          </h2>
-          <form onSubmit={handleAddEvent} className="flex min-w-[280px] flex-1 gap-1.5">
-            <input
-              type="date"
-              value={newEventDate}
-              min={formatDateInput(new Date())}
-              max={formatDateInput(new Date(Date.now() + 30 * 86400000))}
-              onChange={(e) => setNewEventDate(e.target.value)}
-              aria-label="Event date"
-              className="w-32 shrink-0 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-700 focus:border-violet-400 focus:outline-none"
-            />
-            <input
-              type="text"
-              value={newEventNote}
-              maxLength={120}
-              onChange={(e) => setNewEventNote(e.target.value)}
-              placeholder="Describe it in your own words, e.g. Container of big items arriving · 20% off kitchenware · Closed for typhoon"
-              aria-label="Event description"
-              className="min-w-0 flex-1 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-700 placeholder:text-slate-400 focus:border-violet-400 focus:outline-none"
-            />
-            <button
-              type="submit"
-              disabled={savingEvent}
-              className="shrink-0 rounded-lg bg-violet-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-violet-700 disabled:opacity-50"
-            >
-              {savingEvent ? 'AI sorting…' : 'Add'}
-            </button>
-          </form>
-          {forecastEvents.map((ev) => (
-            <span key={ev.id} className={`inline-flex max-w-xs items-center gap-1 rounded-full py-0.5 pl-2 pr-1 text-xs ring-1 ring-inset ${EVENT_TYPE_META[ev.type ?? 'other'].chip}`}>
-              <span
-                className="truncate"
-                title={`${EVENT_TYPE_META[ev.type ?? 'other'].label}: ${ev.note}\nAffects: ${eventTarget(ev).label}${
-                  eventTarget(ev).byAI ? ` (decided by AI${ev.aiReason ? `: ${ev.aiReason}` : ''})` : ' (chosen manually)'
-                }`}
-              >
-                <span aria-hidden="true">{EVENT_TYPE_META[ev.type ?? 'other'].icon}</span>{' '}
-                <span className="font-semibold">
-                  {new Date(`${ev.date}T00:00:00`).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}
-                </span>{' '}
-                {ev.note}{' '}
-                <span className="opacity-70">→ {eventTarget(ev).byAI ? '✨ ' : ''}{eventTarget(ev).label}</span>
-              </span>
-              <button
-                type="button"
-                onClick={() => handleRemoveEvent(ev.id)}
-                aria-label={`Remove event: ${ev.note}`}
-                title="Remove"
-                className="rounded-full px-1 opacity-60 hover:text-red-600 hover:opacity-100"
-              >
-                ✕
-              </button>
-            </span>
-          ))}
-          {eventError && <p className="w-full text-[11px] text-red-600">{eventError}</p>}
-        </div>
-
         {/* ── LOWER CHARTS ROW ─────────────────────────────────────────────── */}
-        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
 
           {/* Category Distribution */}
-          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <h3 className="text-sm font-bold text-slate-900">Category Distribution</h3>
             <p className="mt-0.5 text-xs text-slate-400">Sales distribution by category</p>
             <ChartHelp
@@ -2612,7 +2759,7 @@ function AnalyticsContent() {
           </div>
 
           {/* Sales by Condition */}
-          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <h3 className="text-sm font-bold text-slate-900">Sales by Condition</h3>
             <p className="mt-0.5 text-xs text-slate-400">Breakdown by item condition</p>
             <ChartHelp
@@ -2674,7 +2821,7 @@ function AnalyticsContent() {
           </div>
 
           {/* Reservation Activity */}
-          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 flex items-start justify-between">
               <div>
                 <h3 className="text-sm font-bold text-slate-900">Reservation Activity</h3>
@@ -2746,10 +2893,10 @@ function AnalyticsContent() {
         </div>
 
         {/* ── DATA TABLES ROW ──────────────────────────────────────────────── */}
-        <div className="grid grid-cols-1 gap-2 xl:grid-cols-[2fr_1fr_1fr]">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[2fr_1fr_1fr]">
 
           {/* Top Categories */}
-          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-bold text-slate-900">Top Categories</h3>
@@ -2790,7 +2937,7 @@ function AnalyticsContent() {
           </div>
 
           {/* Top Products */}
-          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3">
               <h3 className="text-sm font-bold text-slate-900">Top Products</h3>
               <p className="mt-0.5 text-xs text-slate-400">Best performing products</p>
@@ -2814,7 +2961,7 @@ function AnalyticsContent() {
           </div>
 
           {/* Inventory by Category */}
-          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 flex items-start justify-between gap-2">
               <div>
                 <h3 className="text-sm font-bold text-slate-900">Inventory by Category</h3>
@@ -2825,7 +2972,7 @@ function AnalyticsContent() {
                   <p className="text-lg font-bold leading-none text-slate-900">
                     {compactNumber.format(inventorySummary.reduce((sum, r) => sum + r.stock, 0))}
                   </p>
-                  <p className="mt-0.5 text-[10px] text-slate-400">total units</p>
+                  <p className="mt-0.5 text-[11px] text-slate-400">total units</p>
                 </div>
               )}
             </div>
@@ -2872,7 +3019,7 @@ function AnalyticsContent() {
         </div>
 
         {/* ── PREDICTIVE ANALYTICS + EXECUTIVE SUMMARY ─────────────────────── */}
-        <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
 
           {/* Category Forecast (was "Predictive Analytics")
               Rewritten because it contradicted the panels beside it. It was
@@ -2881,7 +3028,7 @@ function AnalyticsContent() {
               "fast-moving"; and it never said it reads only the last seven days
               of the range, so it disagreed with Top Categories - which covers
               the whole range - with no explanation. */}
-          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 flex items-start justify-between gap-2">
               <div>
                 <h3 className="text-sm font-bold text-slate-900">Category Forecast</h3>
@@ -2934,8 +3081,8 @@ function AnalyticsContent() {
                     <div className="grid grid-cols-2 gap-2">
                       {cards.map((c) => (
                         <div key={c.label} className="rounded-xl border border-slate-100 bg-slate-50/70 px-3.5 py-3">
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{c.label}</p>
-                          <p className="mt-1 truncate text-base font-bold text-slate-900">{c.value}</p>
+                          <p className="text-xs font-medium text-slate-500">{c.label}</p>
+                          <p className="mt-1 truncate text-lg font-bold tracking-tight text-slate-900">{c.value}</p>
                           <p className="mt-0.5 text-[11px] text-slate-500">{c.note}</p>
                         </div>
                       ))}
@@ -2958,21 +3105,21 @@ function AnalyticsContent() {
           </div>
 
           {/* Executive Summary — status cards */}
-          <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-4">
               <h3 className="text-sm font-bold text-slate-900">Executive Summary</h3>
               <p className="mt-0.5 text-xs text-slate-400">Key insights for {getRangeLabel(timeRangePreset).toLowerCase()}</p>
             </div>
             <div className="space-y-2.5">
               <div className="flex items-start gap-3 rounded-xl bg-slate-50 px-4 py-3">
-                <span className="mt-0.5 text-base">📊</span>
+                <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-blue-500" aria-hidden="true" />
                 <div>
                   <p className="text-xs font-semibold text-slate-600">Total Revenue</p>
                   <p className="text-sm font-bold text-slate-900">{currency(currentSummary.totalSales)}</p>
                 </div>
               </div>
               <div className="flex items-start gap-3 rounded-xl bg-slate-50 px-4 py-3">
-                <span className="mt-0.5 text-base">📦</span>
+                <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-slate-400" aria-hidden="true" />
                 <div>
                   <p className="text-xs font-semibold text-slate-600">Items Sold</p>
                   <p className="text-sm font-bold text-slate-900">
@@ -2982,7 +3129,7 @@ function AnalyticsContent() {
               </div>
               {currentSummary.topCategory && (
                 <div className="flex items-start gap-3 rounded-xl bg-green-50 px-4 py-3">
-                  <span className="mt-0.5 text-base">🔥</span>
+                  <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-green-500" aria-hidden="true" />
                   <div>
                     <p className="text-xs font-semibold text-green-700">Top Category</p>
                     <p className="text-sm font-bold text-slate-900">
@@ -2996,7 +3143,7 @@ function AnalyticsContent() {
               )}
               {comparisonMetrics.totalSales[0] && comparisonMetrics.totalSales[0].change !== null && (
                 <div className={`flex items-start gap-3 rounded-xl px-4 py-3 ${comparisonMetrics.totalSales[0].change >= 0 ? 'bg-green-50' : 'bg-red-50'}`}>
-                  <span className="mt-0.5 text-base">{comparisonMetrics.totalSales[0].change >= 0 ? '✅' : '⚠️'}</span>
+                  <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${comparisonMetrics.totalSales[0].change >= 0 ? 'bg-green-500' : 'bg-red-500'}`} aria-hidden="true" />
                   <div>
                     <p className={`text-xs font-semibold ${comparisonMetrics.totalSales[0].change >= 0 ? 'text-green-700' : 'text-red-600'}`}>Sales Trend</p>
                     <p className="text-sm text-slate-700">
@@ -3009,7 +3156,7 @@ function AnalyticsContent() {
               )}
               {aiForecast?.canForecast && aiForecast.aiForecast && (
                 <div className="flex items-start gap-3 rounded-xl bg-violet-50 px-4 py-3">
-                  <span className="mt-0.5 text-base">🧠</span>
+                  <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-violet-500" aria-hidden="true" />
                   <div>
                     <p className="text-xs font-semibold text-violet-700">AI Forecast</p>
                     <p className="text-sm text-slate-700">

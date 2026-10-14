@@ -213,9 +213,33 @@ interface RawAIForecast {
   confidence?: string
 }
 
+// What the AI is allowed to act on for one day. Checked in code after the
+// model answers, so a change can never rest on a reason that is not there.
+interface DayGrounding {
+  hasNote: boolean     // an owner Forecast Note falls on this day
+  holiday: string | null
+  stockLimited: boolean // stock is low enough that sales may be held back
+}
+
+function groundingFor(
+  base: WeightedForecastResult,
+  events: ForecastEventInput[],
+  inventory: InventoryContext | null
+): DayGrounding[] {
+  // Stock counts as a limit when at least 30% of item lines are low or out.
+  const stockLimited = !!inventory && inventory.itemLines > 0 &&
+    (inventory.lowStockLines + inventory.outOfStockLines) / inventory.itemLines >= 0.3
+  return base.forecast.map(d => ({
+    hasNote: events.some(e => e.date === d.date),
+    holiday: describeDay(d.date).holiday,
+    stockLimited,
+  }))
+}
+
 function parseAndValidate(
   raw: string,
-  baseForecast: WeightedDay[]
+  baseForecast: WeightedDay[],
+  grounding: DayGrounding[] = []
 ): AIEnhancementResult {
   // Strip any accidental markdown code fences
   const cleaned = raw.replace(/```(?:json)?/g, '').trim()
@@ -237,16 +261,29 @@ function parseAndValidate(
     // A missing, non-numeric or zero value is read as "no change": an empty
     // template value must never be mistaken for a 100% cut.
     const aiRaw = typeof item.ai === 'number' && isFinite(item.ai) && item.ai > 0 ? item.ai : weighted
-    const ai = boundAI(aiRaw, weighted)
+    let ai = boundAI(aiRaw, weighted)
     const suggestedChange = Math.round(aiRaw) !== weighted
+
+    // Grounding check: a change is kept only if this day has a Forecast Note
+    // or a holiday, or - for a decrease only - stock is limited. Anything else
+    // is a reason the model invented, and the calculated figure stands.
+    const g = grounding[i]
+    let ungrounded = false
+    if (g && ai !== weighted) {
+      const allowed = g.hasNote || !!g.holiday || (g.stockLimited && ai < weighted)
+      if (!allowed) { ai = weighted; ungrounded = true }
+    }
+
     const status: AIForecastDay['status'] =
-      ai !== weighted ? 'adjusted' : suggestedChange ? 'rejected' : 'kept'
+      ai !== weighted ? 'adjusted' : suggestedChange && !ungrounded ? 'rejected' : 'kept'
     // Strip any prompt labels the model copied into its reason.
     const aiReason = typeof item.reason === 'string'
       ? item.reason.replace(/OWNER EVENT\s*(\[[^\]]*\])?:?\s*/gi, '').replace(/\[[A-Z /]+\]\s*/g, '').trim().slice(0, 120)
       : ''
     const reason =
-      status === 'rejected'
+      ungrounded
+        ? 'No note, holiday or stock limit on this day, so the calculated figure is kept.'
+        : status === 'rejected'
         ? `Suggested change exceeded the 15% limit, so the calculated figure is kept.${aiReason ? ` (AI: ${aiReason})` : ''}`
         : aiReason || (status === 'kept' ? 'No clear reason to change this day.' : 'Adjusted by the AI.')
     return {
@@ -308,7 +345,8 @@ const baseKeyOf = (
 ) =>
   base.forecast.map(d => Math.round(d.weighted)).join(',') +
   '|' + events.map(e => `${e.date}:${e.type ?? 'other'}:${e.category ?? ''}:${e.note}`).sort().join(';') +
-  '|' + stockKeyOf(inventory)
+  '|' + stockKeyOf(inventory) +
+  '|grounded-v1' // bump to discard results cached before the grounding check
 
 // Cache key varies per category so category forecasts don't collide
 const cacheDocId = (category?: string) =>
@@ -391,7 +429,7 @@ export async function enhanceWithAI(
   // 3. Parse and validate (rejects any day outside ±15% of the statistical figure)
   let result: AIEnhancementResult
   try {
-    result = parseAndValidate(raw, base.forecast)
+    result = parseAndValidate(raw, base.forecast, groundingFor(base, events, inventory))
   } catch (err) {
     return {
       forecast: base.forecast.map(d => ({

@@ -9,6 +9,23 @@ import { NextResponse } from 'next/server'
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { Permission, resolvePermissions } from '@/lib/auth/permissions'
 
+
+// Turns a failed permission lookup into a message that says what went wrong.
+// The common case on the free Firebase plan is the daily read limit.
+function permissionLookupError(error: unknown): string {
+  const e = error as { code?: unknown; message?: unknown }
+  const code = String(e?.code ?? '')
+  const message = String(e?.message ?? error ?? '')
+  console.error('[authorize] Permission lookup failed:', code, message)
+  if (code === '8' || /RESOURCE_EXHAUSTED|quota/i.test(message)) {
+    return 'The database daily limit has been reached (Firebase free plan). It resets at about 3-4 PM Philippine time.'
+  }
+  if (/credential|private key|PEM|invalid_grant|UNAUTHENTICATED/i.test(message) || code === '16') {
+    return 'The server could not sign in to the database. Check the Firebase admin settings.'
+  }
+  return 'Unable to verify permissions.'
+}
+
 export interface AuthzResult {
   allowed: boolean
   reason?: string
@@ -50,9 +67,9 @@ export async function checkPermission(
       role,
       reason: 'Your account does not have permission to perform this action.',
     }
-  } catch {
-    // Fail closed — if we cannot verify, deny.
-    return { allowed: false, reason: 'Unable to verify permissions.' }
+  } catch (error) {
+    // Fail closed — if we cannot verify, deny, but say why.
+    return { allowed: false, reason: permissionLookupError(error) }
   }
 }
 
@@ -85,9 +102,9 @@ export async function requireAdmin(uid: unknown): Promise<NextResponse | null> {
       )
     }
     return null
-  } catch {
-    // Fail closed - if the role cannot be verified, deny.
-    return NextResponse.json({ error: 'Unable to verify permissions.' }, { status: 403 })
+  } catch (error) {
+    // Fail closed - if the role cannot be verified, deny, but say why.
+    return NextResponse.json({ error: permissionLookupError(error) }, { status: 403 })
   }
 }
 

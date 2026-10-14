@@ -26,15 +26,15 @@
 //   node scripts/simulate-sales-from-history.js --confirm
 //   to rebuild the simulated sales against the new items.
 //
-// Only runs against a project whose ID contains "demo", so it cannot wipe the
+// Only runs against a project whose ID contains "demo" or "test", so it cannot wipe the
 // store's real database by mistake. Download a backup first anyway.
 
 const { db, projectId, FieldValue } = require('./lib/adminDb')
 
 const confirm = process.argv.slice(2).includes('--confirm')
 
-if (!/demo/i.test(projectId)) {
-  console.error(`Refusing to run: project "${projectId}" is not a demo project.`)
+if (!/demo|test/i.test(projectId)) {
+  console.error(`Refusing to run: project "${projectId}" is not a demo or test project.`)
   process.exit(1)
 }
 

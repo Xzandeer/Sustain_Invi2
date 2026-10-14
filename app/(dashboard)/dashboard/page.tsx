@@ -390,7 +390,6 @@ function DashboardContent() {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-lg font-bold text-gray-900">{greeting}, {userName}</h1>
-            <span className="text-lg">👋</span>
           </div>
           <p className="text-xs text-gray-400">
             {now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
@@ -428,7 +427,7 @@ function DashboardContent() {
             title="Revenue (30 days)"
             value={fmt(recentRevenue)}
             change={revenueChange}
-            subtitle={salesHistory.size > 0 ? 'vs previous 30 days · incl. notebook data' : 'vs previous 30 days'}
+            subtitle="vs previous 30 days"
             spark={<Sparkline values={revenueSparkline} stroke="#3b82f6" fill="rgba(59,130,246,0.1)" />}
             loading={loading}
             iconBg="bg-blue-100"

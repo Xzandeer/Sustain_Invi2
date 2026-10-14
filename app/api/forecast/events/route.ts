@@ -1,6 +1,6 @@
 // Upcoming events for the forecast (see lib/server/forecastEvents.ts).
 //
-// GET              → events from today onward (next 30 days)
+// GET              → { events: today onward (next 30 days), history: last 90 days }
 // POST {date,type,category,note} → add an event
 //      type: shipment | sale | closure | other
 //      category: 'auto' (default, the AI decides), '' = whole store, or a category name
@@ -41,11 +41,18 @@ async function guard(req: NextRequest): Promise<NextResponse | null> {
   }
 }
 
+const HISTORY_DAYS = 90
+
 export async function GET(req: NextRequest) {
   const denied = await guard(req)
   if (denied) return denied
-  const events = await getForecastEvents(manilaKey(0), manilaKey(MAX_DAYS_AHEAD))
-  return NextResponse.json({ events })
+  // Upcoming events feed the forecast; past ones (last 90 days, newest first)
+  // are kept as a history of what the owner recorded and how the AI read it.
+  const [events, past] = await Promise.all([
+    getForecastEvents(manilaKey(0), manilaKey(MAX_DAYS_AHEAD)),
+    getForecastEvents(manilaKey(-HISTORY_DAYS), manilaKey(-1)),
+  ])
+  return NextResponse.json({ events, history: past.reverse() })
 }
 
 export async function POST(req: NextRequest) {

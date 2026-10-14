@@ -30,12 +30,12 @@ const GREETING: Message = {
 }
 
 const QUICK_QUESTIONS = [
-  '📊 Store overview',
-  '📦 Low stock items',
-  "💰 Today's sales",
-  '📈 Sales trend',
-  '🔮 Predict next week',
-  '🌟 What to promote?',
+  'Store overview',
+  'Low stock items',
+  "Today's sales",
+  'Sales trend',
+  'Predict next week',
+  'What to promote?',
 ]
 
 const INTENT_LABELS: Record<string, string> = {
@@ -385,7 +385,7 @@ export default function FloatingChatBot() {
               {QUICK_QUESTIONS.map(q => (
                 <button
                   key={q}
-                  onClick={() => void sendMessage(q.replace(/^[^\s]+\s/, ''))}
+                  onClick={() => void sendMessage(q)}
                   className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-medium text-slate-600 transition-all hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700 active:scale-95"
                 >
                   {q}

@@ -58,12 +58,34 @@ export async function GET(req: NextRequest) {
   // ?category=Footwear scopes the forecast to a single category
   const url = new URL(req.url)
   const force = url.searchParams.get('force') === 'true'
+  // ?ai=0 returns the statistical forecast only, without waiting for the
+  // language model. The page uses it to draw the chart at once, then asks
+  // again for the AI review.
+  const skipAI = url.searchParams.get('ai') === '0'
   const categoryParam = url.searchParams.get('category')?.trim() || undefined
   const category = categoryParam && categoryParam.toLowerCase() !== 'all' ? categoryParam : undefined
 
   try {
-    // ── 2. Fetch summarized sales data ────────────────────────────────────────
-    const summary = await getSalesSummary(category)
+    const apiKey = skipAI ? undefined : process.env.OPENAI_API_KEY
+
+    // ── 2. Everything the forecast needs, read in parallel ───────────────────
+    // The seven forecast dates are known in advance (tomorrow onward, in
+    // Philippine time - the same dates weightedForecast produces), so notes,
+    // stock and category names do not have to wait for the sales summary.
+    const manilaKey = (offsetDays: number) =>
+      new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(new Date(Date.now() + offsetDays * 86400000))
+    const [summary, allEvents, inventoryCtx, categoryNames] = await Promise.all([
+      getSalesSummary(category),
+      apiKey ? getForecastEvents(manilaKey(1), manilaKey(7)) : Promise.resolve([]),
+      apiKey ? getInventoryContext(category) : Promise.resolve(null),
+      apiKey && category
+        ? getAdminDb().collection('categories').get()
+            .then(snap => snap.docs.map(d => String((d.data() as Record<string, unknown>).name ?? '')).filter(Boolean))
+            .catch(() => [] as string[])
+        : Promise.resolve([] as string[]),
+    ])
 
     if (!summary.canForecast) {
       return NextResponse.json({
@@ -78,22 +100,10 @@ export async function GET(req: NextRequest) {
     // ── 3. Statistical base forecast ──────────────────────────────────────────
     const baseForecast = buildWeightedForecast(summary.daily)
 
-    // ── 4. Owner events on the forecast days, then the AI review (optional) ──
-    const days = baseForecast.forecast
-    const allEvents = days.length
-      ? await getForecastEvents(days[0].date, days[days.length - 1].date)
-      : []
-    // Only events for this category (or the whole store) reach a category forecast.
-    let categoryNames: string[] = []
-    if (category && allEvents.length) {
-      const catSnap = await getAdminDb().collection('categories').get().catch(() => null)
-      categoryNames = (catSnap?.docs ?? [])
-        .map(d => String((d.data() as Record<string, unknown>).name ?? ''))
-        .filter(Boolean)
-    }
+    // ── 4. Owner notes for this scope, then the AI review (optional) ─────────
+    // Only notes for this category (or the whole store) reach a category forecast.
     const events = eventsForScope(allEvents, category, categoryNames)
-    const apiKey = process.env.OPENAI_API_KEY
-    const inventory = apiKey ? await getInventoryContext(category) : null
+    const inventory = inventoryCtx
     const aiForecast = apiKey
       ? await enhanceWithAI(
           baseForecast, summary, apiKey, force, category,
@@ -138,6 +148,7 @@ export async function GET(req: NextRequest) {
         dataStart: summary.dataStart,
         dataEnd: summary.dataEnd,
       },
+      aiSkipped: skipAI,
       events: events.map(e => ({
         id: e.id, date: e.date, type: e.type, note: e.note,
         categoryMode: e.categoryMode, category: e.category,
