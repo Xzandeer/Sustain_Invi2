@@ -21,7 +21,20 @@ export const BACKUP_COLLECTIONS = [
   'users',
   'storeSettings',
   'transactionCounters',
+  // Imported notebook sales and the owner's Forecast Notes.
+  'salesHistory',
+  'forecastEvents',
 ] as const
+
+// Collections the in-app restore will write. Staff accounts are left out on
+// purpose: restoring an old copy of `users` could undo a role change or lock
+// the current administrator out. Accounts are managed on the Users page (and
+// can still be restored with scripts/restore-backup.js if ever needed).
+export const RESTORABLE_COLLECTIONS = BACKUP_COLLECTIONS.filter((c) => c !== 'users')
+
+// Records per restore request. Keeps each request well under the hosting
+// platform's request-size limit and Firestore's 500-write batch limit.
+export const RESTORE_CHUNK_SIZE = 200
 
 export interface BackupFile {
   format: 'sustain-backup'

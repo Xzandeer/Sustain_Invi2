@@ -48,10 +48,9 @@ import { isBarcodeScanSupported } from '@/components/sales/BarcodeScanner'
 const BarcodeScanner = dynamic(() => import('@/components/sales/BarcodeScanner'), { ssr: false })
 
 
-// A Philippine mobile number is 11 digits (09 followed by nine more).
-// Reservations require one so the customer can be contacted when their hold is
-// about to expire - a reservation nobody can be reached about just freezes stock.
-const isValidContactNumber = (value: string) => /^\d{11}$/.test(value.trim())
+// 11-digit contact rule and the reservation request are shared with the
+// dashboard's Reserve Item quick action.
+import { createReservation, isValidContactNumber } from '@/lib/reservations/createReservation'
 
 const DATE_RANGES = [
   { key: 'today', label: 'Today' },
@@ -1216,49 +1215,12 @@ function SalesContent() {
     setSuccessMessage('')
 
     try {
-      const invalidCartItem = cart.find(
-        (item) =>
-          !item.id ||
-          !item.name ||
-          !Number.isFinite(item.price) ||
-          item.price < 0 ||
-          !Number.isFinite(item.quantity) ||
-          item.quantity <= 0
-      )
-
-      if (invalidCartItem) {
-        throw new Error(`Invalid cart item: ${invalidCartItem.name || invalidCartItem.id || 'Unknown item'}`)
-      }
-
-      const response = await apiFetch('/api/reservations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: cart.map((item) => ({
-            itemId: item.id,
-            quantity: item.quantity,
-          })),
-          customerDetails: {
-            fullName: customerFullName.trim(),
-            email: customerEmail.trim(),
-            contactNumber: customerContactNumber.trim(),
-          },
-          processedBy: {
-            uid: auth.currentUser?.uid ?? '',
-            email: auth.currentUser?.email ?? '',
-            name: auth.currentUser?.displayName ?? auth.currentUser?.email ?? '',
-          },
-        }),
+      // Same request the dashboard's Reserve Item quick action sends.
+      const result = await createReservation(cart, {
+        fullName: customerFullName,
+        email: customerEmail,
+        contactNumber: customerContactNumber,
       })
-
-      const result = (await response.json()) as {
-        error?: string
-        document?: CompletedTransactionDocument
-        receipt?: ReceiptRecord
-      }
-      if (!response.ok) {
-        throw new Error(result.error || 'Failed to create reservation.')
-      }
 
       setCart([])
       setCustomerFullName('')

@@ -23,6 +23,7 @@ import { doc, getDoc, updateDoc } from 'firebase/firestore'
 import { auth, db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { useUserRole } from '@/hooks/useUserRole'
+import RestoreBackup from '@/components/settings/RestoreBackup'
 import {
   getReceiptPaperWidth,
   setReceiptPaperWidth,
@@ -552,14 +553,15 @@ function SettingsContent() {
                 <div className="border-b border-slate-100 px-6 py-4">
                   <h2 className="text-base font-bold text-slate-900">Data Backup</h2>
                   <p className="mt-0.5 text-sm text-slate-500">
-                    Download a complete copy of the store&apos;s records.
+                    Download a complete copy of the store&apos;s records, or restore one.
                   </p>
                 </div>
                 <div className="space-y-4 px-6 py-5">
                   <div className="rounded-lg bg-slate-50 px-4 py-3 text-sm text-slate-600">
                     <p>
                       The file contains inventory, categories, sales, receipts, reservations, stock logs, staff
-                      accounts and store settings. It can be loaded back into the system if records are ever lost.
+                      accounts, store settings, notebook sales history and forecast notes. It can be restored below
+                      if records are ever lost.
                     </p>
                     <p className="mt-2">
                       <span className="font-semibold text-slate-800">Last backup:</span>{' '}
@@ -586,6 +588,8 @@ function SettingsContent() {
                     {backupLoading ? 'Preparing backup...' : 'Download backup'}
                   </button>
                   <p className="text-xs text-slate-400">Recommended at least once a week.</p>
+
+                  <RestoreBackup onDownloadBackup={handleDownloadBackup} />
                 </div>
               </section>
             )}

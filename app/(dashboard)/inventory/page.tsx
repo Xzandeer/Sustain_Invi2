@@ -26,6 +26,7 @@ import { toast } from 'sonner'
 import { auth, db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import ProductModal, { ProductFormValues } from '@/components/inventory/ProductModal'
+import { saveProduct } from '@/lib/inventory/saveProduct'
 import StockAdjustmentModal from '@/components/inventory/StockAdjustmentModal'
 import CategoryModal from '@/components/categories/CategoryModal'
 import { useUserRole } from '@/hooks/useUserRole'
@@ -358,38 +359,8 @@ function InventoryContent() {
     setError('')
     setSavingProduct(true)
     try {
-      const category = categories.find((item) => item.id === values.categoryId)
-      if (!category) {
-        throw new Error('Please select a valid category.')
-      }
-
-      const targetUrl = editingProduct ? `/api/inventory/${editingProduct.id}` : '/api/inventory'
-      const method = editingProduct ? 'PUT' : 'POST'
-      const response = await apiFetch(targetUrl, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: values.name,
-          categoryId: values.categoryId,
-          categoryName: category.name,
-          price: values.price,
-          quantity: values.quantity,
-          minStock: values.minStock,
-          condition: values.condition,
-          isSingleItem: values.isSingleItem === true,
-          conditionNotes: values.conditionNotes ?? '',
-          processedBy: {
-            uid: auth.currentUser?.uid ?? '',
-            email: auth.currentUser?.email ?? '',
-            name: auth.currentUser?.displayName ?? auth.currentUser?.email ?? '',
-          },
-        }),
-      })
-
-      const payload = (await response.json()) as { error?: string }
-      if (!response.ok) {
-        throw new Error(payload.error || 'Failed to save item.')
-      }
+      // Same request the dashboard's Add Item quick action sends.
+      await saveProduct(values, categories, editingProduct?.id)
 
       setIsProductModalOpen(false)
       setEditingProduct(null)

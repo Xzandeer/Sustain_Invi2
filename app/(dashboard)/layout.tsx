@@ -4,7 +4,7 @@
 // AI assistant. Pages render inside this.
 //
 // MOBILE
-// The sidebar is a fixed 224px column on tablet and desktop. On a phone that
+// The sidebar is a fixed 208px column on tablet and desktop. On a phone that
 // would consume most of the screen before any content renders, so below the
 // `md` breakpoint it becomes a slide-over drawer opened from a compact top bar,
 // and the main content takes the full width.
@@ -31,6 +31,14 @@ export default function DashboardLayout({
 
   // A drawer over a scrolling page lets the background move underneath, which
   // reads as broken. Lock the body while it is open.
+  // Escape closes the drawer, as it does any overlay.
+  useEffect(() => {
+    if (!navOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setNavOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [navOpen])
+
   useEffect(() => {
     if (!navOpen) return
     const previous = document.body.style.overflow
@@ -41,7 +49,7 @@ export default function DashboardLayout({
   return (
     <div className="flex min-h-screen">
       {/* Desktop and tablet: permanent column */}
-      <div className="fixed left-0 top-0 hidden h-screen w-56 md:block">
+      <div className="fixed left-0 top-0 hidden h-screen w-52 md:block">
         <Sidebar />
       </div>
 
@@ -53,13 +61,18 @@ export default function DashboardLayout({
             onClick={() => setNavOpen(false)}
             aria-hidden
           />
-          <div className="absolute left-0 top-0 h-full w-64 shadow-xl">
-            <Sidebar />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Navigation"
+            className="absolute left-0 top-0 h-full w-60 shadow-[4px_0_24px_rgba(15,23,42,0.35)]"
+          >
+            <Sidebar onClose={() => setNavOpen(false)} />
           </div>
         </div>
       )}
 
-      <main className="min-h-screen w-full overflow-y-auto bg-[#f5f6fa] md:ml-56">
+      <main className="min-h-screen w-full overflow-y-auto bg-[#f5f6fa] md:ml-52">
         {/* Phone top bar. Hidden from md up, where the sidebar is always visible. */}
         <div className="sticky top-0 z-30 flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-3 md:hidden">
           <button
