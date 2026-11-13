@@ -20,6 +20,8 @@ import {
   ReceiptRecord,
 } from '@/lib/transactions/transactionDocuments'
 
+const round2 = (n: number) => Math.round(n * 100) / 100
+
 interface SalesPayload {
   itemId?: unknown
   quantity?: unknown
@@ -27,7 +29,8 @@ interface SalesPayload {
   customer?: unknown
   customerDetails?: unknown
   processedBy?: unknown
-  reduceQuantity?: unknown
+  /** Peso discount on the whole sale (the cashier's discount box). */
+  discount?: unknown
 }
 
 interface CustomerDetails {
@@ -136,8 +139,7 @@ export async function POST(req: NextRequest) {
   if (denied) return denied
 
     const customerDetails = parseCustomerDetails(body.customerDetails)
-    const processedBy = await getProcessedByInfo(body.processedBy)
-    const reduceQuantity = body.reduceQuantity !== false
+    const processedBy = await getProcessedByInfo(req)
     const payloadItems = Array.isArray(body.items)
       ? body.items
       : typeof body.itemId === 'string'
@@ -180,6 +182,13 @@ export async function POST(req: NextRequest) {
     if (mergedItems.length === 0) {
       return NextResponse.json({ error: 'Add at least one valid item to continue.' }, { status: 400 })
     }
+
+    // Step 5b: The discount: a peso amount, never negative.
+    const rawDiscount = typeof body.discount === 'number' ? body.discount : Number(body.discount ?? 0)
+    if (!Number.isFinite(rawDiscount) || rawDiscount < 0) {
+      return NextResponse.json({ error: 'Discount must be zero or more.' }, { status: 400 })
+    }
+    const requestedDiscount = round2(rawDiscount)
 
     // Step 6: Check current time
     const now = new Date()
@@ -269,11 +278,6 @@ export async function POST(req: NextRequest) {
         })
       }
 
-      // Only reduce inventory if reduceQuantity flag is true
-      if (!reduceQuantity) {
-        return
-      }
-
       // Apply all inventory updates atomically
       for (const update of pendingUpdates) {
         transaction.update(update.ref, {
@@ -284,8 +288,10 @@ export async function POST(req: NextRequest) {
       }
     })
 
-    // Step 10: Calculate total amount and get unique categories
-    const totalAmount = saleLines.reduce((sum, item) => sum + item.quantity * item.price, 0)
+    // Step 10: Totals. The discount never makes the total negative.
+    const subtotal = round2(saleLines.reduce((sum, item) => sum + item.quantity * item.price, 0))
+    const discount = Math.min(requestedDiscount, subtotal)
+    const totalAmount = round2(subtotal - discount)
     const categoryNames = Array.from(new Set(saleLines.map((item) => item.categoryName)))
 
     // Snapshot the store's warranty policy and seller details onto this sale.
@@ -323,6 +329,9 @@ export async function POST(req: NextRequest) {
       customerName: customerDetails.fullName,
       customerEmail: customerDetails.email,
       customerContactNumber: customerDetails.contactNumber,
+      // What the customer paid. subtotal is the list value of the lines.
+      subtotal,
+      discount,
       totalAmount,
       quantity: saleLines.reduce((sum, item) => sum + item.quantity, 0),
       total: totalAmount,
@@ -378,6 +387,7 @@ export async function POST(req: NextRequest) {
       storeTagline: STORE_TAGLINE,
       customer: customerDetails,
       items: receiptItems,
+      ...(discount > 0 ? { subtotal, discount } : {}),
       totalAmount,
       transactionDate: nowIso,
       processedBy: processedBy.name,
@@ -396,8 +406,8 @@ export async function POST(req: NextRequest) {
       customerName: customerDetails.fullName,
       contactNumber: customerDetails.contactNumber,
       items: receiptItems,
-      subtotal: totalAmount,
-      discount: 0,
+      subtotal,
+      discount,
       total: totalAmount,
       cashierName: processedBy.name,
       createdAt: nowIso,

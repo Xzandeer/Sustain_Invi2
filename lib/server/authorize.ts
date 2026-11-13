@@ -154,41 +154,6 @@ export async function noAdminExists(): Promise<boolean> {
   }
 }
 
-/**
- * Guard for routes that already receive a `processedBy: { uid, name, email }`
- * object in the request body.
- *
- * Returns null when the action is allowed, or a ready-made error response when
- * it is not — so a route can simply do:
- *
- *   const denied = await guardProcessedBy(body.processedBy, 'canManageInventory')
- *   if (denied) return denied
- *
- * The uid is read from the body rather than a session cookie, which means it is
- * only as trustworthy as the caller. It is still a real check: the permission
- * itself is read from Firestore, so a staff account cannot grant itself rights
- * by editing the request. Verifying a Firebase ID token here instead would close
- * the remaining gap and is the next step for this code.
- */
-export async function guardProcessedBy(
-  processedBy: unknown,
-  permission: Permission
-): Promise<NextResponse | null> {
-  const raw =
-    processedBy && typeof processedBy === 'object'
-      ? (processedBy as Record<string, unknown>).uid
-      : undefined
-  const uid = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined
-
-  const result = await checkPermission(uid, permission)
-  if (result.allowed) return null
-
-  return NextResponse.json(
-    { error: result.reason ?? 'You are not allowed to perform this action.' },
-    { status: uid ? 403 : 401 }
-  )
-}
-
 // ── Caller identity ──────────────────────────────────────────────────────────
 //
 // The guards above take a uid. Until now every route read that uid out of the

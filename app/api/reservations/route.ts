@@ -110,7 +110,7 @@ export async function POST(req: NextRequest) {
   const denied = await guardRequest(req, 'canManageReservations')
   if (denied) return denied
 
-    const processedBy = await getProcessedByInfo(body.processedBy)
+    const processedBy = await getProcessedByInfo(req)
     const items = Array.isArray(body.items) ? body.items : []
 
     if (!customerDetails) {

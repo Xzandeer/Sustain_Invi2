@@ -63,6 +63,9 @@ export async function POST(req: NextRequest) {
     if (!name?.trim() || !email?.trim() || !password || !role) {
       return NextResponse.json({ error: 'All fields are required.' }, { status: 400 })
     }
+    if (role !== 'admin' && role !== 'staff') {
+      return NextResponse.json({ error: 'Role must be admin or staff.' }, { status: 400 })
+    }
     const pwCheck = checkPassword(password)
     if (!pwCheck.ok) {
       return NextResponse.json({ error: pwCheck.reason }, { status: 400 })

@@ -149,6 +149,12 @@ const TransactionDocument = forwardRef<HTMLDivElement, TransactionDocumentProps>
           never lined up and the block read as misaligned rather than a total. */}
       {isSale ? (
         <div className="mt-4 border-t border-slate-200 pt-3">
+          {document.discount ? (
+            <div className="mb-2 space-y-0.5 text-[13px] text-slate-600">
+              <div className="flex justify-between"><span>Subtotal</span><span className="tabular-nums">{formatCurrency(document.subtotal ?? document.totalAmount + document.discount)}</span></div>
+              <div className="flex justify-between"><span>Discount</span><span className="tabular-nums">-{formatCurrency(document.discount)}</span></div>
+            </div>
+          ) : null}
           <div className="flex items-baseline justify-between gap-4">
             <p className={labelClassName}>Total Amount</p>
             <p className="text-2xl font-bold tracking-tight tabular-nums text-slate-900">

@@ -38,7 +38,7 @@ export async function POST(req: Request, context: RouteContext) {
     const denied = await guardRequest(req, 'canManageInventory')
     if (denied) return denied
 
-    const processedBy = await getProcessedByInfo(body.processedBy)
+    const processedBy = await getProcessedByInfo(req)
 
     // Step 2: Validate action and quantity
     if (!id || !['add', 'deduct', 'transfer'].includes(action)) {

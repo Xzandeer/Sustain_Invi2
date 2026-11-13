@@ -27,6 +27,9 @@ interface ReservationActionPayload {
 // The sale is already recorded and the stock already deducted - only the
 // handover is outstanding, which is why it is a reservation state and not a
 // second kind of sale.
+/** How many times one hold may be extended. */
+const MAX_EXTENSIONS = 2
+
 type ReservationStatus = 'Active' | 'AwaitingCollection' | 'Completed' | 'Cancelled' | 'Expired'
 
 interface ReservationItemRecord {
@@ -86,7 +89,7 @@ export async function PATCH(req: Request, context: RouteContext) {
     const denied = await guardRequest(req, 'canManageReservations')
     if (denied) return denied
 
-    const processedBy = await getProcessedByInfo(body.processedBy)
+    const processedBy = await getProcessedByInfo(req)
 
     // Step 2: Validate cancellation reason if cancelling
     const selectedReason = isCancellationReasonValid(body.cancellationReason)
@@ -148,6 +151,19 @@ export async function PATCH(req: Request, context: RouteContext) {
         throw new Error('RESERVATION_NOT_ACTIVE')
       }
 
+      // "Expire" is for a hold whose time is up. Ending one early is a
+      // cancellation, which asks for a reason.
+      const expiresAtMs = typeof data.expiresAt === 'string' ? Date.parse(data.expiresAt) : Number.NaN
+      if (action === 'expire' && Number.isFinite(expiresAtMs) && expiresAtMs > Date.now()) {
+        throw new Error('RESERVATION_NOT_DUE')
+      }
+      // A hold can be extended a limited number of times, so stock cannot be
+      // kept off sale indefinitely.
+      const extensions = typeof data.extensionCount === 'number' ? data.extensionCount : 0
+      if (action === 'extend' && extensions >= MAX_EXTENSIONS) {
+        throw new Error('RESERVATION_EXTEND_LIMIT')
+      }
+
       // ── Collect: the customer came back for goods already paid for ──
       //
       // No stock moves. It was deducted when they paid, and the sale exists
@@ -172,6 +188,7 @@ export async function PATCH(req: Request, context: RouteContext) {
         const until = new Date(Date.now() + holdDays * 24 * 60 * 60 * 1000)
         transaction.update(reservationRef, {
           expiresAt: until.toISOString(),
+          extensionCount: extensions + 1,
           updatedAt: nowIso,
         })
         return
@@ -561,6 +578,13 @@ export async function PATCH(req: Request, context: RouteContext) {
           { error: 'Only a lapsed or cancelled reservation can be reinstated.' },
           { status: 400 }
         )
+      }
+
+      if (error.message === 'RESERVATION_NOT_DUE') {
+        return NextResponse.json({ error: 'This hold has not expired yet. Use Cancel to end it early.' }, { status: 400 })
+      }
+      if (error.message === 'RESERVATION_EXTEND_LIMIT') {
+        return NextResponse.json({ error: `This hold has already been extended ${MAX_EXTENSIONS} times. Ask the customer to collect it, or cancel it.` }, { status: 400 })
       }
 
       if (error.message === 'RESERVATION_NOT_ACTIVE') {

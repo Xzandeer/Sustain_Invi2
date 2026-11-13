@@ -60,6 +60,9 @@ export interface SaleReceiptDocument extends SellerDetails {
   storeTagline: string
   customer: TransactionCustomerInfo
   items: TransactionLineItem[]
+  /** Set only when a discount was given: the list value before it. */
+  subtotal?: number
+  discount?: number
   totalAmount: number
   transactionDate: string
   processedBy: string

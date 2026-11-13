@@ -144,12 +144,17 @@ export const getStockStatus = (item: {
   stock?: unknown
   quantity?: unknown
   minStock?: unknown
+  reservedStock?: unknown
 }): StockStatus => {
   const stock = toNumber(item.stock ?? item.quantity, 0)
   const minStock = toNumber(item.minStock, 0)
+  // Pieces on hold for a customer cannot be sold, so an item whose whole stock
+  // is reserved is out of stock as far as the counter is concerned - which is
+  // also what the Sales page shows as available.
+  const available = stock - Math.min(Math.max(0, toNumber(item.reservedStock, 0)), stock)
 
-  if (stock === 0) return 'Out of Stock'
-  if (stock <= minStock) return 'Low Stock'
+  if (available <= 0) return 'Out of Stock'
+  if (available <= minStock) return 'Low Stock'
   return 'Available'
 }
 

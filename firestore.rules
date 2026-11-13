@@ -41,6 +41,13 @@ service cloud.firestore {
       return isSignedIn() && userDoc().role == 'admin';
     }
 
+    // Signed in and not switched off on the Users page.
+    function isActive() {
+      return isSignedIn() && userDoc().get('isDisabled', false) != true;
+    }
+    function canViewAnalytics() {
+      return isAdmin() || (isActive() && userDoc().get('canViewAnalytics', false) == true);
+    }
     function canViewStockLogs() {
       return isAdmin() || (isSignedIn() && userDoc().canViewStockLogs == true);
     }
@@ -92,18 +99,18 @@ service cloud.firestore {
     }
 
     // ── everything else — read for signed-in users, writes via the API ──────
-    match /inventory/{docId}            { allow read: if isSignedIn(); allow write: if false; }
-    match /sales/{docId}                { allow read: if isSignedIn(); allow write: if false; }
+    match /inventory/{docId}            { allow read: if isActive(); allow write: if false; }
+    match /sales/{docId}                { allow read: if isActive(); allow write: if false; }
     // Reservations hold customers' names and contact numbers, so reading them
     // needs the same permission as working with them.
     match /reservations/{docId}         { allow read: if canManageReservations(); allow write: if false; }
-    match /categories/{docId}           { allow read: if isSignedIn(); allow write: if false; }
+    match /categories/{docId}           { allow read: if isActive(); allow write: if false; }
     // Imported notebook history (daily totals only). Written by
     // scripts/import-sales-history.js with the Admin SDK.
-    match /salesHistory/{docId}         { allow read: if isSignedIn(); allow write: if false; }
-    match /receipts/{docId}             { allow read: if isSignedIn(); allow write: if false; }
-    match /storeSettings/{docId}        { allow read: if isSignedIn(); allow write: if false; }
-    match /transactionCounters/{docId}  { allow read: if isSignedIn(); allow write: if false; }
+    match /salesHistory/{docId}         { allow read: if canViewAnalytics(); allow write: if false; }
+    match /receipts/{docId}             { allow read: if isActive(); allow write: if false; }
+    match /storeSettings/{docId}        { allow read: if isActive(); allow write: if false; }
+    match /transactionCounters/{docId}  { allow read: if isActive(); allow write: if false; }
 
     // Server-only collections. The browser has no reason to see either: the
     // forecast cache is served through /api/forecast, and nothing reads

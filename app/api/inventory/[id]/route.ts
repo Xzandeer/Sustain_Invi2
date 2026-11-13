@@ -37,6 +37,11 @@ export async function PUT(req: Request, context: RouteContext) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
     }
 
+    // Editing an item is a privileged action - checked before anything is
+    // read, so a caller who is not allowed cannot even tell which ids exist.
+    const denied = await guardRequest(req, 'canManageInventory')
+    if (denied) return denied
+
     const snapshot = await getAdminDb().collection('inventory').doc(id).get()
     if (!snapshot.exists) {
       return NextResponse.json({ error: 'Item not found' }, { status: 404 })
@@ -46,11 +51,7 @@ export async function PUT(req: Request, context: RouteContext) {
     const body = (await req.json()) as InventoryUpdatePayload
     const current = snapshot.data() as Record<string, unknown>
 
-    // Editing an item is a privileged action - check before reading further.
-    const denied = await guardRequest(req, 'canManageInventory')
-    if (denied) return denied
-
-    const processedBy = await getProcessedByInfo(body.processedBy)
+    const processedBy = await getProcessedByInfo(req)
     const remarks = typeof body.remarks === 'string' ? body.remarks.trim() : ''
 
     const name =
@@ -267,7 +268,7 @@ export async function DELETE(req: Request, context: RouteContext) {
     const body = (await req.json().catch(() => ({}))) as { processedBy?: unknown }
     const deniedDelete = await requireAdminRequest(req)
     if (deniedDelete) return deniedDelete
-    await assertAdminUser(body.processedBy)
+    await assertAdminUser(req)
 
     // Step 2: Get current item data
     const docRef = getAdminDb().collection('inventory').doc(id)
@@ -330,6 +331,9 @@ export async function PATCH(req: Request, context: RouteContext) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
     }
 
+    const deniedPatch = await requireAdminRequest(req)
+    if (deniedPatch) return deniedPatch
+
     const docRef = getAdminDb().collection('inventory').doc(id)
     const snapshot = await docRef.get()
     if (!snapshot.exists) {
@@ -339,9 +343,7 @@ export async function PATCH(req: Request, context: RouteContext) {
     // Step 2: Parse request and get admin user
     const body = (await req.json()) as { action?: unknown }
     const action = typeof body.action === 'string' ? body.action : ''
-    const deniedPatch = await requireAdminRequest(req)
-    if (deniedPatch) return deniedPatch
-    const processedBy = await assertAdminUser((body as Record<string, unknown>).processedBy)
+    const processedBy = await assertAdminUser(req)
     const snapshotData = snapshot.data() as Record<string, unknown>
     const itemName = typeof snapshotData.name === 'string' ? snapshotData.name.trim() : 'Unnamed Item'
     const condition = normalizeInventoryCondition(snapshotData.condition)

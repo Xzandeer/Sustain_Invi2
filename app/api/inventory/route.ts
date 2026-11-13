@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
     const denied = await guardRequest(req, 'canManageInventory')
     if (denied) return denied
 
-    const processedBy = await getProcessedByInfo(body.processedBy)
+    const processedBy = await getProcessedByInfo(req)
     const remarks = typeof body.remarks === 'string' ? body.remarks.trim() : ''
 
     // Step 2: Validate required fields

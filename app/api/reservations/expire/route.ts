@@ -15,7 +15,7 @@ import { getAdminDb } from '@/lib/firebaseAdmin'
 import { createStockLog } from '@/lib/server/inventory'
 import { toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { SYSTEM_CANCELLATION_REASON } from '@/lib/reservations/cancellationReasons'
-import { guardRequest } from '@/lib/server/authorize'
+import { requireActiveUserRequest } from '@/lib/server/authorize'
 
 export const dynamic = 'force-dynamic'
 
@@ -55,7 +55,10 @@ const SYSTEM_USER = {
 }
 
 export async function POST(req: NextRequest) {
-  const denied = await guardRequest(req, 'canManageReservations')
+  // Any active account: the sweep only releases holds already past their
+  // expiry, which is the system's job. The Dashboard and Sales need it too,
+  // or overdue holds keep stock off sale until someone opens Reservations.
+  const denied = await requireActiveUserRequest(req)
   if (denied) return denied
 
   try {

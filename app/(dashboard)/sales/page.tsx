@@ -25,6 +25,7 @@
 
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { apiFetch } from '@/lib/apiFetch'
+import { expireReservations } from '@/lib/reservations/reservationExpiration'
 import { collection, onSnapshot, orderBy, query, Timestamp, where } from 'firebase/firestore'
 import { toPng } from 'html-to-image'
 import { Download, Mail, Minus, Plus, Printer, Search, ShoppingCart, Trash2 } from 'lucide-react'
@@ -1103,6 +1104,10 @@ function SalesContent() {
     setCart((currentCart) => currentCart.filter((item) => item.id !== itemId))
   }
 
+  // Release overdue holds on open, so their stock can be sold. The live
+  // inventory listener picks up the change.
+  useEffect(() => { void expireReservations() }, [])
+
   const completeSale = async () => {
     if (cart.length === 0) {
       setError('Cart is empty.')
@@ -1147,6 +1152,8 @@ function SalesContent() {
             itemId: item.id,
             quantity: item.quantity,
           })),
+          // The peso discount the cashier entered; the server checks it.
+          discount: Math.round(discount * 100) / 100,
           customerDetails: {
             fullName: customerFullName.trim(),
             email: customerEmail.trim(),
@@ -1170,6 +1177,7 @@ function SalesContent() {
       }
 
       setCart([])
+      setDiscountInput('')
       setCustomerFullName('')
       setCustomerEmail('')
       setCustomerContactNumber('')

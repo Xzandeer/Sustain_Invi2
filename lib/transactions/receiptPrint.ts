@@ -417,6 +417,10 @@ export const openReceiptPrintWindow = (
         isSale
           ? `
         <div class="total-section">
+          ${document.type === 'sale' && document.discount ? `
+            <div style="display:flex;justify-content:space-between;font-size:11px;"><span>Subtotal</span><span>${formatCurrency(document.subtotal ?? document.totalAmount + document.discount)}</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px;"><span>Discount</span><span>-${formatCurrency(document.discount)}</span></div>
+          ` : ''}
           <div class="total-amount">${formatCurrency(document.totalAmount)}</div>
         </div>
       `

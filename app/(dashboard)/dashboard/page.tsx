@@ -30,7 +30,7 @@
 //   Reserve Item -> ReserveItemModal, submitted with the same request as the POS
 //                   "Reserve Order" (lib/reservations/createReservation)
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { collection, getDocs, orderBy, query, limit, Timestamp, where } from 'firebase/firestore'
@@ -45,6 +45,7 @@ import { useUserRole } from '@/hooks/useUserRole'
 import ProductModal, { type ProductFormValues } from '@/components/inventory/ProductModal'
 import ReserveItemModal, { type ReservableItem } from '@/components/dashboard/ReserveItemModal'
 import QuickSaleModal from '@/components/dashboard/QuickSaleModal'
+import { expireReservations } from '@/lib/reservations/reservationExpiration'
 import { saveProduct, type CategoryRef } from '@/lib/inventory/saveProduct'
 import { getStockLogActionLabel, resolveStockLogAction } from '@/lib/inventory/stockLogActions'
 
@@ -116,11 +117,20 @@ const toLines = (v: unknown): LineItem[] =>
     : []
 
 // Local calendar date as YYYY-MM-DD - the key used by imported sales history.
-const dayKeyOf = (d: Date) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+// Every day on this page is a day in the shop, in Manila time, whatever
+// timezone the device is set to. Manila has no daylight saving, so a day is
+// always exactly 24 hours and day arithmetic can be done in milliseconds.
+const SHOP_TZ = 'Asia/Manila'
+const DAY_MS = 24 * 60 * 60 * 1000
+const dayFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: SHOP_TZ, year: 'numeric', month: '2-digit', day: '2-digit' })
+/** YYYY-MM-DD of the shop day this moment falls in. */
+const dayKeyOf = (d: Date) => dayFormatter.format(d)
+/** Midnight in Manila at the start of the shop day containing d. */
+const startOfDay = (d: Date) => new Date(`${dayKeyOf(d)}T00:00:00+08:00`)
+const daysBefore = (d: Date, n: number) => new Date(d.getTime() - n * DAY_MS)
 
-const startOfDay = (d: Date) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x }
-const daysBefore = (d: Date, n: number) => { const x = new Date(d); x.setDate(x.getDate() - n); return x }
+/** Pieces that can still be sold: stock not held for a customer. */
+const freeOf = (i: { stock: number; reservedStock: number }) => i.stock - Math.min(Math.max(0, i.reservedStock), i.stock)
 
 const peso = (n: number) =>
   `₱${n.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -171,11 +181,43 @@ const expiryLabel = (expiresAt: Date | null, now: Date, today: Date): { text: st
   return { text: expiresAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), tone: 'bg-slate-100 text-slate-600' }
 }
 
-// Rows per list on the one-screen layout. Each panel shows this many and links
-// to the full page for the rest, so no panel needs a scrollbar.
-const RESTOCK_ROWS = 4
-const RESERVATION_ROWS = 4
-const ACTIVITY_ROWS = 8
+// Rows per page in each dashboard list; the rest are on numbered pages.
+const RESTOCK_ROWS = 5
+const RESERVATION_ROWS = 7
+const ACTIVITY_ROWS = 10
+
+/**
+ * How many rows of a list fit its box, up to max. On the one-screen layout
+ * (xl and up) panels have a fixed height, so at a larger zoom or on a short
+ * screen fewer rows fit; they are measured from one row's natural height
+ * (its tallest child plus padding), so rows stretched to fill the panel still
+ * count right. Below xl the page scrolls and max is used.
+ */
+function useFitRows(max: number, ready: unknown) {
+  const ref = useRef<HTMLUListElement>(null)
+  const [rows, setRows] = useState(max)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) { setRows(max); return }
+    const measure = () => {
+      if (!window.matchMedia('(min-width: 1280px)').matches) { setRows(max); return }
+      const li = el.querySelector('li')
+      if (!li) return
+      const cs = getComputedStyle(li)
+      const content = Math.max(...Array.from(li.children).map((c) => (c as HTMLElement).offsetHeight), 0)
+      const rowH = content + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) + parseFloat(cs.borderBottomWidth)
+      const ecs = getComputedStyle(el)
+      const room = el.clientHeight - parseFloat(ecs.paddingTop) - parseFloat(ecs.paddingBottom)
+      if (rowH > 0) setRows(Math.max(1, Math.min(max, Math.floor(room / rowH))))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    window.addEventListener('resize', measure)
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure) }
+  }, [max, ready])
+  return [ref, rows] as const
+}
 
 // ── Page entry ────────────────────────────────────────────────────────────────
 
@@ -221,6 +263,8 @@ function DashboardContent() {
   // Reservation being completed or extended from the Reservations panel.
   // Page of the Items to restock list (RESTOCK_ROWS per page).
   const [restockPage, setRestockPage] = useState(1)
+  // Inventory status: the figure that filters the list under it.
+  const [statusFilter, setStatusFilter] = useState<'restock' | 'low' | 'out' | 'reserved'>('restock')
   const [reservationBusy, setReservationBusy] = useState<string | null>(null)
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), [])
@@ -239,6 +283,8 @@ function DashboardContent() {
         // Every figure covers at most the last 30 days compared with the 30
         // before, so 60 days of sales is all this page can use.
         const sixtyDayCutoff = daysBefore(startOfDay(new Date()), 60)
+        // Release overdue holds first, so stock and reservations are current.
+        await expireReservations()
 
         const [invSnap, salesSnap, resSnap, logsSnap, historySnap, activeResSnap] = await Promise.all([
           getDocs(collection(db, 'inventory')),
@@ -381,7 +427,7 @@ function DashboardContent() {
   }, [completedSales])
 
   const sumOver = (map: Map<string, number>, from: Date, n: number) =>
-    Array.from({ length: n }, (_, i) => { const d = new Date(from); d.setDate(d.getDate() + i); return d })
+    Array.from({ length: n }, (_, i) => new Date(from.getTime() + i * DAY_MS))
       .reduce((s, d) => s + (map.get(dayKeyOf(d)) ?? 0), 0)
 
   const revenue30 = useMemo(() => sumOver(dailyRevenue, thirtyDaysAgo, 30), [dailyRevenue, thirtyDaysAgo]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -390,14 +436,18 @@ function DashboardContent() {
   const salesPrev30 = useMemo(() => sumOver(dailyCount, sixtyDaysAgo, 30), [dailyCount, sixtyDaysAgo]) // eslint-disable-line react-hooks/exhaustive-deps
   const salesToday = dailyCount.get(dayKeyOf(today)) ?? 0
   const salesYesterday = dailyCount.get(dayKeyOf(daysBefore(today, 1))) ?? 0
+  // Peso total of today's completed sales (refunds and voids excluded by completedSales).
+  const revenueToday = dailyRevenue.get(dayKeyOf(today)) ?? 0
+  const revenueYesterday = dailyRevenue.get(dayKeyOf(daysBefore(today, 1))) ?? 0
 
   // ── Inventory ─────────────────────────────────────────────────────────────
 
   const stock = useMemo(() => {
     let low = 0, out = 0, pieces = 0, reserved = 0, value = 0
     for (const i of inventory) {
-      if (i.stock <= 0) out++
-      else if (i.stock <= i.minStock) low++
+      const free = i.stock - Math.min(i.reservedStock, i.stock)
+      if (free <= 0) out++
+      else if (free <= i.minStock) low++
       pieces += i.stock
       reserved += Math.min(i.reservedStock, i.stock)
       value += i.stock * i.price
@@ -408,13 +458,59 @@ function DashboardContent() {
   // Items to restock: out of stock first, then lowest stock relative to minimum.
   const attentionItems = useMemo(() =>
     inventory
-      .filter((i) => i.stock <= 0 || i.stock <= i.minStock)
+      .filter((i) => freeOf(i) <= i.minStock)
       .sort((a, b) =>
-        (a.stock <= 0 ? 0 : 1) - (b.stock <= 0 ? 0 : 1) ||
-        a.stock / Math.max(1, a.minStock) - b.stock / Math.max(1, b.minStock) ||
+        (freeOf(a) <= 0 ? 0 : 1) - (freeOf(b) <= 0 ? 0 : 1) ||
+        freeOf(a) / Math.max(1, a.minStock) - freeOf(b) / Math.max(1, b.minStock) ||
         a.name.localeCompare(b.name)),
     [inventory])
-  const restockPages = Math.max(1, Math.ceil(attentionItems.length / RESTOCK_ROWS))
+
+  const reservedItems = useMemo(() =>
+    inventory
+      .filter((i) => i.reservedStock > 0)
+      .map((i) => ({
+        id: i.id,
+        name: i.name,
+        categoryName: i.categoryName,
+        reserved: Math.min(i.reservedStock, i.stock),
+        stock: i.stock,
+        holders: (activeReservations ?? []).flatMap((r) => {
+          const qty = r.items.filter((l) => l.name === i.name).reduce((n, l) => n + l.quantity, 0)
+          return qty > 0 ? [{ id: r.id, customer: r.customer, qty, expiresAt: r.expiresAt }] : []
+        }),
+      }))
+      .sort((a, b) => b.reserved - a.reserved || a.name.localeCompare(b.name)),
+    [inventory, activeReservations])
+
+  // Rows for the Inventory status list, by the figure that is selected.
+  type StatusRow = { id: string; name: string; sub: string; figure: string; tag: string; tagTone: string }
+  const statusRows = useMemo<StatusRow[]>(() => {
+    if (statusFilter === 'reserved') {
+      return reservedItems.map((i) => ({
+        id: i.id,
+        name: i.name,
+        sub: i.holders.length > 0 ? i.holders.map((h) => `${h.customer} (${h.qty})`).join(', ') : i.categoryName,
+        figure: `${pcs(i.stock - i.reserved)} free`,
+        tag: `${pcs(i.reserved)} held`,
+        tagTone: 'bg-blue-50 text-blue-600',
+      }))
+    }
+    return attentionItems
+      .filter((i) => statusFilter === 'restock' || (statusFilter === 'out' ? freeOf(i) <= 0 : freeOf(i) > 0))
+      .map((i) => ({
+        id: i.id,
+        name: i.name,
+        sub: `${i.categoryName || 'Uncategorized'} · min ${i.minStock}`,
+        figure: i.reservedStock > 0 ? `${pcs(freeOf(i))} free of ${i.stock}` : `${pcs(i.stock)} left`,
+        tag: freeOf(i) <= 0 ? 'Out of stock' : 'Low stock',
+        tagTone: freeOf(i) <= 0 ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-700',
+      }))
+  }, [statusFilter, attentionItems, reservedItems])
+  const STATUS_TITLE = { restock: 'Items to restock', low: 'Low stock', out: 'Out of stock', reserved: 'Reserved pieces' } as const
+  const STATUS_EMPTY = { restock: 'Every product is above its minimum stock.', low: 'Nothing is running low.', out: 'Nothing is out of stock.', reserved: 'Nothing is on hold right now.' } as const
+  const pickStatus = (next: 'low' | 'out' | 'reserved') => { setStatusFilter((cur) => (cur === next ? 'restock' : next)); setRestockPage(1) }
+  const [restockRef, restockRows] = useFitRows(RESTOCK_ROWS, `${loading}-${statusRows.length}-${statusFilter}`)
+  const restockPages = Math.max(1, Math.ceil(statusRows.length / restockRows))
   const restockPageSafe = Math.min(restockPage, restockPages)
 
   const reservable = useMemo<ReservableItem[]>(() =>
@@ -444,7 +540,7 @@ function DashboardContent() {
       rows.push({
         key: `s-${s.id}`, kind: 'sale', title: refunded, detail: productOf(s.items),
         figure: canSeeMoney ? `+${peso(s.totalAmount)}` : pcs(s.quantity),
-        figureTone: s.status === 'completed' || !s.status ? 'text-emerald-600' : 'text-amber-600',
+        figureTone: s.status.toLowerCase().includes('refund') ? 'text-red-600' : 'text-blue-600',
         date: s.createdAt,
       })
     }
@@ -454,7 +550,7 @@ function DashboardContent() {
       rows.push({
         key: `r-${r.id}`, kind: 'reservation', title: 'Reservation made',
         detail: r.customer ? `${r.customer}, ${productOf(r.items)}` : productOf(r.items),
-        figure: pcs(qty), figureTone: 'text-amber-600', date: r.createdAt,
+        figure: pcs(qty), figureTone: 'text-slate-500', date: r.createdAt,
       })
     }
     for (const l of stockLogs) {
@@ -469,11 +565,11 @@ function DashboardContent() {
         title: added ? 'Stock updated' : getStockLogActionLabel(action),
         detail: l.itemName,
         figure: q === 0 ? '' : `${q > 0 ? '+' : '−'}${pcs(Math.abs(q))}`,
-        figureTone: q > 0 ? 'text-blue-600' : 'text-rose-600',
+        figureTone: q > 0 ? 'text-blue-600' : 'text-slate-500',
         date: l.createdAt,
       })
     }
-    return rows.sort((a, b) => b.date.getTime() - a.date.getTime()).slice(0, 20)
+    return rows.sort((a, b) => b.date.getTime() - a.date.getTime()).slice(0, ACTIVITY_ROWS)
   }, [completedSales, reservations, stockLogs, canSeeMoney])
 
   // ── Reservation actions ───────────────────────────────────────────────────
@@ -585,7 +681,11 @@ function DashboardContent() {
   // Reservations on the left; Recent activity over the quick actions on the
   // right. Lists longer than their panel scroll inside it. Below xl the page
   // flows and scrolls normally.
-  const salesTodayChange = pctChange(salesToday, salesYesterday)
+
+  const [reservationRef, reservationRows] = useFitRows(RESERVATION_ROWS, `${loading}-${activeReservations?.length ?? 0}`)
+  const [activityRef, activityRows] = useFitRows(ACTIVITY_ROWS, `${loading}-${activity.length}`)
+
+  const salesTodayChange = canSeeMoney ? pctChange(revenueToday, revenueYesterday) : pctChange(salesToday, salesYesterday)
 
   return (
     <div className="flex min-h-full flex-col bg-[#F1F5FC] xl:h-screen xl:overflow-hidden">
@@ -601,8 +701,13 @@ function DashboardContent() {
 
         {/* KPI row - every card has the same three lines: label, figure, comparison. */}
         <div className={`grid shrink-0 grid-cols-1 gap-2 sm:grid-cols-2 ${canSeeMoney ? 'xl:grid-cols-4' : ''}`}>
-          <KpiCard title="Sales today" value={String(salesToday)} loading={loading}
-            caption={<><ChangeBadge v={salesTodayChange} /><span>vs yesterday ({salesYesterday})</span></>} />
+          {/* Pesos for whoever may see money; otherwise the number of sales. */}
+          <KpiCard title="Sales today" value={canSeeMoney ? peso(revenueToday) : String(salesToday)} loading={loading}
+            caption={<><ChangeBadge v={salesTodayChange} /><span>
+              {canSeeMoney
+                ? `${salesToday} sale${salesToday === 1 ? '' : 's'} · yesterday ${peso(revenueYesterday)}`
+                : `vs yesterday (${salesYesterday})`}
+            </span></>} />
           {canSeeMoney && (
             <KpiCard title="Revenue, 30 days" value={peso(revenue30)} loading={loading}
               caption={<><ChangeBadge v={pctChange(revenue30, revenuePrev30)} /><span>vs previous 30 days</span></>} />
@@ -625,36 +730,38 @@ function DashboardContent() {
             {loading ? <div className="m-5 h-48 animate-pulse rounded-lg bg-slate-50" /> : (
               <div className="flex h-full min-h-0 flex-col">
                 <div className="mx-4 grid shrink-0 grid-cols-3 divide-x divide-slate-200/80 overflow-hidden rounded-xl border border-slate-200/80">
-                  <StatusTile href="/inventory?status=Low+Stock" label="Low stock" count={stock.low}
-                    labelTone="text-amber-600" tone={stock.low > 0 ? 'text-amber-600' : 'text-slate-900'} hint="at or below min" />
-                  <StatusTile href="/inventory?status=Out+of+Stock" label="Out of stock" count={stock.out}
-                    labelTone="text-red-600" tone={stock.out > 0 ? 'text-red-600' : 'text-slate-900'} hint="needs restocking" />
-                  <StatusTile href={canReserve ? '/reservations' : '/inventory'} label="Reserved" count={stock.reserved} unit={stock.reserved === 1 ? 'pc' : 'pcs'}
-                    labelTone="text-blue-600" tone="text-slate-900" hint="on hold" />
+                  <StatusTile onClick={() => pickStatus('low')} active={statusFilter === 'low'} label="Low stock" count={stock.low}
+                    labelTone="text-slate-500" tone="text-slate-900" hint="at or below min" />
+                  <StatusTile onClick={() => pickStatus('out')} active={statusFilter === 'out'} label="Out of stock" count={stock.out}
+                    labelTone="text-slate-500" tone={stock.out > 0 ? 'text-red-600' : 'text-slate-900'} hint="needs restocking" />
+                  <StatusTile onClick={() => pickStatus('reserved')} active={statusFilter === 'reserved'} label="Reserved" count={stock.reserved} unit={stock.reserved === 1 ? 'pc' : 'pcs'}
+                    labelTone="text-slate-500" tone="text-blue-600" hint="on hold" />
                 </div>
 
                 <div className="mt-3 flex shrink-0 items-center justify-between border-t border-slate-100 px-4 pb-1 pt-2.5">
-                  <h3 className="text-xs font-semibold text-slate-800">Items to restock</h3>
-                  <span className="text-xs tabular-nums text-slate-400">{attentionItems.length} items</span>
+                  <h3 className="text-xs font-semibold text-slate-800">
+                    {STATUS_TITLE[statusFilter]}
+                    {statusFilter !== 'restock' && (
+                      <button type="button" onClick={() => { setStatusFilter('restock'); setRestockPage(1) }}
+                        className={`ml-2 rounded text-xs font-medium text-blue-600 hover:text-blue-700 ${FOCUS}`}>Show all</button>
+                    )}
+                  </h3>
+                  <span className="text-xs tabular-nums text-slate-400">{statusRows.length} item{statusRows.length === 1 ? '' : 's'}</span>
                 </div>
-                {attentionItems.length === 0 ? (
-                  <p className="px-4 py-5 text-center text-[13px] text-slate-400">Every product is above its minimum stock.</p>
+                {statusRows.length === 0 ? (
+                  <p className="px-4 py-5 text-center text-[13px] text-slate-400">{STATUS_EMPTY[statusFilter]}</p>
                 ) : (
-                  <ul className="px-4 pb-2">
-                    {attentionItems.slice((restockPageSafe - 1) * RESTOCK_ROWS, restockPageSafe * RESTOCK_ROWS).map((i) => {
-                      const out = i.stock <= 0
-                      return (
-                        <li key={i.id} className="flex items-center gap-3 border-b border-slate-100 py-1.5 last:border-0">
-                          <span className="min-w-0 flex-1 truncate text-[13px] text-slate-800" title={i.name}>{i.name}</span>
-                          <span className={`shrink-0 text-[13px] tabular-nums ${out ? 'font-medium text-red-600' : 'text-slate-600'}`}>
-                            {i.stock} / {i.minStock}
-                          </span>
-                          <span className={`w-[86px] shrink-0 rounded-md py-0.5 text-center text-xs font-medium ${out ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-700'}`}>
-                            {out ? 'Out of stock' : 'Low stock'}
-                          </span>
-                        </li>
-                      )
-                    })}
+                  <ul ref={restockRef} className="min-h-0 flex-1 overflow-hidden px-4">
+                    {statusRows.slice((restockPageSafe - 1) * restockRows, restockPageSafe * restockRows).map((r) => (
+                      <li key={r.id} className="flex items-center gap-3 border-b border-slate-100 py-1.5 last:border-0">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-xs font-semibold text-slate-800" title={r.name}>{r.name}</p>
+                          <p className="truncate text-xs text-slate-500" title={r.sub}>{r.sub}</p>
+                        </div>
+                        <span className="shrink-0 text-xs tabular-nums text-slate-600">{r.figure}</span>
+                        <span className={`w-[86px] shrink-0 rounded-md py-0.5 text-center text-xs font-medium ${r.tagTone}`}>{r.tag}</span>
+                      </li>
+                    ))}
                   </ul>
                 )}
                 {restockPages > 1 && (
@@ -686,12 +793,12 @@ function DashboardContent() {
                         : <span className="text-xs text-slate-400">None expire today</span>
                     })()}
                   </div>
-                  <ul className="px-4 pb-2">
-                    {activeReservations.slice(0, RESERVATION_ROWS).map((r) => {
+                  <ul ref={reservationRef} className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-1">
+                    {activeReservations.slice(0, reservationRows).map((r) => {
                       const qty = r.items.reduce((n, i) => n + i.quantity, 0)
                       const exp = expiryLabel(r.expiresAt, now, today)
                       return (
-                        <li key={r.id} className="flex items-center gap-3 border-b border-slate-100 py-1.5 last:border-0">
+                        <li key={r.id} className="flex items-center gap-3 border-b border-slate-100 py-1.5 last:border-0 xl:min-h-0 xl:flex-1">
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-xs font-semibold text-slate-800" title={r.customer}>{r.customer}</p>
                             <p className="truncate text-xs text-slate-500">{productOf(r.items)}, {pcs(qty)}</p>
@@ -724,13 +831,6 @@ function DashboardContent() {
                         </li>
                       )
                     })}
-                    {activeReservations.length > RESERVATION_ROWS && (
-                      <li className="pt-1.5">
-                        <Link href="/reservations" className={`rounded text-xs font-medium text-blue-600 hover:text-blue-700 ${FOCUS}`}>
-                          +{activeReservations.length - RESERVATION_ROWS} more reservations
-                        </Link>
-                      </li>
-                    )}
                   </ul>
                 </div>
               )}
@@ -752,9 +852,9 @@ function DashboardContent() {
                 No activity yet. Sales, reservations and stock changes will show up here.
               </p>
             ) : (
-              <ul className="px-4 pb-2">
-                {activity.slice(0, ACTIVITY_ROWS).map((row) => (
-                  <li key={row.key} className="flex items-center gap-3 border-b border-slate-100 py-2 last:border-0">
+              <ul ref={activityRef} className="flex h-full flex-col overflow-hidden px-4 pb-1">
+                {activity.slice(0, activityRows).map((row) => (
+                  <li key={row.key} className="flex items-center gap-3 border-b border-slate-100 py-2 last:border-0 xl:min-h-0 xl:flex-1">
                     <KindIcon kind={row.kind} />
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-semibold text-slate-800">{row.title}</p>
@@ -764,7 +864,7 @@ function DashboardContent() {
                     <time
                       dateTime={row.date.toISOString()}
                       title={row.date.toLocaleString('en-US')}
-                      className="w-16 shrink-0 text-right text-[13px] tabular-nums text-slate-400"
+                      className="w-20 shrink-0 whitespace-nowrap text-right text-[13px] tabular-nums text-slate-400"
                     >
                       {timeAgo(row.date, now)}
                     </time>
@@ -789,14 +889,14 @@ function DashboardContent() {
                     disabled={checkingScan}
                     aria-label="Scan an item to start a sale"
                     title="Scan an item's barcode or QR code to start a sale"
-                    className={`group flex h-[68px] w-[68px] shrink-0 flex-col items-center justify-center gap-1 rounded-xl border border-blue-200 bg-blue-50 text-blue-700 transition-all duration-150 hover:-translate-y-px hover:border-blue-300 hover:bg-blue-100 hover:shadow-[0_8px_18px_-10px_rgba(37,99,235,0.6)] active:translate-y-0 disabled:cursor-wait disabled:opacity-70 ${FOCUS}`}
+                    className={`group flex h-[68px] w-[68px] shrink-0 flex-col items-center justify-center gap-1 rounded-xl border border-blue-200 bg-blue-50 text-blue-600 transition-all duration-150 hover:-translate-y-px hover:border-blue-300 hover:bg-blue-100 hover:shadow-[0_8px_18px_-10px_rgba(37,99,235,0.6)] active:translate-y-0 disabled:cursor-wait disabled:opacity-70 ${FOCUS}`}
                   >
                     {checkingScan ? <Loader2 aria-hidden className="h-5 w-5 animate-spin" /> : <ScanLine aria-hidden className="h-5 w-5" />}
                     <span className="text-[11px] font-semibold">Scan</span>
                   </button>
                 )}
               </div>
-              {canAddItem && <QuickAction onClick={openAddItem} busy={loadingCategories} icon={PackagePlus} title="Add item" desc="Put a new item on the shelf" tone="success" />}
+              {canAddItem && <QuickAction onClick={openAddItem} busy={loadingCategories} icon={PackagePlus} title="Add item" desc="Put a new item on the shelf" />}
               {canReserve && <QuickAction onClick={() => setReserveOpen(true)} icon={CalendarPlus} title="Reserve item" desc="Hold stock for a customer" />}
             </div>
           </section>
@@ -844,9 +944,9 @@ const CARD = 'rounded-xl border border-slate-200/70 bg-white shadow-[0_1px_2px_r
 
 // Activity type: one small icon tile per row, coloured by kind.
 const KIND_META = {
-  sale:        { icon: ShoppingCart, label: 'Sale',        tile: 'bg-emerald-50 text-emerald-600' },
-  reservation: { icon: CalendarPlus, label: 'Reservation', tile: 'bg-amber-50 text-amber-600' },
-  stock:       { icon: Package,      label: 'Stock',       tile: 'bg-blue-50 text-blue-600' },
+  sale:        { icon: ShoppingCart, label: 'Sale',        tile: 'bg-blue-50 text-blue-600' },
+  reservation: { icon: CalendarPlus, label: 'Reservation', tile: 'bg-blue-50 text-blue-600' },
+  stock:       { icon: Package,      label: 'Stock',       tile: 'bg-slate-100 text-slate-600' },
 } as const
 
 function KindIcon({ kind }: { kind: keyof typeof KIND_META }) {
@@ -908,12 +1008,12 @@ function Panel({ title, href, linkLabel, className = '', children }: {
 }
 
 /** 1 2 3 4 5 page buttons; long runs collapse to first, last and neighbours. */
-function Pager({ page, pages, onPage }: { page: number; pages: number; onPage: (p: number) => void }) {
+function Pager({ page, pages, onPage, label = 'Restock list pages' }: { page: number; pages: number; onPage: (p: number) => void; label?: string }) {
   const nums = Array.from({ length: pages }, (_, i) => i + 1)
     .filter((p) => pages <= 7 || p === 1 || p === pages || Math.abs(p - page) <= 1)
   const btn = `h-7 min-w-7 rounded-md px-1.5 text-xs tabular-nums transition-colors disabled:opacity-40 ${FOCUS}`
   return (
-    <nav aria-label="Restock list pages" className="mt-auto flex shrink-0 items-center justify-center gap-1 border-t border-slate-100 px-4 py-2">
+    <nav aria-label={label} className="mt-auto flex shrink-0 items-center justify-end gap-1 border-t border-slate-100 px-4 py-2">
       <button type="button" onClick={() => onPage(page - 1)} disabled={page === 1} aria-label="Previous page"
         className={`${btn} border border-slate-200 text-slate-600 hover:bg-slate-50`}>‹</button>
       {nums.map((p, i) => (
@@ -931,19 +1031,22 @@ function Pager({ page, pages, onPage }: { page: number; pages: number; onPage: (
   )
 }
 
-function StatusTile({ href, label, count, unit, tone, labelTone, hint }: {
-  href: string; label: string; count: number; unit?: string; tone: string; labelTone: string; hint?: string
+function StatusTile({ href, onClick, active, label, count, unit, tone, labelTone, hint }: {
+  href?: string; onClick?: () => void; active?: boolean; label: string; count: number; unit?: string; tone: string; labelTone: string; hint?: string
 }) {
-  return (
-    <Link href={href} className={`block px-3 py-2.5 transition-colors hover:bg-slate-50 ${FOCUS}`}>
-      <span className={`block text-[10px] font-semibold uppercase tracking-wide ${labelTone}`}>{label}</span>
+  const cls = `relative block w-full px-3 py-2.5 text-left transition-colors ${active ? 'bg-blue-50' : 'hover:bg-slate-50'} ${FOCUS}`
+  const body = (
+    <>
+      <span className={`block text-[10px] font-semibold uppercase tracking-wide ${active ? 'text-blue-600' : labelTone}`}>{label}</span>
       <span className={`mt-0.5 block text-2xl font-bold leading-tight tabular-nums ${tone}`}>
         {count.toLocaleString('en-PH')}
         {unit && <span className="ml-1 text-xs font-medium text-slate-400">{unit}</span>}
       </span>
       {hint && <span className="block truncate text-[11px] text-slate-400">{hint}</span>}
-    </Link>
+      {active && <span aria-hidden className="absolute inset-x-0 bottom-0 h-[3px] bg-blue-600" />}
+    </>
   )
+  return href ? <Link href={href} className={cls}>{body}</Link> : <button type="button" onClick={onClick} aria-pressed={active} className={cls}>{body}</button>
 }
 
 // The two actions done most at the counter get a solid fill; the third a
@@ -964,7 +1067,7 @@ const QUICK_TONE = {
   },
   default: {
     tile: 'border border-slate-200 bg-white text-slate-900 shadow-[0_1px_2px_rgba(15,23,42,0.05),0_10px_22px_-14px_rgba(15,23,42,0.25)] hover:border-slate-300 hover:bg-slate-50',
-    icon: 'bg-violet-50 text-violet-600 ring-1 ring-inset ring-violet-200/70',
+    icon: 'bg-blue-50 text-blue-600 ring-1 ring-inset ring-blue-100',
     desc: 'text-slate-500',
     arrow: 'text-slate-400',
   },

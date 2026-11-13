@@ -712,7 +712,7 @@ function ReservationsContent() {
   const hasFilters = search || statusFilter !== 'all' || categoryFilter !== 'all' || startDate || endDate
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-slate-50 px-3 py-4">
+    <main className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-3 py-4">
       <div className="mx-auto max-w-[1680px] space-y-4">
 
         {/* ── HEADER ── */}
@@ -1209,7 +1209,8 @@ function ReservationsContent() {
                                   <RotateCcw className="h-4 w-4" />
                                 </button>
                                 <button
-                                  title="View Log"
+                                  onClick={() => setViewReasonRes(r)}
+                                  title="When and why this hold ended"
                                   className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-500 transition-colors hover:bg-slate-100"
                                 >
                                   <FileText className="h-4 w-4" />

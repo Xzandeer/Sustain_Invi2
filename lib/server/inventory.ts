@@ -4,6 +4,7 @@ import { getAdminDb } from '@/lib/firebaseAdmin'
 import { createItemBarcode } from '@/lib/server/barcodes'
 import { normalizeStockLogActionForStorage, ResolvedStockLogAction } from '@/lib/inventory/stockLogActions'
 import { InventoryCondition, getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
+import { verifiedUid } from '@/lib/server/authorize'
 
 export type StockLogAction = Exclude<ResolvedStockLogAction, 'unmapped_action'>
 
@@ -65,75 +66,35 @@ const buildValueSummary = (input: {
   return `Stock: ${input.stock} | Reserved: ${input.reserved} | Available: ${available} | Qty: ${input.quantity} | Condition: ${input.condition}`
 }
 
-// Get user info from Firebase or fallback to provided data
-export const getProcessedByInfo = async (input: unknown): Promise<ProcessedByInfo> => {
-  const fallback = { name: 'System User' }
-
-  if (!input || typeof input !== 'object') {
-    return fallback
-  }
-
-  const data = input as Record<string, unknown>
-  const uid = typeof data.uid === 'string' && data.uid.trim() ? data.uid.trim() : ''
-  const providedName = typeof data.name === 'string' && data.name.trim() ? data.name.trim() : ''
-  const providedEmail = typeof data.email === 'string' && data.email.trim() ? data.email.trim() : ''
-
-  // No UID means we can't look up user, use provided data
-  if (!uid) {
-    return {
-      name: providedName || providedEmail || fallback.name,
-      email: providedEmail || undefined,
-    }
-  }
-
-  // Try to get full user details from users collection
+// Who is doing this: the signed-in account behind the request's ID token.
+//
+// This used to read { uid, name, email } from the request body, so a caller
+// could record a sale, a stock change or a reservation under anyone's name -
+// the audit trail was only as honest as the browser. The uid now comes from the
+// verified token and the name and email from that user's record.
+export const getProcessedByInfo = async (req: Request): Promise<ProcessedByInfo> => {
+  const uid = await verifiedUid(req)
+  if (!uid) return { name: 'System User' }
   try {
-    const userSnapshot = await getAdminDb().collection('users').doc(uid).get()
-    if (userSnapshot.exists) {
-      const userData = userSnapshot.data() as Record<string, unknown>
-      const name =
-        (typeof userData.name === 'string' && userData.name.trim()) ||
-        providedName ||
-        (typeof userData.email === 'string' && userData.email.trim()) ||
-        providedEmail ||
-        fallback.name
-      const email =
-        (typeof userData.email === 'string' && userData.email.trim()) || providedEmail || undefined
-
-      return { uid, name, email }
-    }
+    const snap = await getAdminDb().collection('users').doc(uid).get()
+    const data = (snap.exists ? snap.data() : {}) as Record<string, unknown>
+    const email = typeof data.email === 'string' && data.email.trim() ? data.email.trim() : undefined
+    const name = (typeof data.name === 'string' && data.name.trim()) || email || 'Staff'
+    return { uid, name, email }
   } catch (error) {
-    console.error('Failed to resolve processed by user:', error)
-  }
-
-  return {
-    uid,
-    name: providedName || providedEmail || fallback.name,
-    email: providedEmail || undefined,
+    console.error('Failed to resolve the signed-in user:', error)
+    return { uid, name: 'Staff' }
   }
 }
 
-// Verify user is admin, throw error if not
-export const assertAdminUser = async (input: unknown): Promise<ProcessedByInfo> => {
-  const processedBy = await getProcessedByInfo(input)
-
-  // Step 1: Check user has UID (not anonymous)
-  if (!processedBy.uid) {
-    throw new Error('ADMIN_REQUIRED')
-  }
-
-  // Step 2: Get user document from Firebase
+// The signed-in caller, who must be an administrator.
+export const assertAdminUser = async (req: Request): Promise<ProcessedByInfo> => {
+  const processedBy = await getProcessedByInfo(req)
+  if (!processedBy.uid) throw new Error('ADMIN_REQUIRED')
   const userSnapshot = await getAdminDb().collection('users').doc(processedBy.uid).get()
-  if (!userSnapshot.exists) {
+  if (!userSnapshot.exists || (userSnapshot.data() as Record<string, unknown>).role !== 'admin') {
     throw new Error('ADMIN_REQUIRED')
   }
-
-  // Step 3: Verify role is 'admin'
-  const userData = userSnapshot.data() as Record<string, unknown>
-  if (userData.role !== 'admin') {
-    throw new Error('ADMIN_REQUIRED')
-  }
-
   return processedBy
 }
 
