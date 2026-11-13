@@ -21,22 +21,18 @@
 // only to admins and staff with View Analytics, matching the rest of the app.
 //
 // Quick actions:
-//   New Sale     -> /sales (the POS). The scan button beside it opens the
-//                   camera; a scanned item label opens the sale with that item
-//                   in the cart. A USB/Bluetooth scanner does the same from any
-//                   page (components/scan/GlobalScanListener).
+//   New Sale     -> the sale window (components/dashboard/QuickSaleModal). A
+//                   USB/Bluetooth scanner adds items inside it, and from any
+//                   other page opens Sales (components/scan/GlobalScanListener).
 //   Add Item     -> the Inventory page's own ProductModal, saved with the same
 //                   request (lib/inventory/saveProduct)
 //   Reserve Item -> ReserveItemModal, submitted with the same request as the POS
 //                   "Reserve Order" (lib/reservations/createReservation)
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { collection, getDocs, orderBy, query, limit, Timestamp, where } from 'firebase/firestore'
-import { CalendarPlus, ChevronRight, Loader2, Package, PackagePlus, ScanLine, ShoppingCart, type LucideIcon } from 'lucide-react'
-import { isBarcodeScanSupported } from '@/components/sales/BarcodeScanner'
-import { extractItemCode, verifyItemCode } from '@/lib/scan/scanToSale'
+import { CalendarPlus, ChevronRight, Loader2, Package, PackagePlus, ShoppingCart, type LucideIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { auth, db } from '@/lib/firebase'
 import { apiFetch } from '@/lib/apiFetch'
@@ -50,7 +46,6 @@ import { saveProduct, type CategoryRef } from '@/lib/inventory/saveProduct'
 import { getStockLogActionLabel, resolveStockLogAction } from '@/lib/inventory/stockLogActions'
 
 // Loaded on demand: the camera component is only needed when someone taps Scan.
-const BarcodeScanner = dynamic(() => import('@/components/sales/BarcodeScanner'), { ssr: false })
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -251,14 +246,8 @@ function DashboardContent() {
   const [loadingCategories, setLoadingCategories] = useState(false)
   const [savingItem, setSavingItem] = useState(false)
   const [reserveOpen, setReserveOpen] = useState(false)
-  // New sale window, and a code scanned by camera to add once it opens.
+  // New sale window. A USB scanner works inside it.
   const [saleOpen, setSaleOpen] = useState(false)
-  const [saleCode, setSaleCode] = useState<string | null>(null)
-  // Camera scan from the New sale quick action (Chrome/Edge on HTTPS or localhost).
-  const [scannerOpen, setScannerOpen] = useState(false)
-  const [canScanWithCamera, setCanScanWithCamera] = useState(false)
-  const [checkingScan, setCheckingScan] = useState(false)
-  useEffect(() => { setCanScanWithCamera(isBarcodeScanSupported()) }, [])
 
   // Reservation being completed or extended from the Reservations panel.
   // Page of the Items to restock list (RESTOCK_ROWS per page).
@@ -610,26 +599,6 @@ function DashboardContent() {
     }
   }
 
-  // ── Scan to sale ──────────────────────────────────────────────────────────
-  // Same check as a scan anywhere else in the app (components/scan/
-  // GlobalScanListener): only a real, sellable item opens the sale.
-  const handleCameraScan = async (raw: string) => {
-    setScannerOpen(false)
-    const code = extractItemCode(raw)
-    if (!code) { toast.error('That code is not an item label.'); return }
-    setCheckingScan(true)
-    try {
-      await verifyItemCode(code)
-      // Straight into the New sale window, with the item in the cart.
-      setSaleCode(code)
-      setSaleOpen(true)
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : `No item found for code ${code}.`)
-    } finally {
-      setCheckingScan(false)
-    }
-  }
-
   // ── Quick-action handlers ─────────────────────────────────────────────────
 
   const openAddItem = async () => {
@@ -878,24 +847,7 @@ function DashboardContent() {
               Page links live in the sidebar, not here. */}
           <section aria-label="Quick actions" className={`shrink-0 p-2.5 ${CARD}`}>
             <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-              <div className="flex gap-2">
-                <div className="min-w-0 flex-1">
-                  <QuickAction onClick={() => { setSaleCode(null); setSaleOpen(true) }} icon={ShoppingCart} title="New sale" desc="Ring up a sale" hint="or scan any item" tone="primary" />
-                </div>
-                {canScanWithCamera && (
-                  <button
-                    type="button"
-                    onClick={() => setScannerOpen(true)}
-                    disabled={checkingScan}
-                    aria-label="Scan an item to start a sale"
-                    title="Scan an item's barcode or QR code to start a sale"
-                    className={`group flex h-[68px] w-[68px] shrink-0 flex-col items-center justify-center gap-1 rounded-xl border border-blue-200 bg-blue-50 text-blue-600 transition-all duration-150 hover:-translate-y-px hover:border-blue-300 hover:bg-blue-100 hover:shadow-[0_8px_18px_-10px_rgba(37,99,235,0.6)] active:translate-y-0 disabled:cursor-wait disabled:opacity-70 ${FOCUS}`}
-                  >
-                    {checkingScan ? <Loader2 aria-hidden className="h-5 w-5 animate-spin" /> : <ScanLine aria-hidden className="h-5 w-5" />}
-                    <span className="text-[11px] font-semibold">Scan</span>
-                  </button>
-                )}
-              </div>
+              <QuickAction onClick={() => setSaleOpen(true)} icon={ShoppingCart} title="New sale" desc="Ring up a sale" hint="or scan any item" tone="primary" />
               {canAddItem && <QuickAction onClick={openAddItem} busy={loadingCategories} icon={PackagePlus} title="Add item" desc="Put a new item on the shelf" />}
               {canReserve && <QuickAction onClick={() => setReserveOpen(true)} icon={CalendarPlus} title="Reserve item" desc="Hold stock for a customer" />}
             </div>
@@ -904,9 +856,6 @@ function DashboardContent() {
         </div>
       </div>
 
-      {scannerOpen && (
-        <BarcodeScanner onDetected={(code) => { void handleCameraScan(code) }} onClose={() => setScannerOpen(false)} />
-      )}
       {canAddItem && (
         <ProductModal
           isOpen={addOpen}
@@ -918,10 +867,9 @@ function DashboardContent() {
       )}
       <QuickSaleModal
         isOpen={saleOpen}
-        onClose={() => { setSaleOpen(false); setSaleCode(null) }}
+        onClose={() => setSaleOpen(false)}
         items={reservable}
         loading={loading}
-        initialCode={saleCode}
         onSold={refresh}
       />
       {canReserve && (
