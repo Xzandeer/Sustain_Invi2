@@ -15,6 +15,8 @@ import { getAdminDb } from '@/lib/firebaseAdmin'
 import { createItemBarcode, normalizeBarcode } from '@/lib/server/barcodes'
 import { getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { guardRequest, requireActiveUserRequest } from '@/lib/server/authorize'
+import { UNITS_COLLECTION, UNIT_GRADES, gradePrice, isUnitCode, normalizeUnitGrade } from '@/lib/inventory/units'
+import { getStoreSettings } from '@/lib/server/storeSettings'
 
 export async function GET(req: NextRequest) {
   // Read access is checked here, not left to the database rules: this route
@@ -29,21 +31,84 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'A barcode is required.' }, { status: 400 })
     }
 
-    const snapshot = await getAdminDb()
-      .collection('inventory')
-      .where('barcode', '==', code)
-      .limit(1)
-      .get()
+    // An 8-digit code is one physical piece (lib/inventory/units.ts): find it,
+    // make sure it is still on the shelf, and answer with its item plus the
+    // unit, so the cart adds that exact piece at its own price.
+    let unit: { id: string; unitCode: string; grade: string; conditionNotes: string; price: number | null; ownPrice?: boolean } | null = null
+    let found: FirebaseFirestore.DocumentSnapshot
+    if (isUnitCode(code)) {
+      const unitSnap = await getAdminDb().collection(UNITS_COLLECTION).where('unitCode', '==', code).limit(1).get()
+      if (unitSnap.empty) {
+        return NextResponse.json({ error: `No item found for code ${code}.` }, { status: 404 })
+      }
+      const u = unitSnap.docs[0].data() as Record<string, unknown>
+      if (u.status !== 'in_stock') {
+        const why = u.status === 'sold' ? 'has already been sold' : u.status === 'reserved' ? 'is reserved for a customer' : 'has been written off'
+        return NextResponse.json({ error: `That piece (#${code}) ${why}.` }, { status: 409 })
+      }
+      unit = {
+        id: unitSnap.docs[0].id,
+        unitCode: code,
+        grade: typeof u.grade === 'string' ? u.grade : 'Good',
+        conditionNotes: typeof u.conditionNotes === 'string' ? u.conditionNotes : '',
+        price: typeof u.priceOverride === 'number' && u.priceOverride > 0 ? u.priceOverride : null,
+      }
+      found = await getAdminDb().collection('inventory').doc(String(u.itemId)).get()
+      if (!found.exists) {
+        return NextResponse.json({ error: `No item found for code ${code}.` }, { status: 404 })
+      }
+      const { gradePricing } = await getStoreSettings()
+      const base = toNumber((found.data() as Record<string, unknown>).price, 0)
+      unit = {
+        ...unit,
+        grade: normalizeUnitGrade(unit.grade),
+        // Always a price: its own, or its condition's share of the base.
+        price: unit.price ?? gradePrice(base, normalizeUnitGrade(unit.grade), gradePricing),
+        ownPrice: unit.price !== null,
+      } as typeof unit
+    } else {
+      const snapshot = await getAdminDb()
+        .collection('inventory')
+        .where('barcode', '==', code)
+        .limit(1)
+        .get()
 
-    if (snapshot.empty) {
-      return NextResponse.json(
-        { error: `No item found for barcode ${code}.` },
-        { status: 404 }
-      )
+      if (snapshot.empty) {
+        return NextResponse.json(
+          { error: `No item found for barcode ${code}.` },
+          { status: 404 }
+        )
+      }
+      found = snapshot.docs[0]
+      // An item merged into another (one record per item - see
+      // scripts/backfill-units.js) still has its old labels on the shelf.
+      const mergedInto = (found.data() as Record<string, unknown>).mergedInto
+      if (typeof mergedInto === 'string' && mergedInto) {
+        const target = await getAdminDb().collection('inventory').doc(mergedInto).get()
+        if (target.exists) found = target
+      }
     }
 
-    const found = snapshot.docs[0]
     const data = found.data() as Record<string, unknown>
+
+    // A unit-tracked item scanned by its item barcode rather than a piece label:
+    // which conditions are on the shelf, at what price, so the counter can pick.
+    let grades: Array<{ grade: string; count: number; price: number }> | undefined
+    if (!unit && data.trackingMode === 'unit') {
+      const [{ gradePricing }, unitsSnap] = await Promise.all([
+        getStoreSettings(),
+        getAdminDb().collection(UNITS_COLLECTION).where('itemId', '==', found.id).where('status', '==', 'in_stock').get(),
+      ])
+      const counts = new Map<string, number>()
+      unitsSnap.docs.forEach((d) => {
+        const u = d.data() as Record<string, unknown>
+        if (typeof u.priceOverride === 'number' && u.priceOverride > 0) return
+        const g = normalizeUnitGrade(u.grade)
+        counts.set(g, (counts.get(g) ?? 0) + 1)
+      })
+      const base = toNumber(data.price, 0)
+      grades = UNIT_GRADES.filter((g) => counts.has(g)).map((g) => ({ grade: g, count: counts.get(g)!, price: gradePrice(base, g, gradePricing) }))
+    }
 
     // A voided or trashed item must not be sellable, so the scan is rejected
     // rather than quietly adding something that cannot be checked out.
@@ -77,7 +142,12 @@ export async function GET(req: NextRequest) {
         // notes, the same as one picked from the list.
         isSingleItem: data.isSingleItem === true,
         conditionNotes: typeof data.conditionNotes === 'string' ? data.conditionNotes : '',
+        trackingMode: data.trackingMode === 'unit' ? 'unit' : 'quantity',
       },
+      // Present when a unit label was scanned: the exact piece to add.
+      ...(unit ? { unit } : {}),
+      // Present for a unit-tracked item scanned by its item barcode.
+      ...(grades ? { grades } : {}),
     })
   } catch (error) {
     console.error('GET /api/inventory/barcodes error:', error)

@@ -12,25 +12,17 @@
 // server picks the oldest piece of it. A scanned piece label adds that exact
 // piece. Counted-only items add one at a time, as on the POS.
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { toast } from 'sonner'
 import { Loader2, Minus, Plus, Printer, ScanLine, Search, ShoppingCart, X } from 'lucide-react'
 import { apiFetch } from '@/lib/apiFetch'
+import { forgetReads } from '@/lib/client/readCache'
 import { auth } from '@/lib/firebase'
 import { openReceiptPrintWindow } from '@/lib/transactions/receiptPrint'
 import type { CompletedTransactionDocument, SaleReceiptDocument } from '@/lib/transactions/transactionDocuments'
-// Conditions of pieces tracked one by one, when the shelf summary reports them.
-type UnitGrade = 'New' | 'Excellent' | 'Very Good' | 'Good' | 'Fair' | 'For parts'
-const UNIT_GRADES: UnitGrade[] = ['New', 'Excellent', 'Very Good', 'Good', 'Fair', 'For parts']
-const GRADE_LABEL: Record<UnitGrade, string> = {
-  'New': 'New / Unissued', 'Excellent': 'Used / Excellent', 'Very Good': 'Used / Very Good',
-  'Good': 'Used / Good', 'Fair': 'Used / Fair', 'For parts': 'For parts',
-}
-const GRADE_TONE: Record<UnitGrade, { dot: string }> = {
-  'New': { dot: 'bg-blue-500' }, 'Excellent': { dot: 'bg-sky-500' }, 'Very Good': { dot: 'bg-teal-500' },
-  'Good': { dot: 'bg-emerald-500' }, 'Fair': { dot: 'bg-amber-500' }, 'For parts': { dot: 'bg-red-500' },
-}
+import { GRADE_LABEL, GRADE_TONE, UNIT_GRADES, type UnitGrade } from '@/lib/inventory/units'
 
 export interface SellableItem {
   id: string
@@ -41,10 +33,16 @@ export interface SellableItem {
   availableStock: number
   isSingleItem?: boolean
   conditionNotes?: string
+  /** 'unit': sold piece by piece, by condition, at each condition's price. */
+  trackingMode?: 'unit' | 'quantity'
 }
 
 interface ShelfGrade { grade: UnitGrade; count: number; price: number }
-interface ShelfEntry { grades: ShelfGrade[] }
+interface ShelfEntry {
+  grades: ShelfGrade[]
+  /** Pieces with a price of their own: sold by scanning their label. */
+  ownPriced?: Array<{ grade: UnitGrade; count: number; minPrice: number; maxPrice: number }>
+}
 
 interface ScannedUnit { id: string; unitCode: string; grade: string; price: number; ownPrice?: boolean }
 
@@ -93,6 +91,10 @@ export default function QuickSaleModal({
   const [page, setPage] = useState(1)
   const [cart, setCart] = useState<CartLine[]>([])
   const [shelf, setShelf] = useState<Record<string, ShelfEntry>>({})
+  // Condition prices: per-piece items wait for these - they never fall back
+  // to the item's New price (that sold Good or Fair pieces at the New price).
+  const [shelfStatus, setShelfStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const shelfRequest = useRef(0)
   const [fullName, setFullName] = useState('')
   const [contactNumber, setContactNumber] = useState('')
   const [email, setEmail] = useState('')
@@ -107,15 +109,25 @@ export default function QuickSaleModal({
     setError(''); setDone(null); setSubmitting(false)
   }, [])
 
+  const loadShelf = useCallback(() => {
+    const seq = ++shelfRequest.current
+    setShelfStatus('loading')
+    apiFetch('/api/inventory/units/summary')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((d: { items?: Record<string, ShelfEntry> }) => {
+        if (seq !== shelfRequest.current) return // a newer answer is on its way
+        setShelf(d.items ?? {})
+        setShelfStatus('ready')
+      })
+      .catch(() => { if (seq === shelfRequest.current) setShelfStatus('error') })
+  }, [])
+
   // Fresh form, and fresh shelf prices, every time it opens.
   useEffect(() => {
     if (!isOpen) return
     reset()
-    apiFetch('/api/inventory/units/summary')
-      .then((r) => (r.ok ? r.json() : {}))
-      .then((d: { items?: Record<string, ShelfEntry> }) => setShelf(d.items ?? {}))
-      .catch(() => setShelf({}))
-  }, [isOpen, reset])
+    loadShelf()
+  }, [isOpen, reset, loadShelf])
 
   // While open, scans belong to this window, not the page-wide listener that
   // would take the cashier off to the Sales page.
@@ -325,6 +337,7 @@ export default function QuickSaleModal({
       })
       const result = (await response.json()) as { error?: string; document?: CompletedTransactionDocument }
       if (!response.ok) throw new Error(result.error || 'Failed to complete sale.')
+      forgetReads('sales:') // the Dashboard's refresh reads the new sale
       const doc = result.document?.type === 'sale' ? result.document : null
       setDone(doc)
       if (!doc) onClose()
@@ -373,7 +386,7 @@ export default function QuickSaleModal({
               <button type="button" onClick={() => openReceiptPrintWindow(done)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
                 <Printer aria-hidden className="h-4 w-4" /> Print receipt
               </button>
-              <button type="button" onClick={reset} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
+              <button type="button" onClick={() => { reset(); loadShelf() }} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
                 Next sale
               </button>
               <button type="button" onClick={onClose} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700">
@@ -388,7 +401,7 @@ export default function QuickSaleModal({
               <div className="px-5 py-3">
                 <div className="relative">
                   <Search aria-hidden className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                  <input
+                  <input maxLength={INPUT_LIMITS.search}
                     ref={searchRef}
                     type="search"
                     value={search}
@@ -423,7 +436,10 @@ export default function QuickSaleModal({
                       <tr><td colSpan={3} className="py-8 text-center text-sm text-slate-400">{items.length === 0 ? 'No products in inventory.' : 'No products match your search.'}</td></tr>
                     ) : visible.map((item) => {
                       const out = item.availableStock <= 0
+                      const perPiece = item.trackingMode === 'unit'
                       const grades = (shelf[item.id]?.grades ?? []).slice().sort((a, b) => UNIT_GRADES.indexOf(a.grade) - UNIT_GRADES.indexOf(b.grade))
+                      const own = shelf[item.id]?.ownPriced ?? []
+                      const ownCount = own.reduce((s, g) => s + g.count, 0)
                       const left = item.availableStock - inCartFor(item.id)
                       return (
                         <tr key={item.id} className="hover:bg-slate-50/70">
@@ -437,7 +453,49 @@ export default function QuickSaleModal({
                           <td className={`px-3 py-2.5 text-right text-xs tabular-nums ${out ? 'text-red-600' : 'text-slate-600'}`}>{out ? 'Out of stock' : item.availableStock}</td>
                           <td className="px-5 py-2.5">
                             <div className="flex flex-wrap justify-end gap-1">
-                              {grades.length > 0 ? grades.map((g) => (
+                              {perPiece && shelfStatus !== 'ready' ? (
+                                shelfStatus === 'error' ? (
+                                  <button type="button" onClick={loadShelf}
+                                    className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-blue-600 hover:bg-blue-50">
+                                    Prices didn&apos;t load · Retry
+                                  </button>
+                                ) : (
+                                  <span className="flex items-center gap-1" aria-label="Loading prices">
+                                    <span className="h-6 w-24 animate-pulse rounded-md bg-slate-100" />
+                                    <span className="h-6 w-20 animate-pulse rounded-md bg-slate-100" />
+                                  </span>
+                                )
+                              ) : perPiece ? (<>
+                                {grades.map((g) => (
+                                  <button
+                                    key={g.grade}
+                                    type="button"
+                                    onClick={() => report(addGrade(item, g))}
+                                    disabled={out || left <= 0 || submitting}
+                                    title={`Add one ${GRADE_LABEL[g.grade]} piece · ${g.count} on the shelf`}
+                                    className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 transition hover:border-blue-300 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    <span className={`h-1.5 w-1.5 rounded-full ${GRADE_TONE[g.grade]?.dot ?? 'bg-slate-400'}`} />
+                                    {GRADE_LABEL[g.grade] ?? g.grade}
+                                    <span className="font-semibold tabular-nums text-slate-900">{currency(g.price)}</span>
+                                    <span className="rounded bg-slate-100 px-1 text-[10px] tabular-nums text-slate-500">{g.count}</span>
+                                  </button>
+                                ))}
+                                {ownCount > 0 && (() => {
+                                  const lo = Math.min(...own.map((g) => g.minPrice))
+                                  const hi = Math.max(...own.map((g) => g.maxPrice))
+                                  return (
+                                    <span title="These pieces have a price of their own. Scan the piece's label to sell one."
+                                      className="inline-flex items-center gap-1 rounded-md border border-dashed border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-500">
+                                      <ScanLine aria-hidden className="h-3 w-3" />
+                                      {ownCount} own price
+                                      <span className="font-semibold tabular-nums text-slate-700">{lo === hi ? currency(lo) : `${currency(hi)} – ${currency(lo)}`}</span>
+                                      · scan
+                                    </span>
+                                  )
+                                })()}
+                                {grades.length === 0 && ownCount === 0 && <span className="text-xs text-slate-400">None on the shelf</span>}
+                              </>) : grades.length > 0 ? grades.map((g) => (
                                 <button
                                   key={g.grade}
                                   type="button"
@@ -509,13 +567,13 @@ export default function QuickSaleModal({
 
               <div className="space-y-2 border-t border-slate-100 px-4 py-3">
                 <p className="text-xs font-semibold text-slate-700">Customer <span className="font-normal text-slate-400">(optional)</span></p>
-                <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Name" disabled={submitting} className={input} />
+                <input maxLength={INPUT_LIMITS.name} type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Name" disabled={submitting} className={input} />
                 <div className="grid grid-cols-2 gap-2">
                   <input type="tel" inputMode="numeric" maxLength={11} value={contactNumber}
                     onChange={(e) => setContactNumber(e.target.value.replace(/\D/g, '').slice(0, 11))}
                     placeholder="09XXXXXXXXX" disabled={submitting}
                     className={`${input} ${contactInvalid ? 'border-rose-300 focus:border-rose-400' : ''}`} />
-                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" disabled={submitting} className={input} />
+                  <input maxLength={INPUT_LIMITS.email} type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" disabled={submitting} className={input} />
                 </div>
                 {contactInvalid && <p className="text-xs text-rose-500">Contact number must be 11 digits ({contactNumber.length}/11).</p>}
               </div>

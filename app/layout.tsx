@@ -6,8 +6,11 @@ import { Geist, Geist_Mono } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
 import { Toaster } from '@/components/ui/sonner'
+import SessionGuard from '@/components/shared/SessionGuard'
 
-const _geist = Geist({ subsets: ['latin'] })
+// Geist for the whole app. Exposed as --font-geist, which globals.css maps to
+// Tailwind's font-sans.
+const geist = Geist({ subsets: ['latin'], variable: '--font-geist' })
 const _geistMono = Geist_Mono({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
@@ -39,9 +42,10 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" className={geist.variable}>
       <body className="font-sans antialiased bg-slate-100">
         {children}
+        <SessionGuard />
         <Toaster richColors position="top-right" />
         <Analytics />
       </body>

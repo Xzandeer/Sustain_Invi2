@@ -17,9 +17,15 @@ export const isValidContactNumber = (value: string) => /^\d{11}$/.test(value.tri
 
 export interface ReservationLine {
   id: string
+  /** The inventory item, when id is a cart line key rather than the item id. */
+  itemId?: string
   name: string
   price: number
   quantity: number
+  /** Scanned pieces to hold. */
+  units?: Array<{ id: string }>
+  /** Unit-tracked items: the condition to hold. */
+  grade?: string
 }
 
 export interface ReservationCustomer {
@@ -61,7 +67,13 @@ export async function createReservation(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      items: lines.map((item) => ({ itemId: item.id, quantity: item.quantity })),
+      items: lines.map((item) => ({
+        itemId: item.itemId ?? item.id,
+        quantity: item.quantity,
+        ...(item.grade ? { grade: item.grade } : {}),
+        // Scanned pieces (lib/inventory/units.ts); the rest are the oldest.
+        ...(item.units?.length ? { unitIds: item.units.map((u) => u.id) } : {}),
+      })),
       customerDetails: {
         fullName: customer.fullName.trim(),
         email: (customer.email ?? '').trim(),

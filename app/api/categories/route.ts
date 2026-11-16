@@ -6,6 +6,7 @@
 // Categories are referenced by inventory items through categoryId, and the
 // per-category forecast groups by the same field.
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { NextRequest, NextResponse } from 'next/server'
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { requireActiveUserRequest, requireAdminRequest } from '@/lib/server/authorize'
@@ -46,7 +47,7 @@ export async function POST(req: NextRequest) {
     const denied = await requireAdminRequest(req)
     if (denied) return denied
 
-    const name = typeof body.name === 'string' ? body.name.trim() : ''
+    const name = typeof body.name === 'string' ? body.name.trim().slice(0, INPUT_LIMITS.name) : ''
     if (!name) {
       return NextResponse.json({ error: 'Category name is required.' }, { status: 400 })
     }

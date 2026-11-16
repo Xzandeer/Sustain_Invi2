@@ -6,6 +6,9 @@
 
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { aiCache } from '@/lib/ai/cache'
+import { UNIT_GRADES, gradePrice, type UnitGrade } from '@/lib/inventory/units'
+import { getStoreSettings } from '@/lib/server/storeSettings'
+import { loadShelf } from '@/lib/server/shelf'
 
 const db = () => getAdminDb()
 const toNum = (v: unknown, fb = 0): number => {
@@ -25,6 +28,39 @@ const toDate = (v: unknown): Date | null => {
   return null
 }
 const fmt = (n: number) => `₱${n.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+/**
+ * Prices of per-piece items (lib/inventory/units.ts). An item's stored price is
+ * its base (New) price; each piece sells at its condition's share of it, or at
+ * a price of its own. Answers quote those, not the base price.
+ */
+async function loadShelfPrices(): Promise<Map<string, { value: number; text: string }>> {
+  // The same remembered shelf the POS uses (lib/server/shelf.ts).
+  const [{ gradePricing }, { base, items }] = await Promise.all([getStoreSettings(), loadShelf()])
+  const acc = new Map<string, { value: number; byGrade: Map<UnitGrade, number[]> }>()
+  for (const [itemId, entry] of items) {
+    if (!base.has(itemId)) continue
+    for (const p of entry.pieces) {
+      const price = p.own ?? gradePrice(base.get(itemId) ?? 0, p.grade, gradePricing)
+      const a = acc.get(itemId) ?? { value: 0, byGrade: new Map() }
+      a.value += price
+      a.byGrade.set(p.grade, [...(a.byGrade.get(p.grade) ?? []), price])
+      acc.set(itemId, a)
+    }
+  }
+  const out = new Map<string, { value: number; text: string }>()
+  for (const [itemId, a] of acc) {
+    const text = UNIT_GRADES.filter((g) => a.byGrade.has(g))
+      .map((g) => { const p = a.byGrade.get(g)!; const lo = Math.min(...p), hi = Math.max(...p); return `${g} ${lo === hi ? fmt(lo) : `${fmt(lo)}–${fmt(hi)}`}` })
+      .join(', ')
+    out.set(itemId, { value: a.value, text })
+  }
+  // Per-piece items with nothing on the shelf: quote the base price as "New".
+  for (const [itemId, p] of base) if (!out.has(itemId)) out.set(itemId, { value: 0, text: `New ${fmt(p)}` })
+  return out
+}
+const priceText = (shelf: Map<string, { text: string }>, d: Record<string, unknown>) =>
+  shelf.get(String(d.id))?.text ?? fmt(toNum(d.price))
 
 export async function getLowStockItems(): Promise<string> {
   const cacheKey = 'low_stock'
@@ -51,7 +87,7 @@ export async function getInventorySummary(): Promise<string> {
   const cached = aiCache.get<string>(cacheKey)
   if (cached) return cached
 
-  const snap = await db().collection('inventory').get()
+  const [snap, shelf] = await Promise.all([db().collection('inventory').get(), loadShelfPrices()])
   const active = snap.docs.filter(d => !(d.data() as Record<string, unknown>).isDeleted)
   let totalValue = 0
   const byCategory: Record<string, { count: number; stock: number }> = {}
@@ -59,8 +95,8 @@ export async function getInventorySummary(): Promise<string> {
   active.forEach(d => {
     const data = d.data() as Record<string, unknown>
     const stock = toNum(data.stock)
-    const price = toNum(data.price)
-    totalValue += stock * price
+    const piece = shelf.get(d.id)
+    totalValue += piece ? piece.value : stock * toNum(data.price)
     const cat = typeof data.categoryName === 'string' ? data.categoryName : 'Unknown'
     if (!byCategory[cat]) byCategory[cat] = { count: 0, stock: 0 }
     byCategory[cat].count++
@@ -109,7 +145,7 @@ export async function searchInventory(query: string): Promise<string> {
   if (!query || query.trim().length < 2) return 'Please provide a more specific search term.'
   const q = query.trim().toLowerCase()
 
-  const snap = await db().collection('inventory').get()
+  const [snap, shelf] = await Promise.all([db().collection('inventory').get(), loadShelfPrices()])
   const matches = snap.docs
     .map(d => ({ id: d.id, ...d.data() } as Record<string, unknown>))
     .filter(d => !d.isDeleted)
@@ -119,7 +155,7 @@ export async function searchInventory(query: string): Promise<string> {
       return name.includes(q) || cat.includes(q)
     })
     .slice(0, 8)
-    .map(d => `• ${d.name} (${d.categoryName ?? 'Unknown'}): ${toNum(d.stock)} in stock @ ${fmt(toNum(d.price))}`)
+    .map(d => `• ${d.name} (${d.categoryName ?? 'Unknown'}): ${toNum(d.stock)} in stock @ ${priceText(shelf, d)}`)
 
   return matches.length === 0
     ? `No items found matching "${query}".`
@@ -135,7 +171,7 @@ export async function getOutOfStockItems(): Promise<string> {
   const items = snap.docs
     .map(d => ({ id: d.id, ...d.data() } as Record<string, unknown>))
     .filter(d => !d.isDeleted && !d.isVoided && toNum(d.stock) === 0)
-    .map(d => `• ${d.name} (${d.categoryName ?? 'Unknown'}) — last price: ${fmt(toNum(d.price))}`)
+    .map(d => `• ${d.name} (${d.categoryName ?? 'Unknown'}) — price when New: ${fmt(toNum(d.price))}`)
 
   const result = items.length === 0
     ? 'Great news — no items are completely out of stock.'
@@ -146,12 +182,12 @@ export async function getOutOfStockItems(): Promise<string> {
 }
 
 export async function getInventoryByCategory(category: string): Promise<string> {
-  const snap = await db().collection('inventory').get()
+  const [snap, shelf] = await Promise.all([db().collection('inventory').get(), loadShelfPrices()])
   const q = category.trim().toLowerCase()
   const items = snap.docs
     .map(d => ({ id: d.id, ...d.data() } as Record<string, unknown>))
     .filter(d => !d.isDeleted && String(d.categoryName ?? '').toLowerCase().includes(q))
-    .map(d => `• ${d.name}: ${toNum(d.stock)} units @ ${fmt(toNum(d.price))} (${d.condition ?? 'N/A'})`)
+    .map(d => `• ${d.name}: ${toNum(d.stock)} units @ ${priceText(shelf, d)}`)
 
   return items.length === 0
     ? `No items found in category "${category}".`

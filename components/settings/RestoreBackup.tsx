@@ -11,6 +11,7 @@
 // Records added after the backup are never deleted. Staff accounts are not
 // restored here (see RESTORABLE_COLLECTIONS in lib/server/backup.ts).
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { useMemo, useState } from 'react'
 import { apiFetch } from '@/lib/apiFetch'
 
@@ -135,7 +136,7 @@ export default function RestoreBackup({ onDownloadBackup }: { onDownloadBackup: 
   return (
     <div className="space-y-4 border-t border-slate-100 pt-5">
       <div>
-        <h3 className="text-sm font-bold text-slate-900">Restore from a backup</h3>
+        <h3 className="text-sm font-semibold text-slate-900">Restore from a backup</h3>
         <p className="mt-0.5 text-sm text-slate-500">
           Put records back from a backup file if they were lost or changed by mistake.
         </p>
@@ -212,7 +213,7 @@ export default function RestoreBackup({ onDownloadBackup }: { onDownloadBackup: 
         <div className="flex flex-wrap items-end gap-2">
           <label className="block">
             <span className="mb-1.5 block text-xs font-semibold text-slate-600">Type RESTORE to confirm</span>
-            <input
+            <input maxLength={INPUT_LIMITS.confirm}
               type="text"
               value={confirmText}
               disabled={restoring}

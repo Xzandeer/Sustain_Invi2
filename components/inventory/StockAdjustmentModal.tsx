@@ -5,10 +5,17 @@
 // Every adjustment writes a stock log entry, so the audit trail records who
 // changed what and why. Reserved stock cannot be deducted - that quantity is
 // already promised to a customer.
+//
+// Unit-tracked items (lib/inventory/units.ts) move real pieces: adding asks for
+// the new pieces' grade, notes and optional own price; deducting or transferring
+// can name the exact pieces, otherwise the oldest on the shelf go first.
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { useEffect, useState } from 'react'
-import { MAX_STOCK, clampIntegerInput } from '@/lib/constants/limits'
+import { MAX_STOCK, MAX_CONDITION_NOTES, clampIntegerInput, clampPriceInput } from '@/lib/constants/limits'
 import { X } from 'lucide-react'
+import { apiFetch } from '@/lib/apiFetch'
+import { GRADE_LABEL, UNIT_GRADES, type TrackingMode, type UnitGrade } from '@/lib/inventory/units'
 // Only the fields this modal actually reads. Declared here rather than importing
 // a page-level type, so the component stays independent of where it is used.
 interface Product {
@@ -20,20 +27,31 @@ interface Product {
   availableStock: number
   minStock: number
   isSingleItem?: boolean
+  trackingMode?: TrackingMode
 }
 
 type StockAction = 'add' | 'deduct' | 'transfer'
+
+export interface StockAdjustmentValues {
+  action: StockAction
+  quantity: number
+  targetCondition?: 'New' | 'Refurbished'
+  remarks: string
+  /** Unit tracking: the exact pieces to deduct or transfer. */
+  unitIds?: string[]
+  /** Unit tracking, add: the new pieces' grade, notes and own price. */
+  unitGrade?: UnitGrade
+  unitNotes?: string
+  unitPrice?: number | null
+}
+
+interface PickableUnit { id: string; unitCode: string; grade: string; conditionNotes: string; priceOverride: number | null; receivedAt: string }
 
 interface StockAdjustmentModalProps {
   product: Product | null
   isOpen: boolean
   onClose: () => void
-  onSubmit: (values: {
-    action: StockAction
-    quantity: number
-    targetCondition?: 'New' | 'Refurbished'
-    remarks: string
-  }) => Promise<void> | void
+  onSubmit: (values: StockAdjustmentValues) => Promise<void> | void
   submitting?: boolean
 }
 
@@ -48,15 +66,40 @@ export default function StockAdjustmentModal({
   const [quantity, setQuantity] = useState('1')
   const [targetCondition, setTargetCondition] = useState<'New' | 'Refurbished'>('Refurbished')
   const [remarks, setRemarks] = useState('')
+  const [unitGrade, setUnitGrade] = useState<UnitGrade>('Good')
+  const [unitNotes, setUnitNotes] = useState('')
+  const [unitPrice, setUnitPrice] = useState('')
+  const [pickable, setPickable] = useState<PickableUnit[] | null>(null)
+  const [picked, setPicked] = useState<Set<string>>(new Set())
+
+  const unitTracked = product?.trackingMode === 'unit'
 
   useEffect(() => {
     if (!isOpen || !product) return
     // A single item can only be deducted - see the adjust route.
-    setAction(product.isSingleItem ? 'deduct' : 'add')
+    // Unit-tracked items take new stock through Receive stock and change
+    // condition by re-grading pieces, so only deduction is offered here.
+    setAction(product.isSingleItem || product.trackingMode === 'unit' ? 'deduct' : 'add')
     setQuantity('1')
     setTargetCondition(product.condition === 'New' ? 'Refurbished' : 'New')
     setRemarks('')
+    setUnitGrade(product.condition === 'New' ? 'New' : 'Good')
+    setUnitNotes('')
+    setUnitPrice('')
+    setPicked(new Set())
+    setPickable(null)
   }, [isOpen, product])
+
+  // The pieces on the shelf, for choosing which ones to deduct or transfer.
+  useEffect(() => {
+    if (!isOpen || !product || product.trackingMode !== 'unit' || action === 'add' || pickable) return
+    let cancelled = false
+    apiFetch(`/api/inventory/${product.id}/units?status=in_stock`)
+      .then((r) => (r.ok ? r.json() : { data: [] }))
+      .then((d: { data?: PickableUnit[] }) => { if (!cancelled) setPickable(d.data ?? []) })
+      .catch(() => { if (!cancelled) setPickable([]) })
+    return () => { cancelled = true }
+  }, [isOpen, product, action, pickable])
 
   if (!isOpen || !product) return null
 
@@ -65,7 +108,9 @@ export default function StockAdjustmentModal({
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
-    const parsedQuantity = Math.floor(Number(quantity))
+    // Named pieces decide the quantity; otherwise the typed number, oldest first.
+    const namedPieces = unitTracked && action !== 'add' ? Array.from(picked) : []
+    const parsedQuantity = namedPieces.length > 0 ? namedPieces.length : Math.floor(Number(quantity))
     if (!Number.isFinite(parsedQuantity) || parsedQuantity <= 0) {
       return
     }
@@ -75,6 +120,10 @@ export default function StockAdjustmentModal({
       quantity: parsedQuantity,
       targetCondition: action === 'transfer' ? targetCondition : undefined,
       remarks: remarks.trim(),
+      ...(namedPieces.length > 0 ? { unitIds: namedPieces } : {}),
+      ...(unitTracked && action === 'add'
+        ? { unitGrade, unitNotes: unitNotes.trim(), unitPrice: unitPrice.trim() ? Number(unitPrice) : null }
+        : {}),
     })
   }
 
@@ -117,10 +166,15 @@ export default function StockAdjustmentModal({
                 onChange={(event) => setAction(event.target.value as StockAction)}
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
               >
-                {!product.isSingleItem && <option value="add">Add Stock</option>}
+                {!product.isSingleItem && !unitTracked && <option value="add">Add Stock</option>}
                 <option value="deduct">Deduct Stock</option>
-                {!product.isSingleItem && <option value="transfer">Transfer to Another Condition</option>}
+                {!product.isSingleItem && !unitTracked && <option value="transfer">Transfer to Another Condition</option>}
               </select>
+              {unitTracked && !product.isSingleItem && (
+                <p className="text-xs text-slate-500">
+                  To add pieces use Add on the item row. To change a piece&apos;s condition, re-grade it under Units.
+                </p>
+              )}
               {product.isSingleItem && (
                 <p className="text-xs text-slate-500">
                   This is a single item, so it can only be deducted. Add another unit as its own item.
@@ -129,6 +183,11 @@ export default function StockAdjustmentModal({
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-900">Quantity</label>
+              {unitTracked && action !== 'add' && picked.size > 0 ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-700">
+                  {picked.size} chosen piece{picked.size === 1 ? '' : 's'}
+                </div>
+              ) : (
               <input
                 type="text"
                 inputMode="numeric"
@@ -138,8 +197,62 @@ export default function StockAdjustmentModal({
                 className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
                 required
               />
+              )}
             </div>
           </div>
+
+          {/* New pieces: their grade, notes and optional own price. */}
+          {unitTracked && action === 'add' && (
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-900">Grade</label>
+                <select value={unitGrade} onChange={(e) => setUnitGrade(e.target.value as UnitGrade)}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500">
+                  {UNIT_GRADES.map((g) => <option key={g} value={g}>{GRADE_LABEL[g]}</option>)}
+                </select>
+              </div>
+              <div className="space-y-2 sm:col-span-2">
+                <label className="text-sm font-medium text-slate-900">Condition of these pieces <span className="font-normal text-slate-400">(optional)</span></label>
+                <input value={unitNotes} maxLength={MAX_CONDITION_NOTES} onChange={(e) => setUnitNotes(e.target.value)}
+                  placeholder="e.g. complete with box"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-900">Own price <span className="font-normal text-slate-400">(optional)</span></label>
+                <input maxLength={INPUT_LIMITS.money} value={unitPrice} inputMode="decimal" placeholder="Item price"
+                  onChange={(e) => setUnitPrice(clampPriceInput(e.target.value, unitPrice))}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500" />
+              </div>
+              <p className="text-xs text-slate-500 sm:col-span-2 sm:self-end">
+                Each new piece gets its own code. Print their labels from the confirmation, or later under Units.
+              </p>
+            </div>
+          )}
+
+          {/* Choosing which pieces leave. None chosen = oldest first. */}
+          {unitTracked && action !== 'add' && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-900">
+                Which pieces <span className="font-normal text-slate-400">(optional - oldest first if none chosen)</span>
+              </label>
+              <div className="max-h-44 overflow-y-auto rounded-lg border border-slate-200">
+                {pickable === null ? (
+                  <p className="px-3 py-3 text-xs text-slate-400">Loading pieces…</p>
+                ) : pickable.length === 0 ? (
+                  <p className="px-3 py-3 text-xs text-slate-400">No pieces on the shelf.</p>
+                ) : pickable.map((u) => (
+                  <label key={u.id} className="flex cursor-pointer items-center gap-2.5 border-b border-slate-100 px-3 py-1.5 text-xs last:border-0 hover:bg-slate-50">
+                    <input type="checkbox" checked={picked.has(u.id)} className="h-3.5 w-3.5 accent-sky-900"
+                      onChange={() => setPicked((s) => { const n = new Set(s); n.has(u.id) ? n.delete(u.id) : n.add(u.id); return n })} />
+                    <span className="font-mono text-slate-600">{u.unitCode}</span>
+                    <span className="font-semibold text-slate-800">{u.grade}</span>
+                    <span className="min-w-0 flex-1 truncate text-slate-500">{u.conditionNotes}</span>
+                    {u.priceOverride !== null && <span className="tabular-nums text-blue-700">₱{u.priceOverride.toLocaleString('en-PH')}</span>}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
 
           {action === 'transfer' ? (
             <div className="space-y-2">
@@ -159,7 +272,7 @@ export default function StockAdjustmentModal({
 
           <div className="space-y-2">
             <label className="text-sm font-medium text-slate-900">Remarks</label>
-            <textarea
+            <textarea maxLength={INPUT_LIMITS.note}
               value={remarks}
               onChange={(event) => setRemarks(event.target.value)}
               placeholder="Optional reason or reference"

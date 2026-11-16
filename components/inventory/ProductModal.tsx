@@ -3,11 +3,13 @@
 // Dialog wrapper around the add / edit item form, opened from Inventory.
 // Exports ProductFormValues, the shape the Inventory page saves.
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { useEffect, useMemo, useState } from 'react'
 import { MAX_STOCK, MAX_PRICE, MAX_CONDITION_NOTES, clampIntegerInput, clampPriceInput } from '@/lib/constants/limits'
 import { apiFetch } from '@/lib/apiFetch'
 import { X } from 'lucide-react'
 import { DEFAULT_WARRANTY_DAYS } from '@/lib/constants/warranty'
+import { GRADE_LABEL, UNIT_GRADES, type TrackingMode, type UnitGrade } from '@/lib/inventory/units'
 
 export interface ProductFormValues {
   name: string
@@ -22,6 +24,10 @@ export interface ProductFormValues {
   isSingleItem?: boolean
   /** Free-text description of this item's actual condition. */
   conditionNotes?: string
+  /** 'unit': every piece gets its own record and label. New items only; fixed afterwards. */
+  trackingMode?: TrackingMode
+  /** Grade given to the pieces being created (unit tracking). */
+  unitGrade?: UnitGrade
 }
 
 
@@ -57,6 +63,8 @@ export default function ProductModal({
   const [condition, setCondition] = useState<'New' | 'Refurbished'>('New')
   const [isSingleItem, setIsSingleItem] = useState(false)
   const [conditionNotes, setConditionNotes] = useState('')
+  const [trackPieces, setTrackPieces] = useState(true)
+  const [unitGrade, setUnitGrade] = useState<UnitGrade>('New')
   const [policyDays, setPolicyDays] = useState<number>(DEFAULT_WARRANTY_DAYS)
 
   useEffect(() => {
@@ -81,6 +89,7 @@ export default function ProductModal({
       setCondition(initialValues.condition)
       setIsSingleItem(initialValues.isSingleItem === true)
       setConditionNotes(initialValues.conditionNotes ?? '')
+      setTrackPieces(initialValues.trackingMode === 'unit')
       return
     }
 
@@ -92,6 +101,8 @@ export default function ProductModal({
     setCondition('New')
     setIsSingleItem(false)
     setConditionNotes('')
+    setTrackPieces(true)
+    setUnitGrade('New')
   }, [isOpen, initialValues, defaultCategory])
 
   if (!isOpen) return null
@@ -127,6 +138,9 @@ export default function ProductModal({
       availableStock: initialValues?.availableStock,
       isSingleItem: initialValues ? initialValues.isSingleItem === true : isSingleItem,
       conditionNotes: conditionNotes.trim().slice(0, MAX_CONDITION_NOTES),
+      // A single item is always one tracked piece.
+      trackingMode: initialValues ? initialValues.trackingMode : (isSingleItem || trackPieces ? 'unit' : 'quantity'),
+      unitGrade,
     })
   }
 
@@ -144,7 +158,7 @@ export default function ProductModal({
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-900">Item Name *</label>
-              <input
+              <input maxLength={INPUT_LIMITS.name}
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 placeholder="Ceramic Rice Bowl"
@@ -230,7 +244,11 @@ export default function ProductModal({
               ) : (
                 <select
                   value={condition}
-                  onChange={(event) => setCondition(event.target.value === 'Refurbished' ? 'Refurbished' : 'New')}
+                  onChange={(event) => {
+                  const next = event.target.value === 'Refurbished' ? 'Refurbished' : 'New'
+                  setCondition(next)
+                  setUnitGrade(next === 'New' ? 'New' : 'Good')
+                }}
                   className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
                   required
                 >
@@ -272,11 +290,54 @@ export default function ProductModal({
               )}
             </div>
 
+            {/* Piece tracking. Every physical piece gets its own record, label,
+                grade and history - the default for second-hand goods. Identical
+                bulk goods can keep a plain count instead. Fixed once created. */}
+            <div className="space-y-2 sm:col-span-2">
+              {initialValues ? (
+                <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                  {initialValues.trackingMode === 'unit'
+                    ? 'Each piece is tracked separately. Grade, notes and price per piece are edited under Units.'
+                    : 'Quantity only: the pieces of this item are counted, not tracked one by one.'}
+                </p>
+              ) : !isSingleItem && (
+                <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-slate-200 px-3 py-2.5">
+                  <input
+                    type="checkbox"
+                    checked={trackPieces}
+                    onChange={(event) => setTrackPieces(event.target.checked)}
+                    className="mt-0.5 h-4 w-4 accent-sky-900"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-slate-900">Track each piece separately</span>
+                    <span className="block text-xs text-slate-500">
+                      Every piece gets its own label, grade and history. Turn this off for identical bulk goods,
+                      such as a box of new plates.
+                    </span>
+                  </span>
+                </label>
+              )}
+            </div>
+
+            {!initialValues && (isSingleItem || trackPieces) && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-900">Grade of these pieces</label>
+                <select
+                  value={unitGrade}
+                  onChange={(event) => setUnitGrade(event.target.value as UnitGrade)}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
+                >
+                  {UNIT_GRADES.map((g) => <option key={g} value={g}>{GRADE_LABEL[g]}</option>)}
+                </select>
+                <p className="text-xs text-slate-500">Each piece can be re-graded on its own later.</p>
+              </div>
+            )}
+
             <div className="space-y-2 sm:col-span-2">
               <label className="text-sm font-medium text-slate-900">
                 Condition Notes <span className="font-normal text-slate-400">(optional)</span>
               </label>
-              <textarea
+              <textarea maxLength={INPUT_LIMITS.note}
                 value={conditionNotes}
                 onChange={(event) => setConditionNotes(event.target.value.slice(0, MAX_CONDITION_NOTES))}
                 rows={2}

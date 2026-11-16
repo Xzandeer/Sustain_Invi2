@@ -6,19 +6,21 @@
 // the sections they are allowed to open. This is a convenience only - the
 // real check happens in ProtectedRoute and again on the server.
 //
-// Compact text links on the dark navy column. The current page is the solid
-// blue pill. Inventory carries an amber count of items at or below their
-// minimum stock, so a restock need is visible from every page.
+// Compact icon + label links on the dark navy column, grouped under MAIN,
+// RECORDS, ADMINISTRATION and ACCOUNT. The current page is the solid blue pill.
 // One link is marked current at a time (longest matching route), every link
 // has a visible keyboard focus ring, and on a phone the same column opens as a
 // drawer with its own close button (see app/(dashboard)/layout.tsx).
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { LogOut, Store, X } from 'lucide-react'
+import {
+  BarChart3, Box, CalendarDays, ClipboardList, LayoutGrid, LogOut, Package,
+  Settings, ShoppingCart, Trash2, Users, X, type LucideIcon,
+} from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
-import { collection, doc, getDoc, getDocs } from 'firebase/firestore'
+import { doc, getDoc } from 'firebase/firestore'
 import { toast } from 'sonner'
 import { auth, db } from '@/lib/firebase'
 import { useUserRole } from '@/hooks/useUserRole'
@@ -34,8 +36,7 @@ interface NavAccess {
 interface NavItemDef {
   name: string
   href: string
-  /** Show the needs-restocking count beside this link. */
-  restockBadge?: boolean
+  icon: LucideIcon
   /** Omit to always show. */
   show?: (access: NavAccess) => boolean
 }
@@ -51,15 +52,15 @@ const NAV_SECTIONS: { title: string; items: NavItemDef[] }[] = [
   {
     title: 'Main',
     items: [
-      { name: 'Dashboard',    href: '/dashboard' },
-      { name: 'Sales',        href: '/sales' },
-      { name: 'Inventory',    href: '/inventory', restockBadge: true },
+      { name: 'Dashboard',    href: '/dashboard', icon: LayoutGrid },
+      { name: 'Sales',        href: '/sales', icon: ShoppingCart },
+      { name: 'Inventory',    href: '/inventory', icon: Package },
       {
-        name: 'Reservations', href: '/reservations',
+        name: 'Reservations', href: '/reservations', icon: CalendarDays,
         show: (a) => a.isAdmin || a.can('canManageReservations'),
       },
       {
-        name: 'Analytics',    href: '/analytics',
+        name: 'Analytics',    href: '/analytics', icon: BarChart3,
         show: (a) => a.isAdmin || a.can('canViewAnalytics'),
       },
     ],
@@ -68,13 +69,13 @@ const NAV_SECTIONS: { title: string; items: NavItemDef[] }[] = [
     title: 'Records',
     items: [
       {
-        name: 'Stock Logs',   href: '/inventory/logs',
+        name: 'Stock Logs',   href: '/inventory/logs', icon: ClipboardList,
         show: (a) => a.isAdmin || a.canViewStockLogs,
       },
       {
         // Trash restores and permanently deletes items - admin only, matching
         // <ProtectedRoute requireAdmin> on the page itself.
-        name: 'Trash',        href: '/inventory/trash',
+        name: 'Trash',        href: '/inventory/trash', icon: Trash2,
         show: (a) => a.isAdmin,
       },
     ],
@@ -82,8 +83,13 @@ const NAV_SECTIONS: { title: string; items: NavItemDef[] }[] = [
   {
     title: 'Administration',
     items: [
-      { name: 'Users',        href: '/users', show: (a) => a.isAdmin },
-      { name: 'Settings',     href: '/settings' },
+      { name: 'Users',        href: '/users', icon: Users, show: (a) => a.isAdmin },
+    ],
+  },
+  {
+    title: 'Account',
+    items: [
+      { name: 'Settings',     href: '/settings', icon: Settings },
     ],
   },
 ]
@@ -104,10 +110,6 @@ const currentHref = (pathname: string) =>
 const FOCUS_RING =
   'outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1a2035]'
 
-// The restock count is re-read at most once a minute as the user moves between
-// pages, so a sale or a stock adjustment shows up without a reload.
-const RESTOCK_REFRESH_MS = 60_000
-
 interface Profile { name: string; role: string; initials: string }
 
 export default function Sidebar({ onClose }: { /** Set when shown as the phone drawer. */ onClose?: () => void }) {
@@ -116,8 +118,6 @@ export default function Sidebar({ onClose }: { /** Set when shown as the phone d
   const { isAdmin, canViewStockLogs, can } = useUserRole()
   const [profile, setProfile] = useState<Profile | null>(null)
   const [signingOut, setSigningOut] = useState(false)
-  const [restockCount, setRestockCount] = useState(0)
-  const [restockLoadedAt, setRestockLoadedAt] = useState(0)
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -142,38 +142,12 @@ export default function Sidebar({ onClose }: { /** Set when shown as the phone d
     return () => unsub()
   }, [])
 
-  // Items at or below their minimum stock - the same rule as the Dashboard's
-  // Needs restocking list. Trash and written-off items are left out.
-  useEffect(() => {
-    if (Date.now() - restockLoadedAt < RESTOCK_REFRESH_MS) return
-    let cancelled = false
-    ;(async () => {
-      await auth.authStateReady()
-      if (!auth.currentUser) return
-      try {
-        const snap = await getDocs(collection(db, 'inventory'))
-        if (cancelled) return
-        const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0)
-        setRestockCount(snap.docs.reduce((n, d) => {
-          const data = d.data() as Record<string, unknown>
-          if (data.isDeleted === true || data.isVoided === true) return n
-          const stock = num(data.stock ?? data.quantity)
-          return stock <= 0 || stock <= num(data.minStock) ? n + 1 : n
-        }, 0))
-        setRestockLoadedAt(Date.now())
-      } catch {
-        // The badge is a hint only; leave the last known count.
-      }
-    })()
-    return () => { cancelled = true }
-  }, [pathname]) // eslint-disable-line react-hooks/exhaustive-deps
-
   const handleLogout = async () => {
     if (signingOut) return
     setSigningOut(true)
     try {
       await signOut(auth)
-      router.push('/login')
+      router.replace('/login')
     } catch {
       toast.error('Could not sign out. Check your connection and try again.')
       setSigningOut(false)
@@ -199,11 +173,11 @@ export default function Sidebar({ onClose }: { /** Set when shown as the phone d
       <div className="flex items-center justify-between gap-2 border-b border-white/[0.07] px-3.5 py-3">
         <Link href="/dashboard" className={`flex min-w-0 items-center gap-2.5 rounded-lg ${FOCUS_RING}`}>
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white">
-            <Store className="h-4 w-4" />
+            <Box aria-hidden className="h-4 w-4" />
           </span>
           <span className="min-w-0">
             <span className="block truncate text-[13px] font-bold leading-tight tracking-tight text-white">JMGs JAPAN</span>
-            <span className="block text-[10px] font-semibold leading-tight tracking-[0.2em] text-blue-400">SURPLUS</span>
+            <span className="block text-[10px] font-medium leading-tight tracking-[0.2em] text-blue-400">SURPLUS</span>
           </span>
         </Link>
         {onClose && (
@@ -229,34 +203,26 @@ export default function Sidebar({ onClose }: { /** Set when shown as the phone d
           const headingId = `nav-${section.title.toLowerCase()}`
           return (
             <div key={section.title} role="group" aria-labelledby={headingId}>
-              <p id={headingId} className="mb-1 px-2.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-500">
+              <p id={headingId} className="mb-1 px-2.5 text-[10px] font-medium uppercase tracking-[0.1em] text-slate-500">
                 {section.title}
               </p>
               <ul className="space-y-0.5">
                 {section.items.map(item => {
                   const isCurrent = item.href === active
-                  const badge = item.restockBadge && restockCount > 0 ? restockCount : null
+                  const Icon = item.icon
                   return (
                     <li key={item.href}>
                       <Link
                         href={item.href}
                         aria-current={isCurrent ? 'page' : undefined}
-                        className={`flex items-center justify-between gap-2 rounded-md px-2.5 py-[6px] text-[13px] leading-5 transition-colors duration-150 ${FOCUS_RING} ${
+                        className={`flex items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-[13px] leading-5 transition-colors duration-150 ${FOCUS_RING} ${
                           isCurrent
                             ? 'bg-blue-600 font-semibold text-white'
                             : 'font-medium text-slate-300 hover:bg-white/[0.06] hover:text-white active:bg-white/10'
                         }`}
                       >
+                        <Icon aria-hidden className={`h-4 w-4 shrink-0 ${isCurrent ? 'text-white' : 'text-slate-400'}`} />
                         <span className="truncate">{item.name}</span>
-                        {badge !== null && (
-                          <span
-                            title={`${badge} item${badge === 1 ? '' : 's'} need restocking`}
-                            className="shrink-0 rounded bg-amber-500/20 px-1.5 text-[10px] font-semibold leading-4 tabular-nums text-amber-300"
-                          >
-                            {badge > 99 ? '99+' : badge}
-                            <span className="sr-only"> need restocking</span>
-                          </span>
-                        )}
                       </Link>
                     </li>
                   )
@@ -273,11 +239,11 @@ export default function Sidebar({ onClose }: { /** Set when shown as the phone d
         <div className="flex items-center gap-2.5 px-1.5 py-1">
           {profile ? (
             <>
-              <span aria-hidden className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 text-[11px] font-semibold text-white">
+              <span aria-hidden className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 text-[11px] font-medium text-white">
                 {profile.initials}
               </span>
               <div className="min-w-0 flex-1 leading-tight">
-                <p className="truncate text-[13px] font-semibold text-white" title={profile.name}>{profile.name}</p>
+                <p className="truncate text-[13px] font-medium text-white" title={profile.name}>{profile.name}</p>
                 <p className="truncate text-[11px] text-slate-400">{profile.role}</p>
               </div>
             </>

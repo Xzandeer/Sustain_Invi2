@@ -19,6 +19,7 @@
 // A customer name is required. Without it a reservation cannot be matched back
 // to the person when they return for the item.
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { apiFetch } from '@/lib/apiFetch'
 import { collection, onSnapshot, orderBy, query } from 'firebase/firestore'
@@ -821,7 +822,7 @@ function ReservationsContent() {
                   <circle cx="11" cy="11" r="8" />
                   <path d="m21 21-4.35-4.35" />
                 </svg>
-                <input
+                <input maxLength={INPUT_LIMITS.search}
                   type="text"
                   value={search}
                   onChange={(e) => { setSearch(e.target.value); setPage(1) }}

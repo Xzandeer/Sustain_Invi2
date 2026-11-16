@@ -15,6 +15,7 @@
 // Disabling is almost always the right choice over deleting. Deleting removes
 // the login, not the records - past sales keep the name captured at the time.
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { useEffect, useState } from 'react'
 import { checkPassword, PASSWORD_RULE_HINT } from '@/lib/auth/passwordPolicy'
 import { apiFetch } from '@/lib/apiFetch'
@@ -280,7 +281,7 @@ function UsersContent() {
   if (!isAdmin) return null
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-slate-100 px-4 py-8 sm:px-6 lg:px-8">
+    <main className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-4 py-8 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-[1700px] space-y-6">
         <header className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -290,7 +291,7 @@ function UsersContent() {
               </svg>
             </div>
             <div>
-              <h1 className="text-lg font-bold text-slate-900 sm:text-2xl">User Management</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-slate-900">User Management</h1>
               <p className="mt-0.5 text-sm text-slate-500">Manage accounts, roles, and permissions.</p>
             </div>
           </div>
@@ -438,7 +439,7 @@ function UsersContent() {
                 </svg>
               </div>
               <div className="min-w-0 flex-1">
-                <h2 className="text-base font-bold text-slate-900">Delete this account?</h2>
+                <h2 className="text-base font-semibold text-slate-900">Delete this account?</h2>
                 <p className="mt-0.5 text-xs text-slate-500">This action cannot be undone.</p>
               </div>
               <button
@@ -474,9 +475,9 @@ function UsersContent() {
 
               <div>
                 <label className="mb-1.5 block text-xs font-semibold text-slate-600">
-                  Type <span className="font-mono font-bold text-slate-900">CONFIRM</span> to delete this account
+                  Type <span className="font-mono font-semibold text-slate-900">CONFIRM</span> to delete this account
                 </label>
-                <input
+                <input maxLength={INPUT_LIMITS.confirm}
                   type="text"
                   value={deleteConfirmText}
                   onChange={e => setDeleteConfirmText(e.target.value)}
@@ -514,7 +515,7 @@ function UsersContent() {
           <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
               <div>
-                <h2 className="text-base font-bold text-slate-900">Permissions</h2>
+                <h2 className="text-base font-semibold text-slate-900">Permissions</h2>
                 <p className="mt-0.5 text-xs text-slate-500">{permissionTarget.name} · {permissionTarget.email}</p>
               </div>
               <button
@@ -570,7 +571,7 @@ function UsersContent() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
           <div className="w-full max-w-sm rounded-2xl bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
-              <h2 className="text-base font-bold text-slate-900">Confirm Your Identity</h2>
+              <h2 className="text-base font-semibold text-slate-900">Confirm Your Identity</h2>
               <button
                 onClick={() => { setResetTarget(null); setAdminPassword(''); setResetError('') }}
                 className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition"
@@ -597,7 +598,7 @@ function UsersContent() {
                 <label className="mb-1.5 block text-xs font-semibold text-slate-600">
                   Your Admin Password
                 </label>
-                <input
+                <input maxLength={INPUT_LIMITS.password}
                   type="password"
                   value={adminPassword}
                   onChange={e => setAdminPassword(e.target.value)}
@@ -633,7 +634,7 @@ function UsersContent() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
-              <h2 className="text-base font-bold text-slate-900">Add New Account</h2>
+              <h2 className="text-base font-semibold text-slate-900">Add New Account</h2>
               <button
                 onClick={() => setShowModal(false)}
                 className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition"
@@ -651,7 +652,7 @@ function UsersContent() {
               )}
               <div>
                 <label className="mb-1.5 block text-xs font-semibold text-slate-600">Full Name</label>
-                <input
+                <input maxLength={INPUT_LIMITS.name}
                   type="text"
                   value={form.name}
                   onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
@@ -661,7 +662,7 @@ function UsersContent() {
               </div>
               <div>
                 <label className="mb-1.5 block text-xs font-semibold text-slate-600">Email Address</label>
-                <input
+                <input maxLength={INPUT_LIMITS.email}
                   type="email"
                   value={form.email}
                   onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
@@ -671,7 +672,7 @@ function UsersContent() {
               </div>
               <div>
                 <label className="mb-1.5 block text-xs font-semibold text-slate-600">Password</label>
-                <input
+                <input maxLength={INPUT_LIMITS.password}
                   type="password"
                   value={form.password}
                   onChange={e => setForm(f => ({ ...f, password: e.target.value }))}

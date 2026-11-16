@@ -11,6 +11,7 @@
 // Voiding is different from deleting: a voided item stays in inventory but is
 // taken out of circulation, and the reason is recorded (see VOID_REASONS).
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import Link from 'next/link'
 import { apiFetch } from '@/lib/apiFetch'
 import { useEffect, useMemo, useState } from 'react'
@@ -295,7 +296,7 @@ function InventoryTrashContent() {
   const resetFilters = () => { setSearch(''); setCategoryFilter('all'); setConditionFilter('all'); setReasonFilter('all'); setStockFilter('all'); setStartDate(''); setEndDate(''); setCurrentPage(1) }
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-slate-50 px-3 py-3 sm:px-5 sm:py-4">
+    <main className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-3 py-3 sm:px-5 sm:py-4">
       <div className="mx-auto max-w-[1400px] space-y-3">
 
         {/* ── Header ── */}
@@ -307,7 +308,7 @@ function InventoryTrashContent() {
               </svg>
             </div>
             <div>
-              <h1 className="text-lg font-bold text-slate-900 sm:text-xl">Inventory Trash</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-slate-900">Inventory Trash</h1>
               <p className="text-xs text-slate-500">Manage voided or archived inventory items</p>
             </div>
           </div>
@@ -362,7 +363,7 @@ function InventoryTrashContent() {
         <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm">
           <div className="flex min-w-[200px] flex-1 items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5">
             <svg className="h-4 w-4 shrink-0 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="11" cy="11" r="8"/><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35"/></svg>
-            <input type="text" value={search} onChange={e => { setSearch(e.target.value); setCurrentPage(1) }}
+            <input maxLength={INPUT_LIMITS.search} type="text" value={search} onChange={e => { setSearch(e.target.value); setCurrentPage(1) }}
               placeholder="Search by item name, SKU, or reason..."
               className="w-full bg-transparent text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none" />
             {search && (

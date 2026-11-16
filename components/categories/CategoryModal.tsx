@@ -2,6 +2,7 @@
 
 // Dialog wrapper around CategoryManager, opened from the Inventory page.
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { useState } from 'react'
 import { Trash2, X } from 'lucide-react'
 
@@ -73,7 +74,7 @@ export default function CategoryModal({
         <div className="mt-4 space-y-2">
           <label className="text-sm font-medium text-slate-900">Add Category</label>
           <div className="flex items-center gap-2">
-            <input
+            <input maxLength={INPUT_LIMITS.name}
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="Category name"

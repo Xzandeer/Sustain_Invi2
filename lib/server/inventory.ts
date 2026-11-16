@@ -4,6 +4,8 @@ import { getAdminDb } from '@/lib/firebaseAdmin'
 import { createItemBarcode } from '@/lib/server/barcodes'
 import { normalizeStockLogActionForStorage, ResolvedStockLogAction } from '@/lib/inventory/stockLogActions'
 import { InventoryCondition, getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
+import { normalizeTrackingMode, type TrackingMode, type UnitDetails } from '@/lib/inventory/units'
+import { allocateUnitCodes, writeNewUnits } from '@/lib/server/units'
 import { verifiedUid } from '@/lib/server/authorize'
 
 export type StockLogAction = Exclude<ResolvedStockLogAction, 'unmapped_action'>
@@ -30,6 +32,8 @@ export interface InventoryVariant {
   isVoided: boolean
   isSingleItem: boolean
   conditionNotes: string
+  /** 'unit' when each piece has its own record - see lib/inventory/units.ts. */
+  trackingMode: TrackingMode
   data: Record<string, unknown>
 }
 
@@ -50,6 +54,8 @@ export interface StockLogEntryInput {
   relatedId?: string
   previousValue?: string
   newValue?: string
+  /** Unit-tracked items: the exact pieces this movement involved. */
+  units?: Array<{ id: string; unitCode: string }>
 }
 
 // Helper: Normalize item name for comparison (trim, lowercase, single spaces)
@@ -193,6 +199,10 @@ export const createStockLog = async (entry: StockLogEntryInput) => {
     userId: entry.user.uid ?? '',
     remarks: entry.remarks ?? '',
     relatedId: entry.relatedId ?? '', // Links to sale/reservation if applicable
+    // Lets one unit's history be read back with array-contains on unitIds.
+    ...(entry.units && entry.units.length > 0
+      ? { unitIds: entry.units.map((u) => u.id), unitCodes: entry.units.map((u) => u.unitCode) }
+      : {}),
   })
 }
 
@@ -216,6 +226,7 @@ const parseInventoryVariant = (id: string, data: Record<string, unknown>): Inven
     isVoided: data.isVoided === true,
     isSingleItem: data.isSingleItem === true,
     conditionNotes: typeof data.conditionNotes === 'string' ? data.conditionNotes : '',
+    trackingMode: normalizeTrackingMode(data.trackingMode),
     data,
   }
 }
@@ -265,15 +276,31 @@ export const createInventoryVariant = async (input: {
   /** One physical unit, tracked on its own. Quantity is always 1. */
   isSingleItem?: boolean
   conditionNotes?: string
+  /** 'unit' (default) gives every piece its own record; 'quantity' keeps a count only. */
+  trackingMode?: TrackingMode
+  /** Grade, notes and optional price for the pieces being created. */
+  unitDetails?: UnitDetails
+  /** Stock-log/unit source label, e.g. 'item_added'. */
+  source?: string
 }) => {
   const now = new Date().toISOString()
   const stockStatus = getStockStatus({ stock: input.quantity, minStock: input.minStock })
   const sku = await generateSku(input.categoryName, input.condition)
   // Short scannable code, one per variant. See lib/server/barcodes.ts.
   const barcode = await createItemBarcode()
+  // A single item is one piece, so it is always unit-tracked.
+  const trackingMode: TrackingMode = input.isSingleItem ? 'unit' : (input.trackingMode ?? 'unit')
+  // Reserved before the transaction - the counter has a transaction of its own.
+  const unitCodes = trackingMode === 'unit' ? await allocateUnitCodes(input.quantity) : []
 
-  // Step 1: Create inventory document
-  const docRef = await getAdminDb().collection('inventory').add({
+  // Step 1: Create the inventory document and, for unit tracking, one unit per
+  // piece - in one transaction, so an item never exists without its units.
+  const docRef = getAdminDb().collection('inventory').doc()
+  let units: ReturnType<typeof writeNewUnits> = []
+  await getAdminDb().runTransaction(async (txn) => {
+    txn.set(docRef, {
+    id: docRef.id,
+    trackingMode,
     name: input.name,
     categoryId: input.categoryId,
     categoryName: input.categoryName,
@@ -296,14 +323,26 @@ export const createInventoryVariant = async (input: {
     deletedAt: null,
     createdAt: now,
     updatedAt: now,
+    })
+    units = unitCodes.length > 0
+      ? writeNewUnits(txn, {
+          itemId: docRef.id,
+          itemName: input.name,
+          codes: unitCodes,
+          details: input.isSingleItem
+            ? { ...input.unitDetails, conditionNotes: input.unitDetails?.conditionNotes || input.conditionNotes }
+            : input.unitDetails,
+          nowIso: now,
+          source: input.source ?? 'item_added',
+        })
+      : []
   })
-
-  // Step 2: Update document to add its own ID (for cross-references)
-  await docRef.update({ id: docRef.id })
 
   return {
     id: docRef.id,
     stockStatus,
     now,
+    trackingMode,
+    units,
   }
 }

@@ -1,4 +1,5 @@
 // Reservation detail API - PATCH to update reservation status (complete/cancel/expire)
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { NextResponse } from 'next/server'
 import { getReservationDays, getStoreSettings } from '@/lib/server/storeSettings'
 import { allocateTransactionNumber } from '@/lib/server/transactionNumbers'
@@ -8,6 +9,11 @@ import { createStockLog, getProcessedByInfo } from '@/lib/server/inventory'
 import { toNumber } from '@/lib/server/salesInventoryMetrics'
 import { isCancellationReasonValid, SYSTEM_CANCELLATION_REASON, type CancellationReasonType } from '@/lib/reservations/cancellationReasons'
 import { guardRequest } from '@/lib/server/authorize'
+import {
+  describeUnits, linesByPrice, pickUnits, readHeldUnits, readItemUnits, setUnitsStatus, toLineRef, unitPrice, type StoredUnit,
+} from '@/lib/server/units'
+import { parseUnitLines } from '@/lib/inventory/units'
+import { normalizeTrackingMode } from '@/lib/inventory/units'
 
 interface RouteContext {
   params: Promise<{ id: string }>
@@ -38,6 +44,10 @@ interface ReservationItemRecord {
   quantity: number
   price: number
   condition: 'New' | 'Refurbished'
+  /** The exact pieces held (lib/inventory/units.ts). */
+  unitIds: string[]
+  /** What each held piece sells for, fixed when the hold was made. */
+  lockedPrices: Map<string, number>
 }
 
 interface PendingStockLog {
@@ -53,6 +63,7 @@ interface PendingStockLog {
   reservedBefore: number
   reservedAfter: number
   remarks: string
+  units?: StoredUnit[]
 }
 
 const parseReservationItems = (items: unknown): ReservationItemRecord[] => {
@@ -68,7 +79,11 @@ const parseReservationItems = (items: unknown): ReservationItemRecord[] => {
       const condition = record.condition === 'Refurbished' ? 'Refurbished' : 'New'
 
       if (!id || !name || quantity <= 0) return null
-      return { id, name, quantity, price, condition }
+      const unitIds = Array.isArray(record.unitIds)
+        ? record.unitIds.filter((v): v is string => typeof v === 'string' && v.length > 0)
+        : []
+      const lockedPrices = new Map(parseUnitLines(record.unitLines).map((u) => [u.unitId, u.price]))
+      return { id, name, quantity, price, condition, unitIds, lockedPrices }
     })
     .filter((item): item is ReservationItemRecord => item !== null)
 }
@@ -126,7 +141,9 @@ export async function PATCH(req: Request, context: RouteContext) {
     // allocateTransactionNumber runs its own transaction and cannot be nested,
     // and getStoreSettings is a read that must not sit inside one either.
     const saleNumber = action === 'complete' ? await allocateTransactionNumber('sale', nowIso) : null
-    const saleWarrantyDays = action === 'complete' ? (await getStoreSettings()).warrantyDays : null
+    const storeSettings = action === 'complete' || action === 'reinstate' ? await getStoreSettings() : null
+    const saleWarrantyDays = action === 'complete' ? storeSettings!.warrantyDays : null
+    const gradePricing = storeSettings?.gradePricing ?? null
 
     await adminDb.runTransaction(async (transaction) => {
       const reservationSnapshot = await transaction.get(reservationRef)
@@ -210,6 +227,7 @@ export async function PATCH(req: Request, context: RouteContext) {
           currentStock: number
           currentReserved: number
           available: number
+          units: StoredUnit[]
         }> = []
 
         // ── Phase 1: read and validate every line ──
@@ -233,17 +251,31 @@ export async function PATCH(req: Request, context: RouteContext) {
             throw new Error(`REINSTATE_UNAVAILABLE:${item.name}`)
           }
 
-          reinstateWrites.push({ ref: inventoryRef, item, currentStock, currentReserved, available })
+          // The pieces held before, if they are still on the shelf; otherwise
+          // the oldest pieces there now.
+          let units: StoredUnit[] = []
+          if (normalizeTrackingMode(inventoryData.trackingMode) === 'unit') {
+            const pool = await readItemUnits(transaction, item.id, 'in_stock')
+            const stillHere = item.unitIds.filter((uid) => pool.some((u) => u.id === uid))
+            try {
+              units = pickUnits(pool, item.quantity, stillHere, item.name, { allowOverridePrices: false })
+            } catch {
+              throw new Error(`REINSTATE_UNAVAILABLE:${item.name}`)
+            }
+          }
+
+          reinstateWrites.push({ ref: inventoryRef, item, currentStock, currentReserved, available, units })
         }
 
         // ── Phase 2: write ──
         for (const entry of reinstateWrites) {
-          const { ref, item, currentStock, currentReserved, available } = entry
+          const { ref, item, currentStock, currentReserved, available, units } = entry
 
           transaction.update(ref, {
             reservedStock: currentReserved + item.quantity,
             updatedAt: nowIso,
           })
+          setUnitsStatus(transaction, units, 'reserved', nowIso, { reservationId: id })
 
           pendingLogs.push({
             actionType: 'reservation_deduction',
@@ -257,12 +289,23 @@ export async function PATCH(req: Request, context: RouteContext) {
             stockAfter: currentStock,
             reservedBefore: currentReserved,
             reservedAfter: currentReserved + item.quantity,
-            remarks: 'Reservation reinstated - customer returned after the hold lapsed.',
+            remarks: 'Reservation reinstated - customer returned after the hold lapsed.' + describeUnits(units),
+            units,
           })
         }
 
         const until = new Date(Date.now() + holdDays * 24 * 60 * 60 * 1000)
+        // The lines now point at the pieces actually re-held.
+        const reheld = new Map(reinstateWrites.map((w) => [w.item.id, w.units]))
+        const items = (Array.isArray(data.items) ? data.items : []).map((raw) => {
+          const line = raw as Record<string, unknown>
+          const units = reheld.get(typeof line.id === 'string' ? line.id : '') ?? []
+          if (units.length === 0) return line
+          const price = typeof line.price === 'number' ? line.price : 0
+          return { ...line, unitIds: units.map((u) => u.id), unitLines: units.map((u) => toLineRef(u, unitPrice(u, price, gradePricing!))) }
+        })
         transaction.update(reservationRef, {
+          items,
           status: 'Active',
           expiresAt: until.toISOString(),
           cancellationReason: '',
@@ -279,12 +322,14 @@ export async function PATCH(req: Request, context: RouteContext) {
       if (action === 'complete') {
         const saleItems: Array<{
           itemId: string
+          lineKey?: string
           name: string
           quantity: number
           price: number
           categoryId: string
           categoryName: string
           condition: string
+          unitLines?: ReturnType<typeof toLineRef>[]
         }> = []
 
         // Same two-phase split as reinstate: every read first, then the writes.
@@ -299,6 +344,7 @@ export async function PATCH(req: Request, context: RouteContext) {
           nextReservedStock: number
           categoryId: string
           categoryName: string
+          units: StoredUnit[]
         }> = []
 
         // ── Phase 1: read and validate every line ──
@@ -328,6 +374,11 @@ export async function PATCH(req: Request, context: RouteContext) {
               ? inventoryData.categoryId.trim()
               : ''
 
+          // The pieces this reservation holds become the pieces sold.
+          const units = normalizeTrackingMode(inventoryData.trackingMode) === 'unit'
+            ? await readHeldUnits(transaction, item.id, id, item.unitIds)
+            : []
+
           claimWrites.push({
             ref: inventoryRef,
             item,
@@ -337,12 +388,13 @@ export async function PATCH(req: Request, context: RouteContext) {
             nextReservedStock,
             categoryId,
             categoryName,
+            units,
           })
         }
 
         // ── Phase 2: write ──
         for (const entry of claimWrites) {
-          const { ref, item, currentStock, currentReservedStock, nextStock, nextReservedStock } = entry
+          const { ref, item, currentStock, currentReservedStock, nextStock, nextReservedStock, units } = entry
 
           transaction.update(ref, {
             stock: nextStock,
@@ -350,6 +402,7 @@ export async function PATCH(req: Request, context: RouteContext) {
             reservedStock: nextReservedStock,
             updatedAt: nowIso,
           })
+          setUnitsStatus(transaction, units, 'sold', nowIso, { saleId: saleRef.id })
 
           pendingLogs.push({
             actionType: 'reservation_claim',
@@ -363,18 +416,32 @@ export async function PATCH(req: Request, context: RouteContext) {
             stockAfter: nextStock,
             reservedBefore: currentReservedStock,
             reservedAfter: nextReservedStock,
-            remarks: `Reservation ${id} claimed.`,
+            remarks: `Reservation ${id} claimed.` + describeUnits(units),
+            units,
           })
 
-          saleItems.push({
+          const baseLine = {
             itemId: item.id,
             name: item.name,
-            quantity: item.quantity,
-            price: item.price,
             categoryId: entry.categoryId,
             categoryName: entry.categoryName,
             condition: item.condition,
-          })
+          }
+          if (units.length === item.quantity) {
+            // One line per price, as at the counter.
+            for (const line of linesByPrice(item.id, units, (u) => item.lockedPrices.get(u.id) ?? unitPrice(u, item.price, gradePricing!))) {
+              saleItems.push({
+                ...baseLine,
+                condition: line.condition,
+                ...(line.lineKey !== item.id ? { lineKey: line.lineKey } : {}),
+                quantity: line.quantity,
+                price: line.price,
+                unitLines: line.unitLines,
+              })
+            }
+          } else {
+            saleItems.push({ ...baseLine, quantity: item.quantity, price: item.price })
+          }
         }
 
         const totalAmount = saleItems.reduce((sum, item) => sum + item.quantity * item.price, 0)
@@ -446,6 +513,7 @@ export async function PATCH(req: Request, context: RouteContext) {
         currentReservedStock: number
         availableBefore: number
         nextReservedStock: number
+        units: StoredUnit[]
       }> = []
 
       // ── Phase 1: read and validate every line ──
@@ -466,6 +534,10 @@ export async function PATCH(req: Request, context: RouteContext) {
           throw new Error('INVALID_RESERVED_STOCK')
         }
 
+        const units = normalizeTrackingMode(inventoryData.trackingMode) === 'unit'
+          ? await readHeldUnits(transaction, item.id, id, item.unitIds)
+          : []
+
         releaseWrites.push({
           ref: inventoryRef,
           item,
@@ -473,6 +545,7 @@ export async function PATCH(req: Request, context: RouteContext) {
           currentReservedStock,
           availableBefore,
           nextReservedStock,
+          units,
         })
       }
 
@@ -487,7 +560,7 @@ export async function PATCH(req: Request, context: RouteContext) {
               cancellationReason:
                 selectedReason === 'Other'
                   ? typeof body.customCancellationReason === 'string'
-                    ? body.customCancellationReason.trim()
+                    ? body.customCancellationReason.trim().slice(0, INPUT_LIMITS.note)
                     : selectedReason
                   : selectedReason,
               cancellationReasonType: 'manual' as CancellationReasonType,
@@ -501,12 +574,13 @@ export async function PATCH(req: Request, context: RouteContext) {
 
       // ── Phase 2: write ──
       for (const entry of releaseWrites) {
-        const { ref, item, currentStock, currentReservedStock, availableBefore, nextReservedStock } = entry
+        const { ref, item, currentStock, currentReservedStock, availableBefore, nextReservedStock, units } = entry
 
         transaction.update(ref, {
           reservedStock: nextReservedStock,
           updatedAt: nowIso,
         })
+        setUnitsStatus(transaction, units, 'in_stock', nowIso)
 
         pendingLogs.push({
           actionType: 'reservation_release',
@@ -520,7 +594,8 @@ export async function PATCH(req: Request, context: RouteContext) {
           stockAfter: currentStock,
           reservedBefore: currentReservedStock,
           reservedAfter: nextReservedStock,
-          remarks: reasonSuffix,
+          remarks: reasonSuffix + describeUnits(units),
+          units,
         })
       }
 
@@ -541,11 +616,12 @@ export async function PATCH(req: Request, context: RouteContext) {
     })
 
     await Promise.all(
-      pendingLogs.map((log) =>
+      pendingLogs.map(({ units, ...log }) =>
         createStockLog({
           ...log,
           user: processedBy,
           relatedId: id,
+          units: units?.map((u) => ({ id: u.id, unitCode: u.unitCode })),
         })
       )
     )

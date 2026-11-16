@@ -23,9 +23,10 @@
 // Walk-in vs. named customer: for walk-ins the customer fields stay hidden,
 // because typing a name for every counter sale slowed the staff down.
 
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { INPUT_LIMITS } from '@/lib/constants/limits'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { apiFetch } from '@/lib/apiFetch'
-import { expireReservations } from '@/lib/reservations/reservationExpiration'
+import { forgetReads } from '@/lib/client/readCache'
 import { collection, onSnapshot, orderBy, query, Timestamp, where } from 'firebase/firestore'
 import { toPng } from 'html-to-image'
 import { Download, Mail, Minus, Plus, Printer, Search, ShoppingCart, Trash2 } from 'lucide-react'
@@ -52,6 +53,9 @@ const BarcodeScanner = dynamic(() => import('@/components/sales/BarcodeScanner')
 // 11-digit contact rule and the reservation request are shared with the
 // dashboard's Reserve Item quick action.
 import { createReservation, isValidContactNumber } from '@/lib/reservations/createReservation'
+import { SCAN_PARAM } from '@/lib/scan/scanToSale'
+import { expireReservations } from '@/lib/reservations/reservationExpiration'
+import { GRADE_LABEL, GRADE_MEANING, GRADE_TONE, UNIT_GRADES, type UnitGrade } from '@/lib/inventory/units'
 
 const DATE_RANGES = [
   { key: 'today', label: 'Today' },
@@ -95,6 +99,10 @@ interface SaleTransaction {
   customerEmail: string
   items: Array<{
     itemId?: string
+    /** Which line of the sale - one item can have a line per price. */
+    lineKey?: string
+    /** Unit-tracked lines: the pieces sold, e.g. "#00000012 Good". */
+    unitSummary?: string
     name: string
     quantity: number
     price: number
@@ -114,6 +122,10 @@ interface SaleTransaction {
 
 interface ParsedSaleItem {
   itemId: string | undefined
+  /** Which line of the sale - one item can have a line per price. */
+  lineKey: string | undefined
+  /** Unit-tracked lines: "#00000012 Good" per piece. */
+  unitSummary: string | undefined
   name: string
   quantity: number
   price: number
@@ -138,6 +150,27 @@ interface InventoryItem {
   isVoided?: boolean
   isSingleItem?: boolean
   conditionNotes?: string
+  trackingMode?: 'unit' | 'quantity'
+}
+
+
+/** A scanned unit label: one exact piece (lib/inventory/units.ts). */
+interface ScannedUnit {
+  id: string
+  unitCode: string
+  grade: string
+  conditionNotes: string
+  /** What it sells for: its own price, or its condition's price. */
+  price: number
+  /** True when the piece has a price of its own. */
+  ownPrice?: boolean
+}
+
+/** One condition of a unit-tracked item on the shelf (/api/inventory/units/summary). */
+interface ShelfGrade { grade: string; count: number; price: number }
+interface ShelfItem {
+  grades: ShelfGrade[]
+  ownPriced: Array<{ grade: string; count: number; minPrice: number; maxPrice: number }>
 }
 
 interface Category {
@@ -146,7 +179,10 @@ interface Category {
 }
 
 interface CartItem {
+  /** Cart line key: the item id, or item id + unit id for a piece with its own price. */
   id: string
+  /** The inventory item. Absent on older lines, where id is the item id. */
+  itemId?: string
   name: string
   price: number
   quantity: number
@@ -154,6 +190,12 @@ interface CartItem {
   categoryName: string
   condition: 'New' | 'Refurbished'
   conditionNotes?: string
+  /** Scanned pieces on this line. The rest of the quantity sells oldest first. */
+  units?: ScannedUnit[]
+  /** A piece with its own price: a line of exactly one. */
+  fixedUnit?: boolean
+  /** Unit-tracked items: the condition this line sells, at that condition's price. */
+  grade?: string
 }
 
 
@@ -190,6 +232,10 @@ function SalesContent() {
     return d.getTime()
   })
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([])
+  // Unit-tracked items: what is on the shelf per condition, at what price.
+  const [shelf, setShelf] = useState<Record<string, ShelfItem>>({})
+  // Condition prices: loading until the first answer, then ready (or error).
+  const [shelfStatus, setShelfStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
@@ -228,7 +274,7 @@ function SalesContent() {
   const [canScanWithCamera, setCanScanWithCamera] = useState(false)
   useEffect(() => { setCanScanWithCamera(isBarcodeScanSupported()) }, [])
   const [inventoryCategoryFilter, setInventoryCategoryFilter] = useState('all')
-  const [inventoryConditionFilter, setInventoryConditionFilter] = useState<'all' | 'New' | 'Refurbished'>('all')
+  const [inventoryConditionFilter, setInventoryConditionFilter] = useState<'all' | UnitGrade>('all')
   const [inventoryStockStatusFilter, setInventoryStockStatusFilter] = useState<'all' | 'Available' | 'Low Stock' | 'Out of Stock'>('all')
   const [customerFullName, setCustomerFullName] = useState('')
   const [customerEmail, setCustomerEmail] = useState('')
@@ -350,6 +396,7 @@ function SalesContent() {
               isVoided: data.isVoided === true,
               isSingleItem: data.isSingleItem === true,
               conditionNotes: typeof data.conditionNotes === 'string' ? data.conditionNotes.trim() : '',
+              trackingMode: (data.trackingMode === 'unit' ? 'unit' : 'quantity') as 'unit' | 'quantity',
             }
           })
           .filter((item) => item.name && item.isDeleted !== true && item.isVoided !== true)
@@ -385,6 +432,15 @@ function SalesContent() {
                   if (!name) return null
                   return {
                     itemId: typeof saleItem.itemId === 'string' ? saleItem.itemId : undefined,
+                    lineKey:
+                      typeof saleItem.lineKey === 'string' && saleItem.lineKey
+                        ? saleItem.lineKey
+                        : typeof saleItem.itemId === 'string' ? saleItem.itemId : undefined,
+                    unitSummary: Array.isArray(saleItem.unitLines)
+                      ? (saleItem.unitLines as Array<Record<string, unknown>>)
+                          .map((u) => `#${String(u.unitCode ?? '')} ${String(u.grade ?? '')}${u.refunded === true ? ' (returned)' : ''}`)
+                          .join(', ')
+                      : undefined,
                     name,
                     quantity: toNumber(saleItem.quantity, 0),
                     price: toNumber(saleItem.price, 0),
@@ -459,12 +515,44 @@ function SalesContent() {
       return d.getTime()
     })
 
+  // Release overdue holds on open, so their stock can be sold. The live
+  // inventory listener picks up the change.
+  useEffect(() => { void expireReservations() }, [])
+
+  // Re-read when stock of a per-piece item actually changes (a sale, a delivery,
+  // a re-grade) - not on every live update of the inventory list.
+  const shelfKey = useMemo(
+    () => inventoryItems.filter((i) => i.trackingMode === 'unit').map((i) => `${i.id}:${i.stock}:${i.reservedStock}:${i.price}`).join('|'),
+    [inventoryItems]
+  )
+  const shelfRequest = useRef(0)
+  const loadShelf = useCallback(() => {
+    const seq = ++shelfRequest.current
+    apiFetch('/api/inventory/units/summary')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((d: { items?: Record<string, ShelfItem> }) => {
+        if (seq !== shelfRequest.current) return // a newer answer is on its way
+        setShelf(d.items ?? {})
+        setShelfStatus('ready')
+      })
+      .catch(() => { if (seq === shelfRequest.current) setShelfStatus((cur) => (cur === 'ready' ? 'ready' : 'error')) })
+  }, [])
+  useEffect(() => {
+    if (!shelfKey) return
+    loadShelf()
+  }, [shelfKey, loadShelf])
+
   useEffect(() => {
     setCart((currentCart) =>
       currentCart
         .map((cartItem) => {
-          const liveItem = inventoryItems.find((item) => item.id === cartItem.id)
+          const liveItem = inventoryItems.find((item) => item.id === (cartItem.itemId ?? cartItem.id))
           if (!liveItem) return null
+          // Condition and single-piece lines keep their own price and limit;
+          // the shelf summary refreshes those.
+          if (cartItem.grade || cartItem.fixedUnit) {
+            return { ...cartItem, categoryName: liveItem.categoryName }
+          }
           return {
             ...cartItem,
             availableStock: liveItem.availableStock,
@@ -565,7 +653,14 @@ function SalesContent() {
         )
       })
       .filter((item) => (inventoryCategoryFilter === 'all' ? true : item.categoryName === inventoryCategoryFilter))
-      .filter((item) => (inventoryConditionFilter === 'all' ? true : item.condition === inventoryConditionFilter))
+      .filter((item) => {
+        if (inventoryConditionFilter === 'all') return true
+        if (item.trackingMode === 'unit') {
+          const sh = shelf[item.id]
+          return !!sh && [...sh.grades, ...sh.ownPriced].some((g) => g.grade === inventoryConditionFilter)
+        }
+        return (item.condition === 'Refurbished' ? 'Good' : 'New') === inventoryConditionFilter
+      })
       .filter((item) => {
         if (inventoryStockStatusFilter === 'all') return true
         const stockStatus =
@@ -585,6 +680,7 @@ function SalesContent() {
       })
   }, [
     inventoryItems,
+    shelf,
     inventorySearch,
     inventoryCategoryFilter,
     inventoryConditionFilter,
@@ -797,7 +893,11 @@ function SalesContent() {
     if (!selectedTransaction) return
     // Only send lines with a quantity > 0; sending none means "refund everything"
     const lines = Object.entries(refundQty)
-      .map(([itemId, quantity]) => ({ itemId, quantity }))
+      .map(([lineKey, quantity]) => ({
+        lineKey,
+        itemId: selectedTransaction.items?.find((it) => it.lineKey === lineKey)?.itemId ?? lineKey.split('@')[0],
+        quantity,
+      }))
       .filter((l) => l.quantity > 0)
 
     if (lines.length === 0) {
@@ -823,6 +923,7 @@ function SalesContent() {
         toast.error(data.error ?? 'Failed to process refund')
         return
       }
+      forgetReads('sales:') // Dashboard and Analytics read the refund fresh
       toast.success(
         data.partial
           ? `Partial refund processed for ${selectedTransaction.receiptNumber}`
@@ -908,7 +1009,7 @@ function SalesContent() {
 
     try {
       const res = await apiFetch(`/api/inventory/barcodes?code=${encodeURIComponent(code)}`)
-      const payload = (await res.json()) as { item?: InventoryItem; error?: string }
+      const payload = (await res.json()) as { item?: InventoryItem; unit?: ScannedUnit; grades?: ShelfGrade[]; error?: string }
 
       if (!res.ok || !payload.item) {
         setError(payload.error || `No item found for barcode ${code}.`)
@@ -916,7 +1017,20 @@ function SalesContent() {
         return true
       }
 
-      const refusal = addToCart(payload.item)
+      if (!payload.unit && payload.grades) {
+        if (payload.grades.length === 1) {
+          const refusal = addGradeToCart(payload.item, payload.grades[0])
+          if (refusal) toast.error(refusal)
+          else toast.success(`${payload.item.name} (${payload.grades[0].grade}) added.`)
+        } else {
+          // Several conditions, several prices: the counter picks one.
+          setInventorySearch(payload.item.name)
+          toast.message(`${payload.item.name} comes in ${payload.grades.length} conditions. Pick one, or scan the piece's own label.`)
+        }
+        return true
+      }
+
+      const refusal = payload.unit ? addUnitToCart(payload.item, payload.unit) : addToCart(payload.item)
       setInventorySearch('')
       // Straight back to the box so the next item can be scanned immediately
       inventorySearchRef.current?.focus()
@@ -1025,6 +1139,25 @@ function SalesContent() {
     return () => document.removeEventListener('keydown', onKeyDown, true)
   }, [isCompletedMode, scanBlocked])
 
+  // ── Arriving from a scan on another page ──────────────────────────────────
+  //
+  // GlobalScanListener (and the dashboard's camera scan) open this page as
+  // /sales?scan=<code> once the code is confirmed to be a real item. The code
+  // goes through the same handler as a scan at the counter, exactly once, and
+  // is then dropped from the address bar so a refresh does not add it again.
+  const pendingScanHandledRef = useRef(false)
+  useEffect(() => {
+    if (pendingScanHandledRef.current) return
+    pendingScanHandledRef.current = true
+    const params = new URLSearchParams(window.location.search)
+    const code = params.get(SCAN_PARAM)
+    if (!code) return
+    params.delete(SCAN_PARAM)
+    const rest = params.toString()
+    window.history.replaceState(null, '', `${window.location.pathname}${rest ? `?${rest}` : ''}`)
+    void scanHandlerRef.current(code)
+  }, [])
+
   const addToCart = (item: InventoryItem): string | null => {
     if (isCompletedMode) return 'This sale is already completed.'
     setError('')
@@ -1079,6 +1212,110 @@ function SalesContent() {
     return null
   }
 
+  /** Adds one piece of a condition, at that condition's price. */
+  const addGradeToCart = (item: InventoryItem, g: ShelfGrade, unit?: ScannedUnit): string | null => {
+    if (isCompletedMode) return 'This sale is already completed.'
+    setError('')
+    setSuccessMessage('')
+    const key = `${item.id}:${g.grade}`
+    const line = cart.find((l) => l.id === key)
+    if (line && line.quantity >= g.count) {
+      const reason = `Only ${g.count} ${item.name} (${g.grade}) left.`
+      setError(reason)
+      return reason
+    }
+    setCart((current) => {
+      const existing = current.find((l) => l.id === key)
+      if (existing) {
+        return current.map((l) => l.id === key
+          ? { ...l, quantity: l.quantity + 1, availableStock: g.count, price: g.price, ...(unit ? { units: [...(l.units ?? []), unit] } : {}) }
+          : l)
+      }
+      return [...current, {
+        id: key,
+        itemId: item.id,
+        name: item.name,
+        price: g.price,
+        quantity: 1,
+        availableStock: g.count,
+        categoryName: item.categoryName,
+        condition: item.condition,
+        grade: g.grade,
+        ...(unit ? { units: [unit] } : {}),
+      }]
+    })
+    return null
+  }
+
+  /**
+   * Adds one scanned piece. It joins its condition's line (and is the one
+   * sold); a piece with a price of its own gets a line of its own.
+   */
+  const addUnitToCart = (item: InventoryItem, unit: ScannedUnit): string | null => {
+    if (cart.some((line) => line.units?.some((u) => u.id === unit.id))) {
+      const reason = `Piece #${unit.unitCode} is already in the cart.`
+      setError(reason)
+      return reason
+    }
+    if (!unit.ownPrice) {
+      const g = shelf[item.id]?.grades.find((x) => x.grade === unit.grade) ?? { grade: unit.grade, count: item.availableStock, price: unit.price }
+      return addGradeToCart(item, g, unit)
+    }
+    if (isCompletedMode) return 'This sale is already completed.'
+    setError('')
+    setSuccessMessage('')
+
+    if (cart.some((line) => line.units?.some((u) => u.id === unit.id))) {
+      const reason = `Piece #${unit.unitCode} is already in the cart.`
+      setError(reason)
+      return reason
+    }
+    const inCartForItem = cart.filter((line) => (line.itemId ?? line.id) === item.id).reduce((n, line) => n + line.quantity, 0)
+    if (inCartForItem >= item.availableStock) {
+      const reason = `Only ${item.availableStock} left of ${item.name}.`
+      setError(reason)
+      return reason
+    }
+
+    setCart((currentCart) => {
+      if (unit.ownPrice) {
+        return [...currentCart, {
+          id: `${item.id}#${unit.id}`,
+          itemId: item.id,
+          name: item.name,
+          price: unit.price,
+          quantity: 1,
+          availableStock: 1,
+          categoryName: item.categoryName,
+          condition: item.condition,
+          units: [unit],
+          fixedUnit: true,
+        }]
+      }
+      const existing = currentCart.find((line) => line.id === item.id)
+      if (existing) {
+        const units = [...(existing.units ?? []), unit]
+        return currentCart.map((line) =>
+          line.id === item.id
+            ? { ...line, units, quantity: Math.max(line.quantity + 1, units.length), availableStock: item.availableStock }
+            : line
+        )
+      }
+      return [...currentCart, {
+        id: item.id,
+        itemId: item.id,
+        name: item.name,
+        price: item.price,
+        quantity: 1,
+        availableStock: item.availableStock,
+        categoryName: item.categoryName,
+        condition: item.condition,
+        units: [unit],
+      }]
+    })
+    return null
+  }
+
   const updateCartQuantity = (itemId: string, nextQuantity: number) => {
     if (isCompletedMode) return
     setError('')
@@ -1088,11 +1325,17 @@ function SalesContent() {
       return currentCart.flatMap((item) => {
         if (item.id !== itemId) return [item]
         if (nextQuantity <= 0) return []
+        if (item.fixedUnit && nextQuantity > 1) {
+          setError(`Piece #${item.units?.[0]?.unitCode} is one piece. Scan another label to add more.`)
+          return [item]
+        }
         if (nextQuantity > item.availableStock) {
           setError(`Cannot exceed available stock for ${item.name}.`)
           return [item]
         }
-        return [{ ...item, quantity: nextQuantity }]
+        // Lowering the quantity lets go of the last scanned pieces first.
+        const units = item.units ? item.units.slice(0, Math.min(item.units.length, nextQuantity)) : undefined
+        return [{ ...item, quantity: nextQuantity, ...(units ? { units } : {}) }]
       })
     })
   }
@@ -1103,10 +1346,6 @@ function SalesContent() {
     setSuccessMessage('')
     setCart((currentCart) => currentCart.filter((item) => item.id !== itemId))
   }
-
-  // Release overdue holds on open, so their stock can be sold. The live
-  // inventory listener picks up the change.
-  useEffect(() => { void expireReservations() }, [])
 
   const completeSale = async () => {
     if (cart.length === 0) {
@@ -1149,8 +1388,12 @@ function SalesContent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           items: cart.map((item) => ({
-            itemId: item.id,
+            itemId: item.itemId ?? item.id,
             quantity: item.quantity,
+            // The condition sold; the server picks the oldest pieces of it.
+            ...(item.grade ? { grade: item.grade } : {}),
+            // The scanned pieces; the server picks the oldest for the rest.
+            ...(item.units?.length ? { unitIds: item.units.map((u) => u.id) } : {}),
           })),
           // The peso discount the cashier entered; the server checks it.
           discount: Math.round(discount * 100) / 100,
@@ -1184,6 +1427,7 @@ function SalesContent() {
       const active = result.receipt ?? null
       setActiveReceipt(active)
       setCompletedDocument(result.document ?? null)
+      forgetReads('sales:') // Dashboard and Analytics read the new sale fresh
       setSuccessMessage('Sale completed successfully.')
       toast.success('Sale completed successfully.')
     } catch (checkoutError) {
@@ -1256,31 +1500,22 @@ function SalesContent() {
   // scrolling products. On a phone the panes stack, so the page must grow and
   // scroll normally - a locked height would clip the cart out of reach.
   return (
-    <main className="flex min-h-screen flex-col bg-slate-50 xl:h-[calc(100vh-64px)] xl:overflow-hidden">
-      <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-3 px-3 pb-3 pt-4 sm:px-4 xl:h-full">
+    <main className="flex min-h-screen flex-col bg-[#F1F5FC] lg:h-screen lg:overflow-hidden">
+      <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-3 p-3 lg:h-full">
 
         {/* ── Header ── */}
-        <div className="flex flex-wrap items-center justify-between gap-2 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
-              </svg>
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-slate-900">Sales POS</h1>
-              <p className="text-xs text-slate-500">Search products, add to cart, and complete sales transactions.</p>
-            </div>
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">Sales</h1>
+            <p className="text-xs text-slate-500">Search or scan an item, pick its condition, then complete the sale.</p>
           </div>
           <button
             type="button"
             onClick={startNewTransaction}
-            className="flex items-center gap-2 rounded-lg bg-[#1e3a5f] px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-[#162d4a]"
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
           >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-            </svg>
-            New Transaction
+            <Plus className="h-3.5 w-3.5" />
+            New transaction
           </button>
         </div>
 
@@ -1289,29 +1524,22 @@ function SalesContent() {
           <div className="shrink-0 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>
         ) : null}
         {successMessage ? (
-          <div className="shrink-0 rounded-lg border border-green-200 bg-green-50 px-4 py-2 text-sm text-green-700">{successMessage}</div>
+          <div className="shrink-0 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-700">{successMessage}</div>
         ) : null}
 
-        {/* ── Two-column layout — fills remaining viewport ── */}
-        <div className="grid grid-cols-1 gap-3 xl:min-h-0 xl:flex-1 xl:grid-cols-[1fr_370px] xl:overflow-hidden">
+        {/* ── Two columns: products on the left, the sale on the right ── */}
+        <div className="grid grid-cols-1 gap-3 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,1fr)_340px] lg:overflow-hidden xl:grid-cols-[minmax(0,1fr)_380px]">
 
-          {/* ══ LEFT COLUMN ══ */}
-          <div className="flex flex-col gap-3 min-h-0 overflow-hidden">
+          {/* ══ LEFT ══ */}
+          <div className="flex min-h-0 flex-col gap-3 lg:overflow-hidden">
 
-            {/* Products card */}
-            <div className="rounded-2xl border border-slate-200 bg-white shadow-sm flex flex-col flex-1 min-h-0">
-              {/* Card header */}
-              <div className="border-b border-slate-100 px-4 py-3 shrink-0">
-                <h2 className="text-sm font-semibold text-slate-900">Products</h2>
-              </div>
-
-              {/* Search + filters */}
-              <div className="px-4 pt-3 pb-2 space-y-2 shrink-0">
-                <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 shadow-sm">
-                  <svg className="h-4 w-4 shrink-0 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <circle cx="11" cy="11" r="8" /><path strokeLinecap="round" d="M21 21l-4.35-4.35" />
-                  </svg>
-                  <input
+            {/* Products */}
+            <section className="flex min-h-[460px] flex-1 flex-col overflow-hidden rounded-xl lg:min-h-0 border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+              {/* Search and filters */}
+              <div className="shrink-0 space-y-2 border-b border-slate-100 p-3">
+                <div className="flex h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 focus-within:border-blue-500">
+                  <Search className="h-4 w-4 shrink-0 text-slate-400" />
+                  <input maxLength={INPUT_LIMITS.search}
                     type="text"
                     value={inventorySearch}
                     onChange={(e) => setInventorySearch(e.target.value)}
@@ -1324,7 +1552,7 @@ function SalesContent() {
                     }}
                     ref={inventorySearchRef}
                     autoFocus
-                    placeholder="Search products, or scan a barcode..."
+                    placeholder="Search an item, or scan its label"
                     className="w-full bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400"
                   />
                   {canScanWithCamera && !isCompletedMode && (
@@ -1340,114 +1568,154 @@ function SalesContent() {
                     </button>
                   )}
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
                   <select
                     value={inventoryCategoryFilter}
                     onChange={(e) => setInventoryCategoryFilter(e.target.value)}
-                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:outline-none"
+                    aria-label="Category"
+                    className={`h-8 rounded-lg border bg-white px-2 text-xs focus:outline-none ${inventoryCategoryFilter !== 'all' ? 'border-blue-300 text-blue-700' : 'border-slate-200 text-slate-700'}`}
                   >
-                    <option value="all">All Categories</option>
+                    <option value="all">All categories</option>
                     {inventoryCategoryOptions.map((cat) => (
                       <option key={cat} value={cat}>{cat}</option>
                     ))}
                   </select>
                   <select
                     value={inventoryConditionFilter}
-                    onChange={(e) => setInventoryConditionFilter(e.target.value === 'New' ? 'New' : e.target.value === 'Refurbished' ? 'Refurbished' : 'all')}
-                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:outline-none"
+                    onChange={(e) => setInventoryConditionFilter((UNIT_GRADES as readonly string[]).includes(e.target.value) ? (e.target.value as UnitGrade) : 'all')}
+                    aria-label="Condition"
+                    className={`h-8 rounded-lg border bg-white px-2 text-xs focus:outline-none ${inventoryConditionFilter !== 'all' ? 'border-blue-300 text-blue-700' : 'border-slate-200 text-slate-700'}`}
                   >
-                    <option value="all">All Conditions</option>
-                    <option value="New">New</option>
-                    <option value="Refurbished">Refurbished</option>
+                    <option value="all">Any condition</option>
+                    {UNIT_GRADES.map((g) => <option key={g} value={g}>{GRADE_LABEL[g]}</option>)}
                   </select>
                   <select
                     value={inventoryStockStatusFilter}
                     onChange={(e) => setInventoryStockStatusFilter(e.target.value === 'Available' ? 'Available' : e.target.value === 'Low Stock' ? 'Low Stock' : e.target.value === 'Out of Stock' ? 'Out of Stock' : 'all')}
-                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:outline-none"
+                    aria-label="Stock"
+                    className={`h-8 rounded-lg border bg-white px-2 text-xs focus:outline-none ${inventoryStockStatusFilter !== 'all' ? 'border-blue-300 text-blue-700' : 'border-slate-200 text-slate-700'}`}
                   >
-                    <option value="all">All Stock</option>
-                    <option value="Available">In Stock</option>
-                    <option value="Low Stock">Low Stock</option>
-                    <option value="Out of Stock">Out of Stock</option>
+                    <option value="all">Any stock</option>
+                    <option value="Available">In stock</option>
+                    <option value="Low Stock">Low stock</option>
+                    <option value="Out of Stock">Out of stock</option>
                   </select>
-                  <button
-                    type="button"
-                    onClick={() => { setInventorySearch(''); setInventoryCategoryFilter('all'); setInventoryConditionFilter('all'); setInventoryStockStatusFilter('all') }}
-                    className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
-                  >
-                    <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                    Reset
-                  </button>
+                  <span className="ml-auto flex items-center gap-2 text-[11px] text-slate-500">
+                    {filteredInventoryItems.length} item{filteredInventoryItems.length === 1 ? '' : 's'}
+                    {(inventorySearch || inventoryCategoryFilter !== 'all' || inventoryConditionFilter !== 'all' || inventoryStockStatusFilter !== 'all') && (
+                      <button
+                        type="button"
+                        onClick={() => { setInventorySearch(''); setInventoryCategoryFilter('all'); setInventoryConditionFilter('all'); setInventoryStockStatusFilter('all') }}
+                        className="font-semibold text-blue-600 hover:underline"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </span>
                 </div>
               </div>
 
-              {/* Products table — internal scroll */}
-              <div className="overflow-auto flex-1 min-h-0">
-                <table className="w-full text-sm">
-                  <thead className="sticky top-0 bg-slate-50 text-xs font-medium text-slate-500 z-10">
+              {/* Product list */}
+              <div className="min-h-0 flex-1 overflow-auto">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 z-10 border-b border-slate-200 bg-slate-50/95 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                     <tr>
-                      <th className="px-4 py-2.5 text-left">Product Name</th>
-                      <th className="px-4 py-2.5 text-left">Category</th>
-                      <th className="px-4 py-2.5 text-left">Condition</th>
-                      <th className="px-4 py-2.5 text-right">Price</th>
-                      <th className="px-4 py-2.5 text-right">Stock</th>
-                      <th className="px-4 py-2.5 text-center">Status</th>
-                      <th className="px-4 py-2.5 text-center">Action</th>
+                      <th className="px-4 py-2.5 text-left">Item</th>
+                      <th className="px-3 py-2.5 text-left">Stock</th>
+                      <th className="px-4 py-2.5 text-right">Add to sale</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-50">
+                  <tbody className="divide-y divide-slate-100">
                     {loading ? (
-                      <tr><td colSpan={7} className="py-8 text-center text-sm text-slate-400">Loading products...</td></tr>
+                      <tr><td colSpan={3} className="py-10 text-center text-sm text-slate-400">Loading items…</td></tr>
                     ) : paginatedItems.length === 0 ? (
-                      <tr><td colSpan={7} className="py-8 text-center text-sm text-slate-400">No products match your filters.</td></tr>
+                      <tr><td colSpan={3} className="py-10 text-center text-sm text-slate-400">No items match your filters.</td></tr>
                     ) : (
                       paginatedItems.map((item) => {
                         const isOutOfStock = item.availableStock <= 0
                         const isLowStock = item.availableStock > 0 && item.availableStock <= 5
+                        const sh = item.trackingMode === 'unit' ? shelf[item.id] : undefined
+                        const grades = (sh?.grades ?? []).slice().sort((a, b) => UNIT_GRADES.indexOf(a.grade as UnitGrade) - UNIT_GRADES.indexOf(b.grade as UnitGrade))
+                        const ownPriced = (sh?.ownPriced ?? []).reduce((n, g) => n + g.count, 0)
                         return (
-                          <tr key={item.id} className="hover:bg-slate-50">
-                            <td className="px-4 py-2.5">
-                              <p className="font-medium text-slate-900">
+                          <tr key={item.id} className={isOutOfStock ? 'bg-slate-50/60' : 'hover:bg-slate-50/70'}>
+                            <td className="px-4 py-3 align-top">
+                              <p className={`text-[13px] font-semibold ${isOutOfStock ? 'text-slate-400' : 'text-slate-900'}`}>
                                 {item.name}
                                 {item.isSingleItem && (
-                                  <span className="ml-1.5 rounded-full bg-blue-50 px-1.5 py-0.5 align-middle text-[10px] font-semibold text-blue-700">
-                                    Single
-                                  </span>
+                                  <span className="ml-1.5 rounded bg-blue-50 px-1.5 py-px align-middle text-[10px] font-semibold text-blue-600">One-off</span>
                                 )}
                               </p>
+                              <p className="text-[11px] text-slate-500">
+                                {item.categoryName}
+                                {item.barcode && <><span className="mx-1 text-slate-300">·</span><span className="tabular-nums">Code {item.barcode}</span></>}
+                              </p>
                               {item.conditionNotes ? (
-                                <p className="max-w-[240px] truncate text-xs italic text-slate-500" title={item.conditionNotes}>
-                                  {item.conditionNotes}
-                                </p>
+                                <p className="max-w-[320px] truncate text-[11px] text-slate-400" title={item.conditionNotes}>{item.conditionNotes}</p>
                               ) : null}
                             </td>
-                            <td className="px-4 py-2.5 text-slate-500 text-xs">{item.categoryName}</td>
-                            <td className="px-4 py-2.5">
-                              <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${item.condition === 'New' ? 'bg-green-50 text-green-700' : 'bg-orange-50 text-orange-600'}`}>
-                                {item.condition}
-                              </span>
+                            <td className="whitespace-nowrap px-3 py-3 align-top tabular-nums">
+                              <p>
+                                <span className={`text-sm font-bold ${isOutOfStock ? 'text-red-600' : isLowStock ? 'text-amber-600' : 'text-slate-900'}`}>{item.availableStock}</span>
+                                <span className="text-slate-500"> to sell</span>
+                              </p>
+                              {(isOutOfStock || isLowStock) && (
+                                <span className={`mt-0.5 inline-block rounded px-1.5 py-px text-[10px] font-semibold ${isOutOfStock ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-700'}`}>
+                                  {isOutOfStock ? 'Out of stock' : 'Low stock'}
+                                </span>
+                              )}
+                              {ownPriced > 0 && <p className="text-[11px] text-slate-400">{ownPriced} with own price</p>}
                             </td>
-                            <td className="px-4 py-2.5 text-right font-medium text-slate-800 text-xs">{currency(item.price)}</td>
-                            <td className="px-4 py-2.5 text-right text-slate-600 text-xs">{item.availableStock}</td>
-                            <td className="px-4 py-2.5 text-center">
-                              <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${isOutOfStock ? 'bg-red-50 text-red-600' : isLowStock ? 'bg-amber-50 text-amber-600' : 'bg-green-50 text-green-700'}`}>
-                                {isOutOfStock ? 'Out of Stock' : isLowStock ? 'Low Stock' : 'In Stock'}
-                              </span>
-                            </td>
-                            <td className="px-4 py-2.5 text-center">
-                              <button
-                                type="button"
-                                onClick={() => addToCart(item)}
-                                disabled={isOutOfStock || isCompletedMode}
-                                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-                              >
-                                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
-                                </svg>
-                                Add
-                              </button>
+                            <td className="px-4 py-3 align-top">
+                              {item.trackingMode === 'unit' && sh ? (
+                                // One button per condition on the shelf, each at its own price.
+                                <div className="flex flex-wrap justify-end gap-1.5">
+                                  {grades.map((g) => (
+                                    <button
+                                      key={g.grade}
+                                      type="button"
+                                      onClick={() => { const r = addGradeToCart(item, g); if (r) toast.error(r) }}
+                                      disabled={isCompletedMode}
+                                      title={`Add one ${GRADE_LABEL[g.grade as UnitGrade] ?? g.grade} piece. ${g.count} on the shelf. ${GRADE_MEANING[g.grade as UnitGrade] ?? ''}`}
+                                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] text-slate-700 transition hover:border-blue-300 hover:bg-blue-50 disabled:opacity-40"
+                                    >
+                                      <span className={`h-1.5 w-1.5 rounded-full ${GRADE_TONE[g.grade as UnitGrade]?.dot ?? 'bg-slate-400'}`} />
+                                      <span>{g.grade}</span>
+                                      <span className="font-semibold tabular-nums text-slate-900">{currency(g.price)}</span>
+                                      <span className="rounded bg-slate-100 px-1 text-[10px] tabular-nums text-slate-500">{g.count}</span>
+                                    </button>
+                                  ))}
+                                  {grades.length === 0 && (
+                                    <span className="text-[11px] text-slate-400">{ownPriced > 0 ? 'Scan the piece label to sell' : 'None on the shelf'}</span>
+                                  )}
+                                </div>
+                              ) : item.trackingMode === 'unit' ? (
+                                <div className="flex justify-end">
+                                  {shelfStatus === 'error' ? (
+                                    <button type="button" onClick={() => { setShelfStatus('loading'); loadShelf() }}
+                                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-blue-600 hover:bg-blue-50">
+                                      Prices didn&apos;t load · Retry
+                                    </button>
+                                  ) : (
+                                    <span className="flex items-center gap-1.5" aria-label="Loading prices">
+                                      <span className="h-7 w-24 animate-pulse rounded-lg bg-slate-100" />
+                                      <span className="h-7 w-20 animate-pulse rounded-lg bg-slate-100" />
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="flex justify-end">
+                                  <button
+                                    type="button"
+                                    onClick={() => addToCart(item)}
+                                    disabled={isOutOfStock || isCompletedMode}
+                                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] text-slate-700 transition hover:border-blue-300 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    <Plus className="h-3 w-3" />
+                                    <span className="font-semibold tabular-nums text-slate-900">{currency(item.price)}</span>
+                                  </button>
+                                </div>
+                              )}
                             </td>
                           </tr>
                         )
@@ -1459,42 +1727,36 @@ function SalesContent() {
 
               {/* Pagination */}
               {filteredInventoryItems.length > 0 ? (
-                <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-t border-slate-100 shrink-0 text-xs text-slate-500">
+                <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-4 py-2 text-[11px] text-slate-500">
                   <span>
-                    {((inventoryPage - 1) * ITEMS_PER_PAGE) + 1}–{Math.min(inventoryPage * ITEMS_PER_PAGE, filteredInventoryItems.length)} of {filteredInventoryItems.length}
+                    Showing {((inventoryPage - 1) * ITEMS_PER_PAGE) + 1}–{Math.min(inventoryPage * ITEMS_PER_PAGE, filteredInventoryItems.length)} of {filteredInventoryItems.length}
                   </span>
                   <div className="flex items-center gap-1">
                     <button
                       type="button"
                       onClick={() => setInventoryPage((p) => Math.max(1, p - 1))}
                       disabled={inventoryPage === 1}
-                      className="flex h-7 w-7 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-40"
-                    >
-                      <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
-                    </button>
+                      aria-label="Previous page"
+                      className="h-7 w-7 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                    >‹</button>
                     {Array.from({ length: totalInventoryPages }, (_, i) => i + 1)
-                      .filter((page) => {
-                        if (totalInventoryPages <= 5) return true
-                        if (page === 1 || page === totalInventoryPages) return true
-                        if (Math.abs(page - inventoryPage) <= 1) return true
-                        return false
-                      })
+                      .filter((page) => totalInventoryPages <= 5 || page === 1 || page === totalInventoryPages || Math.abs(page - inventoryPage) <= 1)
                       .reduce<Array<number | '...'>>((acc, page, idx, arr) => {
                         if (idx > 0 && typeof arr[idx - 1] === 'number' && (page as number) - (arr[idx - 1] as number) > 1) acc.push('...')
                         acc.push(page)
                         return acc
                       }, [])
-                      .map((item, idx) =>
-                        item === '...' ? (
-                          <span key={`e-${idx}`} className="flex h-7 w-7 items-center justify-center text-slate-400">…</span>
+                      .map((p, idx) =>
+                        p === '...' ? (
+                          <span key={`e-${idx}`} className="w-5 text-center text-slate-400">…</span>
                         ) : (
                           <button
-                            key={item}
+                            key={p}
                             type="button"
-                            onClick={() => setInventoryPage(item as number)}
-                            className={`flex h-7 w-7 items-center justify-center rounded border text-xs font-medium transition ${inventoryPage === item ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}
+                            onClick={() => setInventoryPage(p as number)}
+                            className={`h-7 min-w-7 rounded-md px-1.5 text-[11px] font-semibold ${inventoryPage === p ? 'bg-blue-600 text-white' : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}
                           >
-                            {item}
+                            {p}
                           </button>
                         )
                       )}
@@ -1502,258 +1764,212 @@ function SalesContent() {
                       type="button"
                       onClick={() => setInventoryPage((p) => Math.min(totalInventoryPages, p + 1))}
                       disabled={inventoryPage === totalInventoryPages}
-                      className="flex h-7 w-7 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-40"
-                    >
-                      <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
-                    </button>
+                      aria-label="Next page"
+                      className="h-7 w-7 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                    >›</button>
                   </div>
                 </div>
               ) : null}
-            </div>
+            </section>
 
-            {/* Recent Sales card */}
-            <div className="rounded-2xl border border-slate-200 bg-white shadow-sm shrink-0">
-              <div className="border-b border-slate-100 px-4 py-3">
-                <h2 className="text-sm font-semibold text-slate-900">Recent Sales</h2>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-50 text-xs font-medium text-slate-500">
-                    <tr>
-                      <th className="px-4 py-2.5 text-left">Receipt No.</th>
-                      <th className="px-4 py-2.5 text-left">Date &amp; Time</th>
-                      <th className="px-4 py-2.5 text-left">Customer</th>
-                      <th className="px-4 py-2.5 text-right">Items</th>
-                      <th className="px-4 py-2.5 text-right">Total Amount</th>
-                      <th className="px-4 py-2.5 text-center">Status</th>
-                      <th className="px-4 py-2.5 text-center">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {transactions.length === 0 ? (
-                      <tr><td colSpan={7} className="py-6 text-center text-xs text-slate-400">No recent sales.</td></tr>
-                    ) : (
-                      transactions.slice(0, 5).map((tx) => (
-                        <tr key={tx.id} className="hover:bg-slate-50">
-                          <td className="px-4 py-2.5 text-xs font-medium text-slate-800">{tx.receiptNumber || tx.id.slice(0, 12)}</td>
-                          <td className="px-4 py-2.5 text-xs text-slate-500">
-                            {tx.createdAt ? new Date(tx.createdAt).toLocaleString('en-PH', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }) : '—'}
-                          </td>
-                          <td className="px-4 py-2.5 text-xs text-slate-700">{tx.customer ?? '—'}</td>
-                          <td className="px-4 py-2.5 text-right text-xs text-slate-600">
-                            {Array.isArray(tx.items) ? tx.items.reduce((sum: number, item: { quantity: number }) => sum + (item.quantity ?? 0), 0) : '—'}
-                          </td>
-                          <td className="px-4 py-2.5 text-right text-xs font-medium text-slate-900">{currency(tx.totalAmount ?? 0)}</td>
-                          <td className="px-4 py-2.5 text-center">
-                            {/* Same labels as View all sales, including refunds. */}
-                            <span className={`inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ${statusBadgeClass(tx.status)}`}>
-                              {statusLabel(tx.status)}
-                            </span>
-                          </td>
-                          <td className="px-4 py-2.5 text-center">
-                            <button type="button" onClick={() => setSelectedTransaction(tx)} className="text-slate-400 hover:text-slate-600">
-                              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                              </svg>
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              {transactions.length > 5 ? (
-                <div className="border-t border-slate-100 px-4 py-2.5">
-                  <button type="button" onClick={() => setShowAllSalesModal(true)} className="flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-500">
-                    View all sales
-                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" /></svg>
+            {/* Recent sales: the last few, compact */}
+            <section className="shrink-0 overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+              <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
+                <h2 className="text-sm font-semibold text-slate-900">Recent sales</h2>
+                {transactions.length > 0 && (
+                  <button type="button" onClick={() => setShowAllSalesModal(true)} className="text-xs font-medium text-blue-600 hover:text-blue-700">
+                    View all sales ›
                   </button>
-                </div>
-              ) : null}
-            </div>
+                )}
+              </div>
+              {transactions.length === 0 ? (
+                <p className="py-5 text-center text-xs text-slate-400">No sales yet.</p>
+              ) : (
+                <ul className="divide-y divide-slate-100">
+                  {transactions.slice(0, 4).map((tx) => {
+                    const pieces = Array.isArray(tx.items) ? tx.items.reduce((sum: number, i: { quantity: number }) => sum + (i.quantity ?? 0), 0) : 0
+                    return (
+                      <li key={tx.id}>
+                        <button type="button" onClick={() => setSelectedTransaction(tx)} className="flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-slate-50">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-xs font-semibold text-slate-800">{tx.receiptNumber || tx.id.slice(0, 12)}</p>
+                            <p className="truncate text-[11px] text-slate-500">
+                              {tx.createdAt ? new Date(tx.createdAt).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }) : '—'}
+                              <span className="mx-1 text-slate-300">·</span>{pieces} pc{pieces === 1 ? '' : 's'}
+                              {tx.customer ? <><span className="mx-1 text-slate-300">·</span>{tx.customer}</> : null}
+                            </p>
+                          </div>
+                          <span className={`inline-flex shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusBadgeClass(tx.status)}`}>{statusLabel(tx.status)}</span>
+                          <span className="w-24 shrink-0 text-right text-xs font-semibold tabular-nums text-slate-900">{currency(tx.totalAmount ?? 0)}</span>
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </section>
           </div>
 
-          {/* ══ RIGHT COLUMN — scrollable internally ══ */}
-          <div className="flex flex-col gap-3 overflow-y-auto min-h-0 pr-0.5">
+          {/* ══ RIGHT: the sale ══ */}
+          <div className="flex min-h-0 flex-col gap-3 lg:overflow-y-auto lg:pr-0.5">
 
-            {/* ── Sale Complete: full receipt view ── */}
+            {/* ── Sale complete: the receipt ── */}
             {isCompletedMode && completedDocument ? (
               <div className="flex flex-col gap-3">
-                {/* Success header */}
-                <div className="flex items-center justify-between rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 shadow-sm">
-                  <div className="flex items-center gap-2.5">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500 text-white shadow">
-                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                      </svg>
+                <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <span className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-600 text-white">
+                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                      </span>
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">{completedDocument.type === 'sale' ? 'Sale completed' : 'Reservation created'}</p>
+                        <p className="text-xs tabular-nums text-slate-600">{completedDocument.type === 'sale' ? completedDocument.receiptNumber : completedDocument.reservationCode}</p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-sm font-bold text-emerald-800">
-                        {completedDocument.type === 'sale' ? 'Sale Completed' : 'Reservation Created'}
-                      </p>
-                      <p className="text-xs text-emerald-600">
-                        {completedDocument.type === 'sale'
-                          ? completedDocument.receiptNumber
-                          : completedDocument.reservationCode}
-                      </p>
-                    </div>
+                    {completedDocument.type === 'sale' && (
+                      <p className="text-lg font-bold tabular-nums text-slate-900">{currency(completedDocument.totalAmount)}</p>
+                    )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={startNewTransaction}
-                    className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 transition-colors"
-                  >
-                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                    </svg>
-                    New Transaction
+                  <div className="mt-3 grid grid-cols-3 gap-1.5">
+                    <button type="button" onClick={() => completedDocument && openReceiptPrintWindow(completedDocument)}
+                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-blue-600 text-xs font-semibold text-white hover:bg-blue-700">
+                      <Printer className="h-3.5 w-3.5" /> Print
+                    </button>
+                    <button type="button" onClick={exportDocumentAsImage}
+                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                      <Download className="h-3.5 w-3.5" /> Save image
+                    </button>
+                    <button type="button" onClick={() => openManualEmailLink()}
+                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                      <Mail className="h-3.5 w-3.5" /> Email
+                    </button>
+                  </div>
+                  <button type="button" onClick={startNewTransaction}
+                    className="mt-1.5 inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-white text-xs font-semibold text-blue-600 hover:bg-blue-50">
+                    <Plus className="h-3.5 w-3.5" /> Next sale
                   </button>
                 </div>
-
-                {/* Quick Actions — compact row */}
-                <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm">
-                  <span className="mr-1 text-xs font-semibold text-slate-500">Actions:</span>
-                  <button
-                    type="button"
-                    onClick={exportDocumentAsImage}
-                    className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors"
-                  >
-                    <svg className="h-3.5 w-3.5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                    </svg>
-                    Download
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => completedDocument && openReceiptPrintWindow(completedDocument)}
-                    className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors"
-                  >
-                    <svg className="h-3.5 w-3.5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-                    </svg>
-                    Print
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => openManualEmailLink()}
-                    className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors"
-                  >
-                    <svg className="h-3.5 w-3.5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                    </svg>
-                    Email
-                  </button>
-                </div>
-
-                {/* Full receipt */}
-                <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-                  <div className="border-b border-slate-100 bg-slate-50 px-4 py-2.5">
-                    <p className="text-xs font-semibold text-slate-600">
-                      {completedDocument.type === 'sale' ? 'Sales Invoice' : 'Reservation Ticket'}
-                    </p>
+                <div className="overflow-hidden rounded-xl border border-slate-200/80 bg-white">
+                  <div className="border-b border-slate-100 bg-slate-50 px-4 py-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{completedDocument.type === 'sale' ? 'Sales invoice' : 'Reservation ticket'}</p>
                   </div>
-                  <div className="overflow-y-auto" style={{ maxHeight: 'calc(100vh - 320px)' }}>
+                  <div className="overflow-y-auto" style={{ maxHeight: 'calc(100vh - 360px)' }}>
                     <TransactionDocument ref={documentRef} document={completedDocument} />
                   </div>
                 </div>
               </div>
             ) : null}
 
-            {/* Cart — hidden when sale is complete */}
+            {/* ── The sale in progress ── */}
             {!isCompletedMode ? (
-            <>{/* Cart */}
-            <div className="rounded-2xl border border-slate-200 bg-white shadow-sm shrink-0">
+            <>
+            <section className="flex shrink-0 flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
               <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
-                <div className="flex items-center gap-2">
-                  <svg className="h-4 w-4 text-[#1e3a5f]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
-                  </svg>
-                  <span className="text-sm font-semibold text-slate-900">
-                    Cart <span className="font-normal text-slate-400 text-xs">({cart.length} {cart.length === 1 ? 'item' : 'items'})</span>
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => { setCart([]); setDiscountInput(''); setDiscountMode('peso') }}
-                  disabled={cart.length === 0 || isCompletedMode}
-                  className="flex items-center gap-1 text-xs font-medium text-red-500 hover:text-red-600 disabled:opacity-40"
-                >
-                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
-                  Clear
-                </button>
+                <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                  <ShoppingCart className="h-4 w-4 text-blue-600" />
+                  Current sale
+                  {cart.length > 0 && (
+                    <span className="rounded-full bg-blue-50 px-2 py-px text-[11px] font-semibold tabular-nums text-blue-600">
+                      {cart.reduce((n, i) => n + i.quantity, 0)} pc{cart.reduce((n, i) => n + i.quantity, 0) === 1 ? '' : 's'}
+                    </span>
+                  )}
+                </h2>
+                {cart.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => { setCart([]); setDiscountInput(''); setDiscountMode('peso') }}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-red-600"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" /> Clear
+                  </button>
+                )}
               </div>
 
-              {/* Cart items — max height scroll */}
-              <div className="max-h-48 overflow-y-auto divide-y divide-slate-50 px-4">
+              {/* Lines */}
+              <div className="max-h-[40vh] divide-y divide-slate-100 overflow-y-auto px-4">
                 {cart.length === 0 ? (
-                  <p className="py-5 text-center text-xs text-slate-400">Your cart is empty.</p>
+                  <div className="py-8 text-center">
+                    <ShoppingCart className="mx-auto h-6 w-6 text-slate-300" />
+                    <p className="mt-2 text-xs text-slate-400">No items yet. Pick a condition beside an item, or scan its label.</p>
+                  </div>
                 ) : (
-                  cart.map((item) => (
-                    <div key={item.id} className="flex items-start gap-2 py-2.5">
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs font-medium text-slate-900 leading-tight">{item.name}</p>
-                        <p className="text-xs text-slate-400">{item.condition} · {currency(item.price)}</p>
-                        {item.conditionNotes ? (
-                          <p className="truncate text-[11px] italic text-slate-500" title={item.conditionNotes}>
-                            {item.conditionNotes}
-                          </p>
-                        ) : null}
+                  cart.map((item) => {
+                    const grade = (item.grade ?? item.units?.[0]?.grade) as UnitGrade | undefined
+                    return (
+                      <div key={item.id} className="py-2.5">
+                        <div className="flex items-start gap-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-[13px] font-semibold text-slate-900" title={item.name}>{item.name}</p>
+                            <p className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                              {grade && GRADE_TONE[grade] ? <span className={`h-1.5 w-1.5 rounded-full ${GRADE_TONE[grade].dot}`} /> : null}
+                              {grade ? (GRADE_LABEL[grade] ?? grade) : item.condition}
+                              <span className="text-slate-300">·</span>
+                              <span className="tabular-nums">{currency(item.price)} each</span>
+                              {item.fixedUnit ? <span className="rounded bg-blue-50 px-1 text-[10px] font-semibold text-blue-600">own price</span> : null}
+                            </p>
+                          </div>
+                          <p className="shrink-0 text-[13px] font-semibold tabular-nums text-slate-900">{currency(item.price * item.quantity)}</p>
+                        </div>
+                        <div className="mt-1.5 flex items-center justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            {item.units?.length ? (
+                              <p className="truncate font-mono text-[10px] text-slate-400" title={item.units.map((u) => `#${u.unitCode} ${u.grade}${u.conditionNotes ? ' - ' + u.conditionNotes : ''}`).join('\n')}>
+                                {item.units.map((u) => `#${u.unitCode}`).join(', ')}
+                                {item.quantity > item.units.length ? ` +${item.quantity - item.units.length} oldest` : ''}
+                              </p>
+                            ) : item.conditionNotes ? (
+                              <p className="truncate text-[11px] text-slate-400" title={item.conditionNotes}>{item.conditionNotes}</p>
+                            ) : null}
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <button type="button" onClick={() => updateCartQuantity(item.id, item.quantity - 1)} aria-label={`One fewer ${item.name}`}
+                              className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+                              <Minus className="h-3 w-3" />
+                            </button>
+                            <span className="w-7 text-center text-sm font-semibold tabular-nums text-slate-900">{item.quantity}</span>
+                            <button type="button" onClick={() => updateCartQuantity(item.id, item.quantity + 1)} disabled={item.fixedUnit || item.quantity >= item.availableStock} aria-label={`One more ${item.name}`}
+                              className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40">
+                              <Plus className="h-3 w-3" />
+                            </button>
+                            <button type="button" onClick={() => removeFromCart(item.id)} aria-label={`Remove ${item.name}`}
+                              className="ml-1 flex h-7 w-7 items-center justify-center rounded-lg text-slate-300 hover:bg-red-50 hover:text-red-600">
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <button type="button" onClick={() => updateCartQuantity(item.id, item.quantity - 1)} disabled={isCompletedMode} className="flex h-5 w-5 items-center justify-center rounded border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40">
-                          <svg className="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M20 12H4" /></svg>
-                        </button>
-                        <span className="w-5 text-center text-xs font-medium text-slate-800">{item.quantity}</span>
-                        <button type="button" onClick={() => updateCartQuantity(item.id, item.quantity + 1)} disabled={isCompletedMode || item.quantity >= item.availableStock} className="flex h-5 w-5 items-center justify-center rounded border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40">
-                          <svg className="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
-                        </button>
-                      </div>
-                      <div className="shrink-0">
-                        <p className="text-xs font-semibold text-slate-900">{currency(item.price * item.quantity)}</p>
-                      </div>
-                      <button type="button" onClick={() => removeFromCart(item.id)} disabled={isCompletedMode} className="shrink-0 text-slate-300 hover:text-slate-500 disabled:opacity-40">
-                        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-                      </button>
-                    </div>
-                  ))
+                    )
+                  })
                 )}
               </div>
 
               {/* Totals */}
-              <div className="border-t border-slate-100 px-4 py-3 space-y-1.5">
+              <div className="space-y-2 border-t border-slate-100 bg-slate-50/60 px-4 py-3">
                 <div className="flex items-center justify-between text-xs text-slate-600">
                   <span>Subtotal</span>
-                  <span className="font-medium">{currency(cartSubtotal)}</span>
+                  <span className="font-medium tabular-nums text-slate-800">{currency(cartSubtotal)}</span>
                 </div>
-                <div className="flex items-center justify-between text-xs text-slate-600">
+                <div className="flex items-center justify-between gap-2 text-xs text-slate-600">
                   <span className="flex items-center gap-1.5">
                     Discount
-                    <span className="inline-flex overflow-hidden rounded border border-slate-200">
+                    <span className="inline-flex overflow-hidden rounded-md border border-slate-200 bg-white">
                       {(['peso', 'percent'] as const).map((mode) => (
                         <button
                           key={mode}
                           type="button"
                           onClick={() => setDiscountMode(mode)}
-                          disabled={isCompletedMode}
-                          className={`px-1.5 py-0.5 text-[10px] font-semibold transition disabled:opacity-60 ${
-                            discountMode === mode
-                              ? 'bg-slate-800 text-white'
-                              : 'bg-white text-slate-500 hover:bg-slate-50'
-                          }`}
+                          className={`px-2 py-0.5 text-[11px] font-semibold transition ${discountMode === mode ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-50'}`}
                         >
                           {mode === 'peso' ? '₱' : '%'}
                         </button>
                       ))}
                     </span>
                     {discountMode === 'percent' && discount > 0 && (
-                      <span className="text-[10px] text-slate-400">= {currency(discount)}</span>
+                      <span className="text-[11px] tabular-nums text-slate-400">= {currency(discount)}</span>
                     )}
                   </span>
-                  <input
+                  <input maxLength={INPUT_LIMITS.money}
                     // type="text" with a numeric keypad, not type="number":
                     // a number input rejects intermediate states like "12." and
                     // reintroduces the leading-zero behaviour we are avoiding.
@@ -1766,28 +1982,25 @@ function SalesContent() {
                       if (raw === '' || /^\d*\.?\d*$/.test(raw)) setDiscountInput(raw)
                     }}
                     placeholder="0"
-                    disabled={isCompletedMode}
-                    className="w-20 rounded border border-slate-200 px-2 py-1 text-right text-xs text-slate-700 focus:outline-none disabled:opacity-60"
+                    disabled={cart.length === 0}
+                    className="h-8 w-24 rounded-lg border border-slate-200 bg-white px-2 text-right text-xs tabular-nums text-slate-800 focus:border-blue-500 focus:outline-none disabled:opacity-50"
                   />
                 </div>
-                <div className="flex items-center justify-between border-t border-slate-100 pt-1.5">
+                <div className="flex items-baseline justify-between border-t border-slate-200 pt-2">
                   <span className="text-sm font-semibold text-slate-900">Total</span>
-                  <span className="text-base font-bold text-[#1e3a5f]">{currency(cartTotal)}</span>
+                  <span className="text-2xl font-bold tabular-nums text-slate-900">{currency(cartTotal)}</span>
                 </div>
               </div>
 
-              {/* Action buttons */}
-              <div className="px-4 pb-4 space-y-2">
+              {/* Actions */}
+              <div className="space-y-2 p-4">
                 <button
                   type="button"
                   onClick={completeSale}
-                  disabled={submitting || cart.length === 0 || isCompletedMode}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#1e3a5f] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#162d4a] disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={submitting || cart.length === 0}
+                  className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-blue-600 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  {submitting ? 'Processing...' : 'Complete Sale'}
+                  {submitting ? 'Processing…' : cart.length > 0 ? `Complete sale · ${currency(cartTotal)}` : 'Complete sale'}
                 </button>
                 <button
                   type="button"
@@ -1798,109 +2011,76 @@ function SalesContent() {
                   disabled={
                     submitting ||
                     cart.length === 0 ||
-                    isCompletedMode ||
                     (showReserveForm &&
                       (!customerFullName.trim() || !isValidContactNumber(customerContactNumber)))
                   }
-                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-                  </svg>
-                  {showReserveForm ? 'Confirm Reservation' : 'Reserve Order'}
+                  {showReserveForm ? 'Confirm reservation' : 'Reserve instead'}
                 </button>
                 {showReserveForm && (
                   <button
                     type="button"
                     onClick={() => { setShowReserveForm(false); setError('') }}
-                    className="w-full rounded-xl px-4 py-1.5 text-xs font-medium text-slate-500 transition hover:text-slate-700"
+                    className="w-full py-1 text-xs font-medium text-slate-500 transition hover:text-slate-700"
                   >
                     Cancel reservation
                   </button>
                 )}
               </div>
-            </div>
+            </section>
 
-            {/* Reservation details. Not shown for walk-in sales, which collect
+            {/* Reservation details: only when reserving. A walk-in sale asks
                 nothing about the buyer. */}
             {showReserveForm && (
-            <div className="rounded-2xl border border-slate-200 bg-white shadow-sm shrink-0">
-              <div className="border-b border-slate-100 px-4 py-3">
-                <div className="flex items-center gap-2">
-                  <svg className="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                  </svg>
-                  <span className="text-sm font-semibold text-slate-900">Reservation Details</span>
-                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700">Required</span>
-                </div>
+            <section className="shrink-0 overflow-hidden rounded-xl border border-blue-200 bg-white">
+              <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+                <h2 className="text-sm font-semibold text-slate-900">Reservation details</h2>
+                <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600">Required</span>
               </div>
-              <div className="px-4 py-3 space-y-2.5">
-                {/* The name field belongs to reservations only. A walk-in buyer
-                    is asked for nothing: the sale needs no identity, and not
-                    collecting a name is a stronger privacy position than
-                    collecting one and choosing not to print it. */}
-                {showReserveForm && (
-                  <>
-                    <div>
-                      <label className="mb-1 block text-xs font-medium text-slate-600">
-                        Name <span className="font-semibold text-rose-500">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={customerFullName}
-                        onChange={(e) => setCustomerFullName(e.target.value)}
-                        placeholder="Customer name"
-                        disabled={isCompletedMode}
-                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none disabled:opacity-60"
-                      />
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs font-medium text-slate-600">Phone <span className="font-semibold text-rose-500">*</span></label>
-                      <input
-                        type="tel"
-                        inputMode="numeric"
-                        maxLength={11}
-                        value={customerContactNumber}
-                        // Digits only, capped at 11 - a Philippine mobile number
-                        // is 09 followed by nine digits. Stripping non-digits as
-                        // the user types avoids spaces and dashes reaching the
-                        // database in inconsistent formats.
-                        onChange={(e) =>
-                          setCustomerContactNumber(e.target.value.replace(/\D/g, '').slice(0, 11))
-                        }
-                        placeholder="09XXXXXXXXX"
-                        disabled={isCompletedMode}
-                        className={`w-full rounded-lg border px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none disabled:opacity-60 ${
-                          customerContactNumber && !isValidContactNumber(customerContactNumber)
-                            ? 'border-rose-300 focus:border-rose-400'
-                            : 'border-slate-200 focus:border-blue-400'
-                        }`}
-                      />
-                      {customerContactNumber && !isValidContactNumber(customerContactNumber) && (
-                        <p className="mt-1 text-xs text-rose-500">
-                          Must be 11 digits ({customerContactNumber.length}/11)
-                        </p>
-                      )}
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs font-medium text-slate-600">Email <span className="font-normal text-slate-400">(Optional)</span></label>
-                      <input
-                        type="email"
-                        value={customerEmail}
-                        onChange={(e) => setCustomerEmail(e.target.value)}
-                        placeholder="Email address"
-                        disabled={isCompletedMode}
-                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none disabled:opacity-60"
-                      />
-                    </div>
-                  </>
-                )}
+              <div className="space-y-2.5 px-4 py-3">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-slate-600">Name <span className="font-semibold text-red-500">*</span></span>
+                  <input maxLength={INPUT_LIMITS.name}
+                    type="text"
+                    value={customerFullName}
+                    onChange={(e) => setCustomerFullName(e.target.value)}
+                    placeholder="Customer name"
+                    className="h-9 w-full rounded-lg border border-slate-200 px-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-slate-600">Phone <span className="font-semibold text-red-500">*</span></span>
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    maxLength={11}
+                    value={customerContactNumber}
+                    // Digits only, capped at 11 - a Philippine mobile number is 09
+                    // followed by nine digits.
+                    onChange={(e) => setCustomerContactNumber(e.target.value.replace(/\D/g, '').slice(0, 11))}
+                    placeholder="09XXXXXXXXX"
+                    className={`h-9 w-full rounded-lg border px-3 text-sm tabular-nums text-slate-800 placeholder:text-slate-400 focus:outline-none ${
+                      customerContactNumber && !isValidContactNumber(customerContactNumber) ? 'border-red-300 focus:border-red-400' : 'border-slate-200 focus:border-blue-500'
+                    }`}
+                  />
+                  {customerContactNumber && !isValidContactNumber(customerContactNumber) && (
+                    <span className="mt-1 block text-xs text-red-500">Must be 11 digits ({customerContactNumber.length}/11)</span>
+                  )}
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-slate-600">Email <span className="font-normal text-slate-400">(optional)</span></span>
+                  <input maxLength={INPUT_LIMITS.email}
+                    type="email"
+                    value={customerEmail}
+                    onChange={(e) => setCustomerEmail(e.target.value)}
+                    placeholder="Email address"
+                    className="h-9 w-full rounded-lg border border-slate-200 px-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none"
+                  />
+                </label>
               </div>
-            </div>
+            </section>
             )}
-
-
-
             </>
             ) : null}
 
@@ -1963,7 +2143,7 @@ function SalesContent() {
                     <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 space-y-1">
                       <div className="flex justify-between text-xs">
                         <span className="font-semibold text-amber-800">Total refunded</span>
-                        <span className="font-bold text-amber-900">{currency(selectedTransaction.refundedAmount ?? 0)}</span>
+                        <span className="font-semibold text-amber-900">{currency(selectedTransaction.refundedAmount ?? 0)}</span>
                       </div>
                       {selectedTransaction.refundReason && (
                         <div className="flex justify-between gap-2 text-[11px]">
@@ -2039,7 +2219,7 @@ function SalesContent() {
                       {/* Per-item quantity selection */}
                       <div className="space-y-1.5 rounded-lg bg-white p-2">
                         {(selectedTransaction.items ?? []).map((item, idx) => {
-                          const id = item.itemId
+                          const id = item.lineKey ?? item.itemId
                           if (!id) return null
                           const already = (item as { refundedQuantity?: number }).refundedQuantity ?? 0
                           const remaining = Math.max(0, item.quantity - already)
@@ -2048,6 +2228,9 @@ function SalesContent() {
                             <div key={idx} className="flex items-center justify-between gap-2">
                               <div className="min-w-0 flex-1">
                                 <p className="truncate text-xs font-medium text-slate-800">{item.name}</p>
+                                {item.unitSummary && (
+                                  <p className="truncate text-[10px] text-slate-500" title={item.unitSummary}>{item.unitSummary}</p>
+                                )}
                                 <p className="text-[10px] text-slate-500">
                                   {remaining} of {item.quantity} refundable
                                   {already > 0 ? ` · ${already} already refunded` : ''}
@@ -2060,13 +2243,13 @@ function SalesContent() {
                                   <button
                                     type="button"
                                     onClick={() => setRefundQty(p => ({ ...p, [id]: Math.max(0, (p[id] ?? 0) - 1) }))}
-                                    className="h-6 w-6 rounded border border-slate-300 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                                    className="h-6 w-6 rounded border border-slate-300 text-xs font-semibold text-slate-600 hover:bg-slate-50"
                                   >−</button>
                                   <span className="w-7 text-center text-xs font-semibold text-slate-800">{qty}</span>
                                   <button
                                     type="button"
                                     onClick={() => setRefundQty(p => ({ ...p, [id]: Math.min(remaining, (p[id] ?? 0) + 1) }))}
-                                    className="h-6 w-6 rounded border border-slate-300 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                                    className="h-6 w-6 rounded border border-slate-300 text-xs font-semibold text-slate-600 hover:bg-slate-50"
                                   >+</button>
                                 </div>
                               )}
@@ -2078,9 +2261,9 @@ function SalesContent() {
                       {/* Refund amount preview */}
                       <div className="flex justify-between rounded-lg bg-white px-2 py-1.5">
                         <span className="text-xs text-slate-500">Refund amount</span>
-                        <span className="text-xs font-bold text-slate-900">
+                        <span className="text-xs font-semibold text-slate-900">
                           {currency((selectedTransaction.items ?? []).reduce((sum, it) => {
-                            const id = it.itemId
+                            const id = it.lineKey ?? it.itemId
                             return id ? sum + (it.price ?? 0) * (refundQty[id] ?? 0) : sum
                           }, 0))}
                         </span>
@@ -2097,7 +2280,7 @@ function SalesContent() {
                         ))}
                       </select>
 
-                      <input
+                      <input maxLength={INPUT_LIMITS.note}
                         type="text"
                         value={refundReason}
                         onChange={(e) => setRefundReason(e.target.value)}
@@ -2157,7 +2340,7 @@ function SalesContent() {
               <div className="flex flex-wrap gap-2">
                 <div className="flex flex-1 min-w-[200px] items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5">
                   <svg className="h-4 w-4 shrink-0 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="11" cy="11" r="8"/><path strokeLinecap="round" d="M21 21l-4.35-4.35"/></svg>
-                  <input
+                  <input maxLength={INPUT_LIMITS.search}
                     type="text"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
@@ -2349,7 +2532,7 @@ function SalesContent() {
             <div className="px-5 py-4 space-y-3">
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">Customer Email Address</label>
-                <input
+                <input maxLength={INPUT_LIMITS.email}
                   type="email"
                   value={emailModalInput}
                   onChange={(e) => { setEmailModalInput(e.target.value); setEmailModalError('') }}

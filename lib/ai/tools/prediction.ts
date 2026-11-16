@@ -8,6 +8,7 @@
 
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { aiCache } from '@/lib/ai/cache'
+import { recentSalesSnap } from '@/lib/ai/tools/salesData'
 
 const db = () => getAdminDb()
 
@@ -35,7 +36,7 @@ export async function predictSales(): Promise<string> {
   const cached = aiCache.get<string>(cacheKey)
   if (cached) return cached
 
-  const snap = await db().collection('sales').get()
+  const snap = await recentSalesSnap()
   const now = new Date()
 
   // Build daily revenue for last 90 days
@@ -146,7 +147,7 @@ export async function predictSales(): Promise<string> {
   const projectedMonthTotal = earnedThisMonth + (projectedDailyAvg * daysRemaining)
 
   // Top category this month
-  const catSnap = await db().collection('sales').get()
+  const catSnap = await recentSalesSnap()
   const catRevenue: Record<string, number> = {}
   catSnap.docs.forEach(d => {
     const data = d.data() as Record<string, unknown>

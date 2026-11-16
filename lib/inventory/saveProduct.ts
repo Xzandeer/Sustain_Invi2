@@ -41,6 +41,12 @@ export async function saveProduct(
       condition: values.condition,
       isSingleItem: values.isSingleItem === true,
       conditionNotes: values.conditionNotes ?? '',
+      // New items only: how stock is tracked, and the grade/notes of the pieces.
+      ...(editingId ? {} : {
+        trackingMode: values.trackingMode ?? 'unit',
+        unitGrade: values.unitGrade,
+        unitNotes: values.conditionNotes ?? '',
+      }),
       processedBy: {
         uid: auth.currentUser?.uid ?? '',
         email: auth.currentUser?.email ?? '',

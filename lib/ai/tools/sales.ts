@@ -7,6 +7,7 @@
 
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { aiCache } from '@/lib/ai/cache'
+import { recentSalesSnap } from '@/lib/ai/tools/salesData'
 
 const db = () => getAdminDb()
 
@@ -35,7 +36,6 @@ export async function getTodaySales(): Promise<string> {
   const snap = await db().collection('sales')
     .where('createdAt', '>=', today)
     .get()
-    .catch(() => db().collection('sales').get()) // fallback if field name differs
   const todaySales = snap.docs
     .map(d => ({ id: d.id, ...d.data() } as Record<string, unknown>))
     .filter(s => { const d = getSaleDate(s); return d && d >= today })
@@ -60,7 +60,6 @@ export async function getRecentSales(days = 30): Promise<string> {
   const snap = await db().collection('sales')
     .where('createdAt', '>=', since)
     .get()
-    .catch(() => db().collection('sales').get()) // fallback if field name differs
   const recent = snap.docs
     .map(d => ({ id: d.id, ...d.data() } as Record<string, unknown>))
     .filter(s => { const d = getSaleDate(s); return d && d >= since })
@@ -79,7 +78,7 @@ export async function getTopCategories(): Promise<string> {
   const cached = aiCache.get<string>(cacheKey)
   if (cached) return cached
 
-  const snap = await db().collection('sales').get()
+  const snap = await recentSalesSnap()
   const catData: Record<string, { revenue: number; units: number }> = {}
 
   snap.docs.forEach(d => {
@@ -100,7 +99,7 @@ export async function getTopCategories(): Promise<string> {
     .slice(0, 6)
     .map(([cat, { revenue, units }], i) => `${i + 1}. ${cat}: ${fmt(revenue)} (${units} units)`)
 
-  const result = `Top categories by revenue:\n${sorted.join('\n')}`
+  const result = `Top categories by revenue (last 6 months):\n${sorted.join('\n')}`
   aiCache.set(cacheKey, result)
   return result
 }
@@ -110,7 +109,7 @@ export async function getTrendData(): Promise<string> {
   const cached = aiCache.get<string>(cacheKey)
   if (cached) return cached
 
-  const snap = await db().collection('sales').get()
+  const snap = await recentSalesSnap()
   const now = new Date()
 
   // Build last 6 months
@@ -147,7 +146,7 @@ export async function getFrequentCustomers(): Promise<string> {
   const cached = aiCache.get<string>(cacheKey)
   if (cached) return cached
 
-  const snap = await db().collection('sales').get()
+  const snap = await recentSalesSnap()
   const map: Record<string, { name: string; count: number; total: number }> = {}
 
   snap.docs.forEach(d => {
@@ -163,7 +162,7 @@ export async function getFrequentCustomers(): Promise<string> {
   const sorted = Object.values(map).sort((a, b) => b.count - a.count).slice(0, 8)
   if (sorted.length === 0) { return 'No named customer purchase history found.' }
 
-  const result = `Top customers:\n${sorted.map((c, i) => `${i + 1}. ${c.name}: ${c.count} purchase(s), ${fmt(c.total)} total`).join('\n')}`
+  const result = `Top customers (last 6 months):\n${sorted.map((c, i) => `${i + 1}. ${c.name}: ${c.count} purchase(s), ${fmt(c.total)} total`).join('\n')}`
   aiCache.set(cacheKey, result)
   return result
 }
@@ -173,7 +172,7 @@ export async function getBasketAnalysis(): Promise<string> {
   const cached = aiCache.get<string>(cacheKey)
   if (cached) return cached
 
-  const snap = await db().collection('sales').get()
+  const snap = await recentSalesSnap()
   const pairMap: Record<string, number> = {}
   const itemFreq: Record<string, number> = {}
 
@@ -193,7 +192,7 @@ export async function getBasketAnalysis(): Promise<string> {
   const topItems = Object.entries(itemFreq).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([n, c]) => `• ${n} (${c}x)`)
   const topPairs = Object.entries(pairMap).filter(([, c]) => c > 1).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([pair, c]) => `• ${pair} (${c}x together)`)
 
-  const result = `Most purchased:\n${topItems.join('\n') || '(not enough data)'}\n\nCommonly bought together:\n${topPairs.join('\n') || '(no repeated pairs yet)'}`
+  const result = `Most purchased (last 6 months):\n${topItems.join('\n') || '(not enough data)'}\n\nCommonly bought together:\n${topPairs.join('\n') || '(no repeated pairs yet)'}`
   aiCache.set(cacheKey, result)
   return result
 }
@@ -205,7 +204,7 @@ export async function getDashboardSummary(): Promise<string> {
 
   const [invSnap, salesSnap, resSnap] = await Promise.all([
     db().collection('inventory').get(),
-    db().collection('sales').get(),
+    recentSalesSnap(),
     db().collection('reservations').get(),
   ])
 
@@ -256,7 +255,7 @@ export async function getRecommendations(): Promise<string> {
 
   const [invSnap, salesSnap] = await Promise.all([
     db().collection('inventory').get(),
-    db().collection('sales').get(),
+    recentSalesSnap(),
   ])
 
   const now = new Date()

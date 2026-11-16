@@ -1,9 +1,11 @@
 // Inventory item detail API - PUT to edit, DELETE to move to trash, PATCH to restore/permanently delete
 import { NextResponse } from 'next/server'
-import { MAX_STOCK, cleanConditionNotes } from '@/lib/constants/limits'
+import { MAX_STOCK, cleanConditionNotes, INPUT_LIMITS } from '@/lib/constants/limits'
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { assertAdminUser, createStockLog, findInventoryVariant, getProcessedByInfo } from '@/lib/server/inventory'
+import { describeUnits, isUnitTracked, readItemUnits, setUnitsStatus, type StoredUnit } from '@/lib/server/units'
+import type { UnitStatus } from '@/lib/inventory/units'
 import { guardRequest, requireAdminRequest } from '@/lib/server/authorize'
 
 interface RouteContext {
@@ -52,11 +54,11 @@ export async function PUT(req: Request, context: RouteContext) {
     const current = snapshot.data() as Record<string, unknown>
 
     const processedBy = await getProcessedByInfo(req)
-    const remarks = typeof body.remarks === 'string' ? body.remarks.trim() : ''
+    const remarks = typeof body.remarks === 'string' ? body.remarks.trim().slice(0, INPUT_LIMITS.note) : ''
 
     const name =
       typeof body.name === 'string' && body.name.trim()
-        ? body.name.trim()
+        ? body.name.trim().slice(0, INPUT_LIMITS.name)
         : typeof current.name === 'string'
           ? current.name.trim()
           : ''
@@ -83,13 +85,13 @@ export async function PUT(req: Request, context: RouteContext) {
     )
     const description =
       typeof body.description === 'string'
-        ? body.description.trim()
+        ? body.description.trim().slice(0, 500)
         : typeof current.description === 'string'
           ? current.description.trim()
           : ''
     const imageUrl =
       typeof body.imageUrl === 'string'
-        ? body.imageUrl.trim()
+        ? body.imageUrl.trim().slice(0, 500)
         : typeof current.imageUrl === 'string'
           ? current.imageUrl.trim()
           : ''
@@ -350,6 +352,30 @@ export async function PATCH(req: Request, context: RouteContext) {
     const currentStock = toNumber(snapshotData.stock ?? snapshotData.quantity, 0)
     const currentReservedStock = toNumber(snapshotData.reservedStock, 0)
 
+    // Unit-tracked items (lib/inventory/units.ts): a write-off marks real
+    // pieces written off - the oldest on the shelf - and restoring brings the
+    // most recently written-off pieces back. Same transaction as the count.
+    const updateWithUnits = async (
+      patch: Record<string, unknown>,
+      count: number,
+      from: UnitStatus,
+      to: UnitStatus
+    ): Promise<StoredUnit[]> => {
+      if (!isUnitTracked(snapshotData) || count <= 0) {
+        await docRef.update(patch)
+        return []
+      }
+      let moved: StoredUnit[] = []
+      await getAdminDb().runTransaction(async (txn) => {
+        const pool = await readItemUnits(txn, id, from)
+        const ordered = from === 'written_off' ? [...pool].reverse() : pool
+        moved = ordered.slice(0, count)
+        txn.update(docRef, patch)
+        setUnitsStatus(txn, moved, to, new Date().toISOString())
+      })
+      return moved
+    }
+
     // Step 3: Handle restore action (move back from trash)
     if (action === 'restore') {
       await docRef.update({
@@ -446,7 +472,7 @@ export async function PATCH(req: Request, context: RouteContext) {
         // `voidedQuantity` remembers what was written off, so restoring the
         // item can hand the same amount back instead of making the user re-key
         // it. See the 'unvoid' branch below.
-        await docRef.update({
+        const movedUnits = await updateWithUnits({
           isVoided: true,
           voidedAt: new Date().toISOString(),
           voidedBy: processedBy.name ?? processedBy.email ?? 'Admin',
@@ -457,7 +483,7 @@ export async function PATCH(req: Request, context: RouteContext) {
           quantity: 0,
           stockStatus: getStockStatus({ stock: 0, minStock: voidMinStock }),
           updatedAt: new Date().toISOString(),
-        })
+        }, voidQuantity, 'in_stock', 'written_off')
         await createStockLog({
           actionType: 'item_voided',
           itemId: id,
@@ -471,7 +497,8 @@ export async function PATCH(req: Request, context: RouteContext) {
           reservedBefore: currentReservedStock,
           reservedAfter: currentReservedStock,
           user: processedBy,
-          remarks: `Item fully voided (${voidQuantity} unit${voidQuantity !== 1 ? 's' : ''}). Reason: ${voidReason}`,
+          units: movedUnits.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+          remarks: `Item fully voided (${voidQuantity} unit${voidQuantity !== 1 ? 's' : ''}). Reason: ${voidReason}` + describeUnits(movedUnits),
         })
       } else {
         // Partial void: write off some units, the item stays active and
@@ -481,7 +508,7 @@ export async function PATCH(req: Request, context: RouteContext) {
         // written. Readers resolve them as `stock ?? quantity`, so updating
         // only `quantity` leaves the original figure on screen and the units
         // are never actually removed.
-        await docRef.update({
+        const movedUnits = await updateWithUnits({
           stock: newStock,
           quantity: newStock,
           stockStatus: getStockStatus({ stock: newStock, minStock: voidMinStock }),
@@ -492,7 +519,7 @@ export async function PATCH(req: Request, context: RouteContext) {
           voidedAt: new Date().toISOString(),
           voidedBy: processedBy.name ?? processedBy.email ?? 'Admin',
           updatedAt: new Date().toISOString(),
-        })
+        }, voidQuantity, 'in_stock', 'written_off')
         await createStockLog({
           actionType: 'item_voided',
           itemId: id,
@@ -506,7 +533,8 @@ export async function PATCH(req: Request, context: RouteContext) {
           reservedBefore: currentReservedStock,
           reservedAfter: currentReservedStock,
           user: processedBy,
-          remarks: `Partial void: ${voidQuantity} of ${currentStock} unit${currentStock !== 1 ? 's' : ''} removed. Reason: ${voidReason}`,
+          units: movedUnits.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+          remarks: `Partial void: ${voidQuantity} of ${currentStock} unit${currentStock !== 1 ? 's' : ''} removed. Reason: ${voidReason}` + describeUnits(movedUnits),
         })
       }
 
@@ -558,7 +586,7 @@ export async function PATCH(req: Request, context: RouteContext) {
       // restored still appears on the Voided tab with the remainder.
       const remainingVoidedUnits = Math.max(0, maxRestorable - restoreQuantity)
 
-      await docRef.update({
+      const movedUnits = await updateWithUnits({
         isVoided: false,
         voidedAt: remainingVoidedUnits > 0 ? snapshotData.voidedAt ?? null : null,
         voidedBy: remainingVoidedUnits > 0 ? snapshotData.voidedBy ?? null : null,
@@ -572,7 +600,7 @@ export async function PATCH(req: Request, context: RouteContext) {
           minStock: toNumber(snapshotData.minStock, 0),
         }),
         updatedAt: new Date().toISOString(),
-      })
+      }, restoreQuantity, 'written_off', 'in_stock')
       await createStockLog({
         actionType: 'item_unvoided',
         itemId: id,
@@ -586,6 +614,7 @@ export async function PATCH(req: Request, context: RouteContext) {
         reservedBefore: currentReservedStock,
         reservedAfter: currentReservedStock,
         user: processedBy,
+        units: movedUnits.map((u) => ({ id: u.id, unitCode: u.unitCode })),
         remarks: restoreQuantity > 0
           ? `Restored ${restoreQuantity} of ${maxRestorable} voided unit${maxRestorable !== 1 ? 's' : ''}.` +
             (remainingVoidedUnits > 0

@@ -1,10 +1,12 @@
 // Inventory API endpoint - GET to list items, POST to create items
 import { NextRequest, NextResponse } from 'next/server'
-import { MAX_STOCK, cleanConditionNotes } from '@/lib/constants/limits'
+import { MAX_STOCK, cleanConditionNotes, INPUT_LIMITS } from '@/lib/constants/limits'
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { getStockStatus, normalizeInventoryCondition, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { createInventoryVariant, createStockLog, findInventoryVariant, getProcessedByInfo } from '@/lib/server/inventory'
 import { guardRequest, requireActiveUserRequest } from '@/lib/server/authorize'
+import { normalizeTrackingMode, normalizeUnitGrade, type UnitDetails } from '@/lib/inventory/units'
+import { allocateUnitCodes, describeUnits, writeNewUnits } from '@/lib/server/units'
 
 interface InventoryPayload {
   name?: unknown
@@ -23,6 +25,12 @@ interface InventoryPayload {
   conditionNotes?: unknown
   processedBy?: unknown
   remarks?: unknown
+  /** 'unit' (default) or 'quantity' - see lib/inventory/units.ts. New items only. */
+  trackingMode?: unknown
+  /** Grade, notes and optional own price for the pieces being added. */
+  unitGrade?: unknown
+  unitNotes?: unknown
+  unitPrice?: unknown
 }
 
 // GET /api/inventory - List inventory items (optionally filtered to show trash)
@@ -96,7 +104,7 @@ export async function POST(req: NextRequest) {
   try {
     // Step 1: Parse and validate request body
     const body = (await req.json()) as InventoryPayload
-    const name = typeof body.name === 'string' ? body.name.trim() : ''
+    const name = typeof body.name === 'string' ? body.name.trim().slice(0, INPUT_LIMITS.name) : ''
     const categoryIdInput = typeof body.categoryId === 'string' ? body.categoryId.trim() : ''
     const categoryNameInput =
       typeof body.categoryName === 'string'
@@ -113,8 +121,8 @@ export async function POST(req: NextRequest) {
     const minStock = isSingleItem ? 0 : toNumber(body.minStock, Number.NaN)
     const conditionNotes = cleanConditionNotes(body.conditionNotes)
     const condition = normalizeInventoryCondition(body.condition)
-    const description = typeof body.description === 'string' ? body.description.trim() : ''
-    const imageUrl = typeof body.imageUrl === 'string' ? body.imageUrl.trim() : ''
+    const description = typeof body.description === 'string' ? body.description.trim().slice(0, 500) : ''
+    const imageUrl = typeof body.imageUrl === 'string' ? body.imageUrl.trim().slice(0, 500) : ''
     // Permission check before any write. The UI hides the Add Item button for
     // staff without this permission, but that only stops the button — not a
     // request sent directly to this endpoint.
@@ -122,7 +130,15 @@ export async function POST(req: NextRequest) {
     if (denied) return denied
 
     const processedBy = await getProcessedByInfo(req)
-    const remarks = typeof body.remarks === 'string' ? body.remarks.trim() : ''
+    const remarks = typeof body.remarks === 'string' ? body.remarks.trim().slice(0, INPUT_LIMITS.note) : ''
+    // Absent means unit tracking - the default for second-hand stock.
+    const trackingMode = body.trackingMode === undefined ? 'unit' : normalizeTrackingMode(body.trackingMode)
+    const unitPriceInput = toNumber(body.unitPrice, Number.NaN)
+    const unitDetails: UnitDetails = {
+      grade: normalizeUnitGrade(body.unitGrade),
+      conditionNotes: cleanConditionNotes(body.unitNotes),
+      priceOverride: Number.isFinite(unitPriceInput) && unitPriceInput > 0 ? unitPriceInput : null,
+    }
 
     // Step 2: Validate required fields
     if (!name) {
@@ -187,8 +203,12 @@ export async function POST(req: NextRequest) {
       const now = new Date().toISOString()
       const updatedQuantity = existingVariant.stock + quantity
       const stockStatus = getStockStatus({ stock: updatedQuantity, minStock: existingVariant.minStock })
+      const unitTracked = existingVariant.trackingMode === 'unit'
+      const codes = unitTracked ? await allocateUnitCodes(quantity) : []
+      let createdUnits: ReturnType<typeof writeNewUnits> = []
 
-      await existingVariant.ref.update({
+      await getAdminDb().runTransaction(async (txn) => {
+      txn.update(existingVariant.ref, {
         price,
         quantity: updatedQuantity,
         stock: updatedQuantity,
@@ -204,6 +224,17 @@ export async function POST(req: NextRequest) {
         deletedAt: null,
         updatedAt: now,
       })
+      if (unitTracked) {
+        createdUnits = writeNewUnits(txn, {
+          itemId: existingVariant.id,
+          itemName: existingVariant.name,
+          codes,
+          details: unitDetails,
+          nowIso: now,
+          source: 'stock_increased',
+        })
+      }
+      })
 
       await createStockLog({
         actionType: 'stock_increased',
@@ -218,7 +249,8 @@ export async function POST(req: NextRequest) {
         reservedBefore: existingVariant.reservedStock,
         reservedAfter: existingVariant.reservedStock,
         user: processedBy,
-        remarks: remarks || 'Inventory stock increased from add item flow.',
+        units: createdUnits.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+        remarks: (remarks || 'Inventory stock increased from add item flow.') + describeUnits(createdUnits),
       })
 
       return NextResponse.json(
@@ -241,7 +273,10 @@ export async function POST(req: NextRequest) {
             isDeleted: false,
             deletedAt: null,
             updatedAt: now,
+            trackingMode: existingVariant.trackingMode,
           },
+          // New pieces' codes, so their labels can be printed straight away.
+          units: createdUnits.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })),
           message: 'Existing inventory item quantity updated.',
         },
         { status: 200 }
@@ -260,6 +295,9 @@ export async function POST(req: NextRequest) {
       imageUrl,
       isSingleItem,
       conditionNotes,
+      trackingMode,
+      unitDetails,
+      source: 'item_added',
     })
 
     await createStockLog({
@@ -271,7 +309,8 @@ export async function POST(req: NextRequest) {
       quantityChanged: quantity,
       quantityAfter: quantity,
       user: processedBy,
-      remarks: remarks || 'New inventory variant created.',
+      units: created.units.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+      remarks: (remarks || 'New inventory variant created.') + describeUnits(created.units),
     })
 
 
@@ -296,7 +335,9 @@ export async function POST(req: NextRequest) {
           deletedAt: null,
           createdAt: created.now,
           updatedAt: created.now,
+          trackingMode: created.trackingMode,
         },
+        units: created.units.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })),
       },
       { status: 201 }
     )

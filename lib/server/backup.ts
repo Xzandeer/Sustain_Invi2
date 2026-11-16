@@ -13,6 +13,8 @@ export const BACKUP_FORMAT_VERSION = 1
 // an old copy would only show a stale forecast.
 export const BACKUP_COLLECTIONS = [
   'inventory',
+  // One record per physical piece - see lib/inventory/units.ts.
+  'inventoryUnits',
   'categories',
   'sales',
   'receipts',

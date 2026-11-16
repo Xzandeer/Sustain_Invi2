@@ -12,6 +12,7 @@
 // Nothing here is editable by design - an audit trail that can be edited is
 // not an audit trail. Viewing requires the canViewStockLogs permission.
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { collection, getDocs, orderBy, query, limit } from 'firebase/firestore'
@@ -129,7 +130,7 @@ function QtyBadge({ change, before, after }: { change: number; before: number; a
   const color = change > 0 ? 'bg-emerald-50 text-emerald-700' : change < 0 ? 'bg-amber-50 text-amber-700' : 'bg-slate-50 text-slate-600'
   return (
     <div>
-      <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-sm font-bold ${color}`}>
+      <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-sm font-semibold ${color}`}>
         {change > 0 ? '+' : ''}{change === 0 ? '—' : change}
       </span>
       {change !== 0 && <p className="mt-0.5 text-xs text-slate-400">{before} → {after}</p>}
@@ -383,7 +384,7 @@ function InventoryLogsContent() {
   const headerTime = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-slate-50 px-3 py-3 sm:px-5 sm:py-4">
+    <main className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-3 py-3 sm:px-5 sm:py-4">
       <div className="mx-auto max-w-[1400px] space-y-3">
 
         {/* ── Header ── */}
@@ -395,7 +396,7 @@ function InventoryLogsContent() {
               </svg>
             </div>
             <div>
-              <h1 className="text-lg font-bold text-slate-900 sm:text-xl">Stock Logs</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-slate-900">Stock Logs</h1>
               <p className="text-xs text-slate-500">Track all inventory changes, item updates, reservations, and sales in one place.</p>
             </div>
           </div>
@@ -412,7 +413,7 @@ function InventoryLogsContent() {
           {/* Search */}
           <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5">
             <svg className="h-4 w-4 shrink-0 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="11" cy="11" r="8"/><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35"/></svg>
-            <input type="text" value={search} onChange={e => { setSearch(e.target.value); setCurrentPage(1) }}
+            <input maxLength={INPUT_LIMITS.search} type="text" value={search} onChange={e => { setSearch(e.target.value); setCurrentPage(1) }}
               placeholder="Search by item name, reference, user, or remarks..."
               className="w-full min-w-0 bg-transparent text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none" />
           </div>
@@ -572,7 +573,7 @@ function InventoryLogsContent() {
                       <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Item</th>
                       <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
                         <span className="flex items-center gap-1">Qty Change
-                          <span title="Net quantity change to stock" className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-slate-300 text-[9px] font-bold text-white cursor-default">i</span>
+                          <span title="Net quantity change to stock" className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-slate-300 text-[9px] font-semibold text-white cursor-default">i</span>
                         </span>
                       </th>
                       <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Performed By</th>
@@ -657,20 +658,20 @@ function InventoryLogsContent() {
                                       <div className="flex flex-wrap items-center gap-2">
                                         <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm">
                                           <span className="text-xs text-slate-500">Stock</span>
-                                          <span className="font-bold text-slate-900">{log.stockBefore}</span>
+                                          <span className="font-semibold text-slate-900">{log.stockBefore}</span>
                                         </span>
                                         <span className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-sm">
                                           <span className="text-xs text-violet-500">Reserved</span>
-                                          <span className="font-bold text-violet-800">{log.reservedBefore}</span>
+                                          <span className="font-semibold text-violet-800">{log.reservedBefore}</span>
                                         </span>
                                         <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm">
                                           <span className="text-xs text-slate-500">Available</span>
-                                          <span className="font-bold text-slate-900">{Math.max(0, log.stockBefore - log.reservedBefore)}</span>
+                                          <span className="font-semibold text-slate-900">{Math.max(0, log.stockBefore - log.reservedBefore)}</span>
                                         </span>
                                         {log.condition && (
                                           <span className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-sm">
                                             <span className="text-xs text-sky-500">Condition</span>
-                                            <span className="font-bold text-sky-800">{log.condition}</span>
+                                            <span className="font-semibold text-sky-800">{log.condition}</span>
                                           </span>
                                         )}
                                       </div>
@@ -687,20 +688,20 @@ function InventoryLogsContent() {
                                       <div className="flex flex-wrap items-center gap-2">
                                         <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm">
                                           <span className="text-xs text-slate-500">Stock</span>
-                                          <span className="font-bold text-slate-900">{log.stockAfter}</span>
+                                          <span className="font-semibold text-slate-900">{log.stockAfter}</span>
                                         </span>
                                         <span className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-sm">
                                           <span className="text-xs text-violet-500">Reserved</span>
-                                          <span className="font-bold text-violet-800">{log.reservedAfter}</span>
+                                          <span className="font-semibold text-violet-800">{log.reservedAfter}</span>
                                         </span>
                                         <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm">
                                           <span className="text-xs text-slate-500">Available</span>
-                                          <span className="font-bold text-slate-900">{Math.max(0, log.stockAfter - log.reservedAfter)}</span>
+                                          <span className="font-semibold text-slate-900">{Math.max(0, log.stockAfter - log.reservedAfter)}</span>
                                         </span>
                                         {log.condition && (
                                           <span className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-sm">
                                             <span className="text-xs text-sky-500">Condition</span>
-                                            <span className="font-bold text-sky-800">{log.condition}</span>
+                                            <span className="font-semibold text-sky-800">{log.condition}</span>
                                           </span>
                                         )}
                                       </div>

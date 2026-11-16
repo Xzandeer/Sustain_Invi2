@@ -11,6 +11,7 @@
 // Availability follows the POS: available = stock - reservedStock, and a line
 // can never exceed it. Deleted and written-off items are not offered.
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { toast } from 'sonner'
@@ -29,15 +30,24 @@ export interface ReservableItem {
   availableStock: number
   isSingleItem?: boolean
   conditionNotes?: string
+  trackingMode?: 'unit' | 'quantity'
+  /** Per-piece items: each condition on the shelf, with its count and price. */
+  grades?: Array<{ grade: string; count: number; price: number }>
 }
 
 interface CartLine {
+  /** Line key: the item id, or item id + condition. */
   id: string
+  itemId: string
   name: string
   price: number
   quantity: number
+  /** Most this line can hold (the condition's count, or the item's stock). */
+  max: number
   availableStock: number
   condition: string
+  /** Per-piece items: the condition to hold. */
+  grade?: string
 }
 
 const currency = (value: number) =>
@@ -89,9 +99,14 @@ export default function ReserveItemModal({
   // clamp the line rather than let the API refuse the whole reservation.
   useEffect(() => {
     setCart((current) => current.flatMap((line) => {
-      const live = items.find((i) => i.id === line.id)
+      const live = items.find((i) => i.id === line.itemId)
       if (!live || live.availableStock <= 0) return []
-      return [{ ...line, availableStock: live.availableStock, price: live.price, quantity: Math.min(line.quantity, live.availableStock) }]
+      const others = current.filter((o) => o.itemId === line.itemId && o.id !== line.id).reduce((n, o) => n + o.quantity, 0)
+      const g = line.grade ? live.grades?.find((x) => x.grade === line.grade) : undefined
+      const max = g ? g.count : live.availableStock
+      const room = Math.min(max, live.availableStock - others)
+      if (room <= 0) return []
+      return [{ ...line, max, availableStock: live.availableStock, price: g ? g.price : live.price, quantity: Math.min(line.quantity, room) }]
     }))
   }, [items])
 
@@ -112,16 +127,22 @@ export default function ReserveItemModal({
 
   if (!isOpen) return null
 
-  const add = (item: ReservableItem) => {
+  const inCartFor = (itemId: string) => cart.filter((l) => l.itemId === itemId).reduce((n, l) => n + l.quantity, 0)
+
+  /** Adds one piece: of a condition for per-piece items, or of the item. */
+  const add = (item: ReservableItem, g?: { grade: string; count: number; price: number }) => {
     setError('')
     if (item.availableStock <= 0) { setError(`${item.name} is out of available stock.`); return }
-    const existing = cart.find((l) => l.id === item.id)
-    if (existing && existing.quantity >= item.availableStock) {
-      setError(`Only ${item.availableStock} left of ${item.name}.`); return
+    if (inCartFor(item.id) >= item.availableStock) { setError(`Only ${item.availableStock} left of ${item.name}.`); return }
+    const key = g ? `${item.id}:${g.grade}` : item.id
+    const existing = cart.find((l) => l.id === key)
+    const max = g ? g.count : item.availableStock
+    if (existing && existing.quantity >= max) {
+      setError(`Only ${max} of ${item.name}${g ? ` (${g.grade})` : ''} on the shelf.`); return
     }
     setCart((current) => existing
-      ? current.map((l) => (l.id === item.id ? { ...l, quantity: l.quantity + 1 } : l))
-      : [...current, { id: item.id, name: item.name, price: item.price, quantity: 1, availableStock: item.availableStock, condition: item.condition }])
+      ? current.map((l) => (l.id === key ? { ...l, quantity: l.quantity + 1 } : l))
+      : [...current, { id: key, itemId: item.id, name: item.name, price: g ? g.price : item.price, quantity: 1, max, availableStock: item.availableStock, condition: g ? g.grade : item.condition, ...(g ? { grade: g.grade } : {}) }])
   }
 
   const setQty = (id: string, next: number) => {
@@ -129,7 +150,8 @@ export default function ReserveItemModal({
     setCart((current) => current.flatMap((l) => {
       if (l.id !== id) return [l]
       if (next <= 0) return []
-      if (next > l.availableStock) { setError(`Cannot exceed available stock for ${l.name}.`); return [l] }
+      const others = current.filter((o) => o.itemId === l.itemId && o.id !== id).reduce((n, o) => n + o.quantity, 0)
+      if (next > l.max || next + others > l.availableStock) { setError(`Cannot exceed available stock for ${l.name}.`); return [l] }
       return [{ ...l, quantity: next }]
     }))
   }
@@ -189,7 +211,7 @@ export default function ReserveItemModal({
             {/* Products */}
             <div className="flex min-h-0 flex-col border-b border-slate-100 lg:border-b-0 lg:border-r">
               <div className="px-5 py-3">
-                <input
+                <input maxLength={INPUT_LIMITS.search}
                   type="search"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
@@ -216,7 +238,12 @@ export default function ReserveItemModal({
                       <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-400">{items.length === 0 ? 'No products in inventory.' : 'No products match your search.'}</td></tr>
                     ) : visible.map((item) => {
                       const out = item.availableStock <= 0
-                      const inCart = cart.find((l) => l.id === item.id)?.quantity ?? 0
+                      const inCart = inCartFor(item.id)
+                      const grades = item.grades ?? []
+                      const prices = grades.map((g) => g.price)
+                      const priceText = prices.length === 0 ? currency(item.price)
+                        : Math.min(...prices) === Math.max(...prices) ? currency(prices[0])
+                        : `${currency(Math.min(...prices))} – ${currency(Math.max(...prices))}`
                       return (
                         <tr key={item.id} className="hover:bg-slate-50">
                           <td className="px-5 py-2.5">
@@ -227,17 +254,34 @@ export default function ReserveItemModal({
                             <p className="text-xs text-slate-400">{item.condition}{item.conditionNotes ? ` · ${item.conditionNotes}` : ''}</p>
                           </td>
                           <td className="hidden px-3 py-2.5 text-xs text-slate-500 sm:table-cell">{item.categoryName}</td>
-                          <td className="px-3 py-2.5 text-right text-xs font-medium text-slate-800">{currency(item.price)}</td>
+                          <td className="whitespace-nowrap px-3 py-2.5 text-right text-xs font-medium text-slate-800">{priceText}</td>
                           <td className={`px-3 py-2.5 text-right text-xs ${out ? 'text-red-600' : 'text-slate-600'}`}>{out ? 'Out of stock' : item.availableStock}</td>
                           <td className="px-5 py-2.5 text-center">
-                            <button
-                              type="button"
-                              onClick={() => add(item)}
-                              disabled={out || inCart >= item.availableStock || submitting}
-                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                              {inCart > 0 ? `Add (${inCart})` : 'Add'}
-                            </button>
+                            {grades.length > 0 ? (
+                              <div className="flex flex-wrap justify-center gap-1">
+                                {grades.map((g) => (
+                                  <button
+                                    key={g.grade}
+                                    type="button"
+                                    onClick={() => add(item, g)}
+                                    disabled={out || inCart >= item.availableStock || submitting}
+                                    title={`${g.count} ${g.grade} on the shelf`}
+                                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    {g.grade} <span className="font-semibold tabular-nums">{currency(g.price)}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => add(item)}
+                                disabled={out || inCart >= item.availableStock || submitting}
+                                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                              >
+                                {inCart > 0 ? `Add (${inCart})` : 'Add'}
+                              </button>
+                            )}
                           </td>
                         </tr>
                       )
@@ -274,7 +318,7 @@ export default function ReserveItemModal({
                     <div className="flex shrink-0 items-center gap-1">
                       <button type="button" onClick={() => setQty(l.id, l.quantity - 1)} disabled={submitting} aria-label={`Decrease ${l.name}`} className="flex h-5 w-5 items-center justify-center rounded border border-slate-200 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-40">−</button>
                       <span className="w-5 text-center text-xs font-medium text-slate-800">{l.quantity}</span>
-                      <button type="button" onClick={() => setQty(l.id, l.quantity + 1)} disabled={submitting || l.quantity >= l.availableStock} aria-label={`Increase ${l.name}`} className="flex h-5 w-5 items-center justify-center rounded border border-slate-200 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-40">+</button>
+                      <button type="button" onClick={() => setQty(l.id, l.quantity + 1)} disabled={submitting || l.quantity >= l.max} aria-label={`Increase ${l.name}`} className="flex h-5 w-5 items-center justify-center rounded border border-slate-200 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-40">+</button>
                     </div>
                     <p className="w-20 shrink-0 text-right text-xs font-semibold text-slate-900">{currency(l.price * l.quantity)}</p>
                     <button type="button" onClick={() => setQty(l.id, 0)} disabled={submitting} aria-label={`Remove ${l.name}`} className="shrink-0 text-slate-300 hover:text-slate-500 disabled:opacity-40">
@@ -292,7 +336,7 @@ export default function ReserveItemModal({
                 <p className="text-sm font-semibold text-slate-900">Reservation Details</p>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-slate-600">Name <span className="font-semibold text-rose-500">*</span></label>
-                  <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Customer name" disabled={submitting}
+                  <input maxLength={INPUT_LIMITS.name} type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Customer name" disabled={submitting}
                     className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none disabled:opacity-60" />
                 </div>
                 <div>
@@ -305,7 +349,7 @@ export default function ReserveItemModal({
                 </div>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-slate-600">Email <span className="font-normal text-slate-400">(Optional)</span></label>
-                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email address" disabled={submitting}
+                  <input maxLength={INPUT_LIMITS.email} type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email address" disabled={submitting}
                     className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none disabled:opacity-60" />
                 </div>
               </div>

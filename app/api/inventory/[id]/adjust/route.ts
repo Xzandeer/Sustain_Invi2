@@ -1,6 +1,11 @@
 // Stock adjustment API - POST to add/deduct/transfer stock between conditions
 import { NextResponse } from 'next/server'
-import { MAX_STOCK } from '@/lib/constants/limits'
+import { MAX_STOCK, cleanConditionNotes, INPUT_LIMITS } from '@/lib/constants/limits'
+import { normalizeUnitGrade } from '@/lib/inventory/units'
+import {
+  allocateUnitCodes, describeUnits, isUnitTracked, pickUnits, readItemUnits, setUnitsStatus, writeNewUnits,
+  type StoredUnit,
+} from '@/lib/server/units'
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import {
   createInventoryVariant,
@@ -21,6 +26,185 @@ interface AdjustPayload {
   targetCondition?: unknown // 'New' or 'Refurbished' (for transfers)
   remarks?: unknown
   processedBy?: unknown
+  /** Unit-tracked items, deduct/transfer: the exact pieces. Otherwise oldest first. */
+  unitIds?: unknown
+  /** Unit-tracked items, add: grade, notes and optional own price of the new pieces. */
+  unitGrade?: unknown
+  unitNotes?: unknown
+  unitPrice?: unknown
+}
+
+// ── Unit-tracked adjustments ────────────────────────────────────────────────
+//
+// add       new pieces arrive: one unit each, with the grade/notes given
+// deduct    pieces leave the books (damaged, lost): the named units, or the
+//           oldest on the shelf, become written_off
+// transfer  pieces move between New and Refurbished: the same units (same
+//           codes and labels) are re-pointed at the other condition's record
+//
+// Each runs as one transaction with the item's counts. Reserved pieces are
+// never touched - only in-stock units are read.
+async function adjustUnits(ctx: {
+  id: string
+  action: string
+  quantity: number
+  remarks: string
+  processedBy: Awaited<ReturnType<typeof getProcessedByInfo>>
+  body: AdjustPayload
+  itemName: string
+  categoryId: string
+  categoryName: string
+  price: number
+  minStock: number
+  description?: string
+  imageUrl?: string
+  sourceCondition: InventoryCondition
+}) {
+  const db = getAdminDb()
+  const sourceRef = db.collection('inventory').doc(ctx.id)
+  const nowIso = new Date().toISOString()
+  const requestedIds = Array.isArray(ctx.body.unitIds)
+    ? ctx.body.unitIds.filter((v): v is string => typeof v === 'string' && v.length > 0)
+    : []
+
+  try {
+    if (ctx.action === 'add') {
+      const priceInput = toNumber(ctx.body.unitPrice, Number.NaN)
+      const codes = await allocateUnitCodes(ctx.quantity)
+      let before = { stock: 0, reserved: 0 }
+      let created: ReturnType<typeof writeNewUnits> = []
+      await db.runTransaction(async (txn) => {
+        const snap = await txn.get(sourceRef)
+        const d = (snap.data() ?? {}) as Record<string, unknown>
+        before = { stock: Math.max(0, toNumber(d.stock ?? d.quantity, 0)), reserved: Math.max(0, toNumber(d.reservedStock, 0)) }
+        const next = before.stock + ctx.quantity
+        txn.update(sourceRef, {
+          stock: next, quantity: next,
+          stockStatus: getStockStatus({ stock: next, minStock: ctx.minStock }),
+          updatedAt: nowIso,
+        })
+        created = writeNewUnits(txn, {
+          itemId: ctx.id,
+          itemName: ctx.itemName,
+          codes,
+          details: {
+            grade: normalizeUnitGrade(ctx.body.unitGrade),
+            conditionNotes: cleanConditionNotes(ctx.body.unitNotes),
+            priceOverride: Number.isFinite(priceInput) && priceInput > 0 ? priceInput : null,
+          },
+          nowIso,
+          source: 'stock_increased',
+        })
+      })
+      const after = before.stock + ctx.quantity
+      await createStockLog({
+        actionType: 'stock_increased',
+        itemId: ctx.id, itemName: ctx.itemName, condition: ctx.sourceCondition,
+        quantityBefore: before.stock, quantityChanged: ctx.quantity, quantityAfter: after,
+        stockBefore: before.stock, stockAfter: after, reservedBefore: before.reserved, reservedAfter: before.reserved,
+        user: ctx.processedBy,
+        units: created.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+        remarks: (ctx.remarks || 'Manual stock increase.') + describeUnits(created),
+      })
+      return NextResponse.json({ success: true, units: created.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })) }, { status: 200 })
+    }
+
+    if (ctx.action === 'deduct') {
+      let before = { stock: 0, reserved: 0 }
+      let removed: StoredUnit[] = []
+      await db.runTransaction(async (txn) => {
+        const snap = await txn.get(sourceRef)
+        const d = (snap.data() ?? {}) as Record<string, unknown>
+        before = { stock: Math.max(0, toNumber(d.stock ?? d.quantity, 0)), reserved: Math.max(0, toNumber(d.reservedStock, 0)) }
+        const pool = await readItemUnits(txn, ctx.id, 'in_stock')
+        removed = pickUnits(pool, ctx.quantity, requestedIds, ctx.itemName, { allowOverridePrices: true })
+        const next = before.stock - ctx.quantity
+        if (next < before.reserved) throw new Error('UNITS_UNAVAILABLE:Reserved stock cannot be reduced.')
+        txn.update(sourceRef, {
+          stock: next, quantity: next,
+          stockStatus: getStockStatus({ stock: next, minStock: ctx.minStock }),
+          updatedAt: nowIso,
+        })
+        setUnitsStatus(txn, removed, 'written_off', nowIso)
+      })
+      const after = before.stock - ctx.quantity
+      await createStockLog({
+        actionType: 'stock_decreased',
+        itemId: ctx.id, itemName: ctx.itemName, condition: ctx.sourceCondition,
+        quantityBefore: before.stock, quantityChanged: -ctx.quantity, quantityAfter: after,
+        stockBefore: before.stock, stockAfter: after, reservedBefore: before.reserved, reservedAfter: before.reserved,
+        user: ctx.processedBy,
+        units: removed.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+        remarks: (ctx.remarks || 'Manual stock deduction.') + describeUnits(removed),
+      })
+      return NextResponse.json({ success: true }, { status: 200 })
+    }
+
+    // transfer
+    const targetCondition = normalizeInventoryCondition(ctx.body.targetCondition) as InventoryCondition
+    if (targetCondition === ctx.sourceCondition) {
+      return NextResponse.json({ error: 'Select a different condition for transfer.' }, { status: 400 })
+    }
+    const existingTarget = await findInventoryVariant({ name: ctx.itemName, categoryId: ctx.categoryId, condition: targetCondition })
+    // A new variant starts empty; the moved units become its stock.
+    const targetId = existingTarget?.id ?? (await createInventoryVariant({
+      name: ctx.itemName,
+      categoryId: ctx.categoryId,
+      categoryName: ctx.categoryName,
+      price: ctx.price,
+      quantity: 0,
+      minStock: ctx.minStock,
+      condition: targetCondition,
+      description: ctx.description,
+      imageUrl: ctx.imageUrl,
+      trackingMode: 'unit',
+    })).id
+    const targetRef = db.collection('inventory').doc(targetId)
+
+    let source = { stock: 0, reserved: 0 }
+    let target = { stock: 0, reserved: 0, minStock: ctx.minStock }
+    let moved: StoredUnit[] = []
+    await db.runTransaction(async (txn) => {
+      const [sSnap, tSnap] = await Promise.all([txn.get(sourceRef), txn.get(targetRef)])
+      const sd = (sSnap.data() ?? {}) as Record<string, unknown>
+      const td = (tSnap.data() ?? {}) as Record<string, unknown>
+      if (td.trackingMode !== 'unit') {
+        throw new Error('UNITS_UNAVAILABLE:The other condition of this item counts quantity only, so pieces cannot be moved into it.')
+      }
+      source = { stock: Math.max(0, toNumber(sd.stock ?? sd.quantity, 0)), reserved: Math.max(0, toNumber(sd.reservedStock, 0)) }
+      target = { stock: Math.max(0, toNumber(td.stock ?? td.quantity, 0)), reserved: Math.max(0, toNumber(td.reservedStock, 0)), minStock: Math.max(0, toNumber(td.minStock, 0)) }
+      const pool = await readItemUnits(txn, ctx.id, 'in_stock')
+      moved = pickUnits(pool, ctx.quantity, requestedIds, ctx.itemName, { allowOverridePrices: true })
+      const nextSource = source.stock - ctx.quantity
+      const nextTarget = target.stock + ctx.quantity
+      txn.update(sourceRef, { stock: nextSource, quantity: nextSource, stockStatus: getStockStatus({ stock: nextSource, minStock: ctx.minStock }), updatedAt: nowIso })
+      txn.update(targetRef, { stock: nextTarget, quantity: nextTarget, stockStatus: getStockStatus({ stock: nextTarget, minStock: target.minStock }), updatedAt: nowIso })
+      for (const u of moved) txn.update(u.ref, { itemId: targetId, updatedAt: nowIso })
+    })
+    const unitsRef = moved.map((u) => ({ id: u.id, unitCode: u.unitCode }))
+    await createStockLog({
+      actionType: 'stock_transferred_out',
+      itemId: ctx.id, itemName: ctx.itemName, condition: ctx.sourceCondition,
+      quantityBefore: source.stock, quantityChanged: -ctx.quantity, quantityAfter: source.stock - ctx.quantity,
+      stockBefore: source.stock, stockAfter: source.stock - ctx.quantity, reservedBefore: source.reserved, reservedAfter: source.reserved,
+      user: ctx.processedBy, units: unitsRef, relatedId: targetId,
+      remarks: (ctx.remarks || `Transferred stock to ${targetCondition}.`) + describeUnits(moved),
+    })
+    await createStockLog({
+      actionType: 'stock_transferred_in',
+      itemId: targetId, itemName: ctx.itemName, condition: targetCondition,
+      quantityBefore: target.stock, quantityChanged: ctx.quantity, quantityAfter: target.stock + ctx.quantity,
+      stockBefore: target.stock, stockAfter: target.stock + ctx.quantity, reservedBefore: target.reserved, reservedAfter: target.reserved,
+      user: ctx.processedBy, units: unitsRef, relatedId: ctx.id,
+      remarks: (ctx.remarks || `Transferred stock from ${ctx.sourceCondition}.`) + describeUnits(moved),
+    })
+    return NextResponse.json({ success: true }, { status: 200 })
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('UNITS_UNAVAILABLE:')) {
+      return NextResponse.json({ error: error.message.slice('UNITS_UNAVAILABLE:'.length) }, { status: 400 })
+    }
+    throw error
+  }
 }
 
 // POST /api/inventory/[id]/adjust - Adjust stock (add/deduct/transfer between conditions)
@@ -31,7 +215,7 @@ export async function POST(req: Request, context: RouteContext) {
     const body = (await req.json()) as AdjustPayload
     const action = typeof body.action === 'string' ? body.action.trim().toLowerCase() : ''
     const quantity = Math.floor(toNumber(body.quantity, Number.NaN))
-    const remarks = typeof body.remarks === 'string' ? body.remarks.trim() : ''
+    const remarks = typeof body.remarks === 'string' ? body.remarks.trim().slice(0, INPUT_LIMITS.note) : ''
 
     // Adjusting stock changes the books, so it needs the same permission as
     // editing an item. Checked before anything is read or written.
@@ -117,6 +301,14 @@ export async function POST(req: Request, context: RouteContext) {
     // Step 4: Validate item has required fields
     if (!itemName || !categoryId) {
       return NextResponse.json({ error: 'Inventory variant is missing required fields.' }, { status: 400 })
+    }
+
+    // Unit-tracked items move real pieces, not just a number - see adjustUnits.
+    if (isUnitTracked(data)) {
+      return adjustUnits({
+        id, action, quantity, remarks, processedBy, body,
+        itemName, categoryId, categoryName, price, minStock, description, imageUrl, sourceCondition,
+      })
     }
 
     // Step 5: Handle ADD action (simple stock increase)

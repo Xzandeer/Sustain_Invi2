@@ -131,9 +131,9 @@ export async function requireActiveUser(uid: unknown): Promise<NextResponse | nu
       return NextResponse.json({ error: 'This account has been disabled.' }, { status: 403 })
     }
     return null
-  } catch {
-    // Fail closed - if the account cannot be verified, deny.
-    return NextResponse.json({ error: 'Unable to verify your account.' }, { status: 403 })
+  } catch (error) {
+    // Fail closed - if the account cannot be verified, deny, but say why.
+    return NextResponse.json({ error: permissionLookupError(error) }, { status: 403 })
   }
 }
 

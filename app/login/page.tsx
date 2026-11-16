@@ -9,6 +9,7 @@
 // That same hook is what signs a disabled account back out, so a disabled user
 // can pass this screen and is then bounced immediately.
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { onAuthStateChanged, signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth'
@@ -21,6 +22,14 @@ export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  // Why the last session ended (components/shared/SessionGuard.tsx), shown once.
+  const [notice, setNotice] = useState('')
+  useEffect(() => {
+    try {
+      const reason = window.sessionStorage.getItem('sustain.signedOutReason')
+      if (reason) { setNotice(reason); window.sessionStorage.removeItem('sustain.signedOutReason') }
+    } catch { /* private mode */ }
+  }, [])
   const [loading, setLoading] = useState(false)
 
   // Forgot password state
@@ -98,7 +107,7 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-100 px-4 py-10">
+    <div className="flex min-h-screen items-center justify-center bg-[#F1F5FC] px-4 py-10">
       <div className="w-full max-w-md rounded-xl bg-white p-8 shadow">
         <h1 className="mb-8 text-center text-3xl font-bold text-slate-900">Sign In</h1>
 
@@ -107,7 +116,7 @@ export default function LoginPage() {
             <form onSubmit={onSubmit} className="space-y-4">
               <div>
                 <label className="mb-2 block text-sm font-medium text-slate-700">Email</label>
-                <input
+                <input maxLength={INPUT_LIMITS.email}
                   type="email"
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
@@ -119,7 +128,7 @@ export default function LoginPage() {
 
               <div>
                 <label className="mb-2 block text-sm font-medium text-slate-700">Password</label>
-                <input
+                <input maxLength={INPUT_LIMITS.password}
                   type="password"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
@@ -138,6 +147,7 @@ export default function LoginPage() {
                 </div>
               </div>
 
+              {notice && !error && <p className="rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700">{notice}</p>}
               {error && <p className="text-sm text-red-600">{error}</p>}
 
               <button
@@ -159,7 +169,7 @@ export default function LoginPage() {
         ) : (
           <>
             <div className="mb-5">
-              <h2 className="text-lg font-bold text-slate-900">Reset Password</h2>
+              <h2 className="text-lg font-semibold text-slate-900">Reset Password</h2>
               <p className="mt-1 text-sm text-slate-500">
                 Enter your account email and we&apos;ll send you a reset link.
               </p>
@@ -178,7 +188,7 @@ export default function LoginPage() {
                 )}
                 <div>
                   <label className="mb-2 block text-sm font-medium text-slate-700">Email Address</label>
-                  <input
+                  <input maxLength={INPUT_LIMITS.email}
                     type="email"
                     value={resetEmail}
                     onChange={e => setResetEmail(e.target.value)}

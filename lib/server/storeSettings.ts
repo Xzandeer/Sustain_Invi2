@@ -11,6 +11,7 @@ import {
   SETTINGS_COLLECTION,
   SETTINGS_DOC,
 } from '@/lib/constants/warranty'
+import { DEFAULT_GRADE_PRICING, normalizeGradePricing, type GradePricing } from '@/lib/inventory/units'
 
 export interface StoreSettings {
   warrantyDays: number
@@ -22,6 +23,8 @@ export interface StoreSettings {
   sellerAddress: string
   /** When the last full backup was downloaded, or '' if never. */
   lastBackupAt: string
+  /** Share of an item's base price each condition sells for - lib/inventory/units.ts. */
+  gradePricing: GradePricing
 }
 
 const str = (value: unknown, fallback: string) =>
@@ -34,6 +37,7 @@ const FALLBACK: StoreSettings = {
   sellerTin: DEFAULT_SELLER_TIN,
   sellerAddress: DEFAULT_SELLER_ADDRESS,
   lastBackupAt: '',
+  gradePricing: { ...DEFAULT_GRADE_PRICING },
 }
 
 export async function getStoreSettings(): Promise<StoreSettings> {
@@ -65,6 +69,7 @@ export async function getStoreSettings(): Promise<StoreSettings> {
       sellerTin: str(data.sellerTin, DEFAULT_SELLER_TIN),
       sellerAddress: str(data.sellerAddress, DEFAULT_SELLER_ADDRESS),
       lastBackupAt: typeof data.lastBackupAt === 'string' ? data.lastBackupAt : '',
+      gradePricing: normalizeGradePricing(data.gradePricing),
     }
   } catch {
     // Firestore unavailable — fail safe to the built-in defaults

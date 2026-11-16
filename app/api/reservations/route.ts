@@ -1,4 +1,5 @@
 // Reservations API endpoint - POST to create reservations, GET to list reservations
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { NextRequest, NextResponse } from 'next/server'
 import { getReservationDays } from '@/lib/server/storeSettings'
 import { FieldValue } from 'firebase-admin/firestore'
@@ -8,6 +9,12 @@ import {
   findInventoryVariantById,
   getProcessedByInfo,
 } from '@/lib/server/inventory'
+import {
+  describeUnits, isUnitTracked, linesByPrice, parseItemRequests, pickUnitsForParts, readItemUnits, setUnitsStatus, toLineRef,
+  unitPrice, type StoredUnit,
+} from '@/lib/server/units'
+import { getStoreSettings } from '@/lib/server/storeSettings'
+import type { UnitLineRef } from '@/lib/inventory/units'
 import { createTransactionNumber } from '@/lib/server/transactionNumbers'
 import { parseDateRange, toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import {
@@ -37,9 +44,9 @@ interface CustomerDetails {
 const parseCustomerDetails = (input: unknown): CustomerDetails | null => {
   if (!input || typeof input !== 'object') return null
   const data = input as Record<string, unknown>
-  const fullName = typeof data.fullName === 'string' ? data.fullName.trim() : ''
-  const email = typeof data.email === 'string' ? data.email.trim() : ''
-  const contactNumber = typeof data.contactNumber === 'string' ? data.contactNumber.trim() : ''
+  const fullName = typeof data.fullName === 'string' ? data.fullName.trim().slice(0, INPUT_LIMITS.name) : ''
+  const email = typeof data.email === 'string' ? data.email.trim().slice(0, INPUT_LIMITS.email) : ''
+  const contactNumber = typeof data.contactNumber === 'string' ? data.contactNumber.trim().slice(0, 15) : ''
 
   return { fullName, email, contactNumber }
 }
@@ -137,14 +144,9 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    const normalizedItems = items
-      .map((item) => {
-        const record = item as Record<string, unknown>
-        const itemId = typeof record.itemId === 'string' ? record.itemId.trim() : ''
-        const quantity = Math.floor(toNumber(record.quantity, Number.NaN))
-        return { itemId, quantity }
-      })
-      .filter((item) => item.itemId && Number.isFinite(item.quantity) && item.quantity > 0)
+    // One line per item - the hold, claim and release code updates each item
+    // once - with a part per condition asked for and any scanned pieces.
+    const normalizedItems = parseItemRequests(items)
 
     if (normalizedItems.length === 0) {
       return NextResponse.json({ error: 'Add at least one valid item to continue.' }, { status: 400 })
@@ -184,7 +186,15 @@ export async function POST(req: NextRequest) {
       stockAfter: number
       reservedBefore: number
       reservedAfter: number
+      units: StoredUnit[]
+      unitLines: UnitLineRef[]
     }> = []
+
+    // Known before the transaction, so held units can point at it.
+    const reservationRef = getAdminDb().collection('reservations').doc()
+
+    // Price by condition - the hold records what each piece will sell for.
+    const { gradePricing } = await getStoreSettings()
 
     // STEP 3: Firestore transaction - update reservedStock
     console.log('[reservations POST] step 3: running inventory transaction')
@@ -200,7 +210,9 @@ export async function POST(req: NextRequest) {
         currentReservedStock: number
         availableStock: number
         nextReservedStock: number
+        units: StoredUnit[]
       }> = []
+      reservationItems.length = 0 // a retried transaction must not repeat lines
 
       // ── Phase 1: read and validate every line ──
       for (const { requestedItem, inventoryItem } of preparedItems) {
@@ -218,6 +230,15 @@ export async function POST(req: NextRequest) {
           throw new Error('INSUFFICIENT_STOCK')
         }
 
+        // Unit-tracked: hold the scanned pieces, then the oldest on the shelf.
+        const units = isUnitTracked(latestData)
+          ? pickUnitsForParts(
+              await readItemUnits(transaction, inventoryItem.id, 'in_stock'),
+              requestedItem.parts,
+              inventoryItem.name
+            )
+          : []
+
         holdWrites.push({
           ref: inventoryItem.ref,
           inventoryItem,
@@ -226,17 +247,19 @@ export async function POST(req: NextRequest) {
           currentReservedStock,
           availableStock,
           nextReservedStock: currentReservedStock + requestedItem.quantity,
+          units,
         })
       }
 
       // ── Phase 2: write ──
       for (const entry of holdWrites) {
-        const { ref, inventoryItem, quantity, currentStock, currentReservedStock, availableStock, nextReservedStock } = entry
+        const { ref, inventoryItem, quantity, currentStock, currentReservedStock, availableStock, nextReservedStock, units } = entry
 
         transaction.update(ref, {
           reservedStock: nextReservedStock,
           updatedAt: nowIso,
         })
+        setUnitsStatus(transaction, units, 'reserved', nowIso, { reservationId: reservationRef.id })
 
         reservationItems.push({
           id: inventoryItem.id,
@@ -250,13 +273,14 @@ export async function POST(req: NextRequest) {
           stockAfter: currentStock,
           reservedBefore: currentReservedStock,
           reservedAfter: nextReservedStock,
+          units,
+          unitLines: units.map((u) => toLineRef(u, unitPrice(u, inventoryItem.price, gradePricing))),
         })
       }
     })
 
     // STEP 4: Generate reservation number + create Firestore doc
     console.log('[reservations POST] step 4: creating transaction number')
-    const reservationRef = getAdminDb().collection('reservations').doc()
     const numberResult = await createTransactionNumber('reservation', reservationRef, (numberInfo) => ({
       id: reservationRef.id,
       reservationNumber: numberInfo.value,
@@ -271,6 +295,8 @@ export async function POST(req: NextRequest) {
         quantity: item.quantity,
         price: item.price,
         condition: item.condition,
+        // The exact pieces held - claimed or released by the same ids.
+        ...(item.units.length > 0 ? { unitIds: item.units.map((u) => u.id), unitLines: item.unitLines } : {}),
       })),
       customer: customerDetails.fullName,
       customerName: customerDetails.fullName,
@@ -304,21 +330,35 @@ export async function POST(req: NextRequest) {
           reservedAfter: item.reservedAfter,
           user: processedBy,
           relatedId: reservationRef.id,
-          remarks: `Reservation ${numberResult.value} created.`,
+          units: item.units.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+          remarks: `Reservation ${numberResult.value} created.` + describeUnits(item.units),
         })
       )
     )
 
     // STEP 6: Build ticket document + receipt record
     console.log('[reservations POST] step 6: building documents')
-    const ticketItems: TransactionLineItem[] = reservationItems.map((item) => ({
-      itemId: item.id,
-      name: item.name,
-      quantity: item.quantity,
-      price: item.price,
-      condition: item.condition,
-      subtotal: item.quantity * item.price,
-    }))
+    const ticketItems: TransactionLineItem[] = reservationItems.flatMap((item) =>
+      item.units.length > 0
+        ? linesByPrice(item.id, item.units, (u) => item.unitLines.find((l) => l.unitId === u.id)?.price ?? item.price).map((line) => ({
+            itemId: item.id,
+            name: item.name,
+            quantity: line.quantity,
+            price: line.price,
+            condition: item.condition,
+            conditionNotes: line.unitLines.map((u) => `#${u.unitCode} ${u.grade}`).join('; '),
+            subtotal: line.quantity * line.price,
+          }))
+        : [{
+            itemId: item.id,
+            name: item.name,
+            quantity: item.quantity,
+            price: item.price,
+            condition: item.condition,
+            subtotal: item.quantity * item.price,
+          }]
+    )
+    const ticketTotal = ticketItems.reduce((sum, item) => sum + item.subtotal, 0)
 
     const ticketDocument: ReservationTicketDocument = {
       type: 'reservation',
@@ -341,9 +381,9 @@ export async function POST(req: NextRequest) {
       customerName: customerDetails.fullName,
       contactNumber: customerDetails.contactNumber,
       items: ticketItems,
-      subtotal: reservationItems.reduce((sum, item) => sum + item.quantity * item.price, 0),
+      subtotal: ticketTotal,
       discount: 0,
-      total: reservationItems.reduce((sum, item) => sum + item.quantity * item.price, 0),
+      total: ticketTotal,
       cashierName: processedBy.name,
       createdAt: nowIso,
       status: 'active',
@@ -378,6 +418,9 @@ export async function POST(req: NextRequest) {
 
       if (error.message === 'ITEM_NOT_FOUND') {
         return NextResponse.json({ error: 'One or more selected items were not found.' }, { status: 404 })
+      }
+      if (error.message.startsWith('UNITS_UNAVAILABLE:')) {
+        return NextResponse.json({ error: error.message.slice('UNITS_UNAVAILABLE:'.length) }, { status: 409 })
       }
     }
 

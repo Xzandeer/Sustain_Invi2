@@ -20,6 +20,7 @@ import { Timestamp } from 'firebase-admin/firestore'
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { requireAdminRequest, verifiedUid } from '@/lib/server/authorize'
 import { RESTORABLE_COLLECTIONS, RESTORE_CHUNK_SIZE, deserializeValue } from '@/lib/server/backup'
+import { forget } from '@/lib/server/readCache'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -93,6 +94,9 @@ export async function POST(req: NextRequest) {
     }
 
     await batch.commit()
+    // Restored records keep their old timestamps, so remembered reads cannot
+    // tell they changed: drop them all.
+    forget()
     return NextResponse.json({ success: true, written: entries.length })
   } catch (error) {
     console.error('[admin/restore] error:', error)

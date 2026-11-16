@@ -252,9 +252,9 @@ export async function POST(req: NextRequest) {
 
     // 2. Parse body
     body = (await req.json()) as ChatRequest
-    const rawMessage = body.message ?? ''
+    const rawMessage = String(body.message ?? '').slice(0, 500)
     const rawHistory = Array.isArray(body.history) ? body.history : []
-    const currentPage = typeof body.page === 'string' ? body.page : undefined
+    const currentPage = typeof body.page === 'string' ? body.page.slice(0, 80) : undefined
     const userRole = body.role === 'admin' ? 'admin' : 'staff'
 
     // 3. Rate limiting

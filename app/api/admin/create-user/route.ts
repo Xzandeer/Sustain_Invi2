@@ -63,6 +63,9 @@ export async function POST(req: NextRequest) {
     if (!name?.trim() || !email?.trim() || !password || !role) {
       return NextResponse.json({ error: 'All fields are required.' }, { status: 400 })
     }
+    if (name.trim().length > 80 || email.trim().length > 120 || password.length > 128) {
+      return NextResponse.json({ error: 'Name, email or password is too long.' }, { status: 400 })
+    }
     if (role !== 'admin' && role !== 'staff') {
       return NextResponse.json({ error: 'Role must be admin or staff.' }, { status: 400 })
     }

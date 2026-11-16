@@ -47,3 +47,30 @@ export function clampPriceInput(raw: string, previous: string, max = MAX_PRICE):
   if (!/^\d*\.?\d{0,2}$/.test(raw)) return previous   // one dot, max 2 decimals
   return Number(raw) > max ? previous : raw
 }
+
+// How long each kind of typed field may be. Every text box in the app takes
+// its maxLength from here, and the API trims to the same lengths, so a pasted
+// essay or a held-down key cannot end up on a receipt, a label or in a log.
+export const INPUT_LIMITS = {
+  /** Item, category and person names. */
+  name: 80,
+  email: 120,
+  password: 128,
+  /** Search boxes. */
+  search: 80,
+  /** Reasons, remarks and condition notes. */
+  note: MAX_CONDITION_NOTES,
+  /** Shipment / source of a batch. */
+  source: 80,
+  /** Typed confirmations such as DELETE. */
+  confirm: 20,
+  /** Price and discount boxes: 999999.99 */
+  money: 9,
+  /** One chatbot message. */
+  chat: 500,
+} as const
+
+/** Trim a typed value and cap its length. Anything that is not a string becomes ''. */
+export function cleanText(value: unknown, max: number): string {
+  return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, max) : ''
+}

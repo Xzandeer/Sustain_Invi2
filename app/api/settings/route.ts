@@ -8,6 +8,7 @@ import { getAdminDb } from '@/lib/firebaseAdmin'
 import { getStoreSettings } from '@/lib/server/storeSettings'
 import { SETTINGS_COLLECTION, SETTINGS_DOC } from '@/lib/constants/warranty'
 import { requireActiveUserRequest, requireAdminRequest } from '@/lib/server/authorize'
+import { UNIT_GRADES, normalizeGradePricing } from '@/lib/inventory/units'
 
 export const dynamic = 'force-dynamic'
 
@@ -89,8 +90,20 @@ export async function PUT(req: NextRequest) {
       )
     }
 
+    // Price by condition: whole percentages, 1-100, best condition highest.
+    // Only written when sent, so another Settings form cannot reset it.
+    const gradePricing = body.gradePricing === undefined ? null : normalizeGradePricing(body.gradePricing)
+    const shares = gradePricing ? UNIT_GRADES.map((g) => gradePricing[g]) : []
+    if (shares.some((v, i) => i > 0 && v > shares[i - 1])) {
+      return NextResponse.json(
+        { error: 'A worse condition cannot sell for more than a better one. Check the price by condition.' },
+        { status: 400 }
+      )
+    }
+
     await getAdminDb().collection(SETTINGS_COLLECTION).doc(SETTINGS_DOC).set(
       {
+        ...(gradePricing ? { gradePricing } : {}),
         warrantyDays,
         reservationDays,
         sellerRegisteredName,
@@ -104,6 +117,7 @@ export async function PUT(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
+      ...(gradePricing ? { gradePricing } : {}),
       warrantyDays,
       reservationDays,
       sellerRegisteredName,

@@ -6,6 +6,7 @@
 // show why stock was released. The options live in
 // lib/reservations/cancellationReasons.ts.
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { useState } from 'react'
 import { AlertCircle, XCircle } from 'lucide-react'
 import {
@@ -102,7 +103,7 @@ export function CancellationReasonModal({
           {selectedReason === 'Other' && (
             <div className="rounded-lg border border-sky-200 bg-sky-50 p-3">
               <label className="block text-sm font-medium text-slate-900 mb-2">Please provide additional details:</label>
-              <textarea
+              <textarea maxLength={INPUT_LIMITS.note}
                 value={customReason}
                 onChange={(e) => setCustomReason(e.target.value)}
                 placeholder="Enter your cancellation reason..."

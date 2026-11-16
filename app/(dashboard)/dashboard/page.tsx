@@ -24,8 +24,8 @@
 //   New Sale     -> the sale window (components/dashboard/QuickSaleModal). A
 //                   USB/Bluetooth scanner adds items inside it, and from any
 //                   other page opens Sales (components/scan/GlobalScanListener).
-//   Add Item     -> the Inventory page's own ProductModal, saved with the same
-//                   request (lib/inventory/saveProduct)
+//   Add Item     -> the Inventory page's Receive stock window: a batch of pieces,
+//                   each in its own condition (components/inventory/ReceiveStockModal)
 //   Reserve Item -> ReserveItemModal, submitted with the same request as the POS
 //                   "Reserve Order" (lib/reservations/createReservation)
 
@@ -36,13 +36,14 @@ import { CalendarPlus, ChevronRight, Loader2, Package, PackagePlus, ShoppingCart
 import { toast } from 'sonner'
 import { auth, db } from '@/lib/firebase'
 import { apiFetch } from '@/lib/apiFetch'
+import { cachedRead, loadSalesBetween } from '@/lib/client/readCache'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { useUserRole } from '@/hooks/useUserRole'
-import ProductModal, { type ProductFormValues } from '@/components/inventory/ProductModal'
+import ReceiveStockModal from '@/components/inventory/ReceiveStockModal'
 import ReserveItemModal, { type ReservableItem } from '@/components/dashboard/ReserveItemModal'
 import QuickSaleModal from '@/components/dashboard/QuickSaleModal'
 import { expireReservations } from '@/lib/reservations/reservationExpiration'
-import { saveProduct, type CategoryRef } from '@/lib/inventory/saveProduct'
+import type { CategoryRef } from '@/lib/inventory/saveProduct'
 import { getStockLogActionLabel, resolveStockLogAction } from '@/lib/inventory/stockLogActions'
 
 // Loaded on demand: the camera component is only needed when someone taps Scan.
@@ -55,11 +56,21 @@ interface SaleDoc {
   items: LineItem[]
   quantity: number
   totalAmount: number
+  /** Refunded since the sale (sales/refund). */
+  refundedAmount: number
   createdAt: Date | null
   status: string
 }
+/** One per-piece item on the shelf, from /api/inventory/units/summary. */
+interface ShelfEntry {
+  grades: Array<{ grade: string; count: number; price: number }>
+  ownPriced: Array<{ grade: string; count: number; minPrice: number; maxPrice: number }>
+  reserved: number
+}
 interface InventoryDoc {
   id: string
+  categoryId: string
+  trackingMode?: 'unit' | 'quantity'
   name: string
   stock: number
   reservedStock: number
@@ -231,6 +242,8 @@ function DashboardContent() {
   // Imported notebook totals by YYYY-MM-DD (scripts/import-sales-history.js).
   const [salesHistory, setSalesHistory] = useState<Map<string, number>>(new Map())
   const [inventory, setInventory] = useState<InventoryDoc[]>([])
+  // Per-piece items on the shelf, by condition and price (/api/inventory/units/summary).
+  const [shelf, setShelf] = useState<Record<string, ShelfEntry>>({})
   const [reservations, setReservations] = useState<ReservationDoc[]>([])
   // Holds still in effect, for the Reservations panel. null = could not be read.
   const [activeReservations, setActiveReservations] = useState<ActiveReservation[] | null>([])
@@ -244,7 +257,6 @@ function DashboardContent() {
   const [addOpen, setAddOpen] = useState(false)
   const [categories, setCategories] = useState<CategoryRef[]>([])
   const [loadingCategories, setLoadingCategories] = useState(false)
-  const [savingItem, setSavingItem] = useState(false)
   const [reserveOpen, setReserveOpen] = useState(false)
   // New sale window. A USB scanner works inside it.
   const [saleOpen, setSaleOpen] = useState(false)
@@ -257,6 +269,12 @@ function DashboardContent() {
   const [reservationBusy, setReservationBusy] = useState<string | null>(null)
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), [])
+
+  // Release overdue holds once on open, without holding up the page: when
+  // the sweep released anything, reload so stock and reservations show it.
+  useEffect(() => {
+    expireReservations().then((released) => { if (released > 0) refresh() })
+  }, [refresh])
 
   // `now` ticks once a minute so "today" and "3h ago" stay current.
   useEffect(() => {
@@ -272,27 +290,28 @@ function DashboardContent() {
         // Every figure covers at most the last 30 days compared with the 30
         // before, so 60 days of sales is all this page can use.
         const sixtyDayCutoff = daysBefore(startOfDay(new Date()), 60)
-        // Release overdue holds first, so stock and reservations are current.
-        await expireReservations()
+        // What each piece sells for. Optional: without it, items fall back to their price.
+        apiFetch('/api/inventory/units/summary')
+          .then((r) => (r.ok ? r.json() : null))
+          .then((s: { items?: Record<string, ShelfEntry> } | null) => { if (!cancelled && s?.items) setShelf(s.items) })
+          .catch(() => {})
 
-        const [invSnap, salesSnap, resSnap, logsSnap, historySnap, activeResSnap] = await Promise.all([
+        const [invSnap, saleDocs, resSnap, logsSnap, historySnap, activeResSnap] = await Promise.all([
           getDocs(collection(db, 'inventory')),
-          getDocs(query(
-            collection(db, 'sales'),
-            where('createdAt', '>=', Timestamp.fromDate(sixtyDayCutoff)),
-            orderBy('createdAt', 'desc')
-          )),
+          // Days before today are remembered between visits; today's sales
+          // are read fresh (lib/client/readCache).
+          loadSalesBetween(sixtyDayCutoff.getTime(), daysBefore(startOfDay(new Date()), -1).getTime() - 1, 'desc'),
           // Reservations and stock logs are permission-restricted. A refused
           // read degrades to an empty list so the rest of the page still loads.
           // Only the latest few are needed for Recent Activity.
           getDocs(query(collection(db, 'reservations'), orderBy('createdAt', 'desc'), limit(10))).catch(() => null),
           getDocs(query(collection(db, 'stockLogs'), orderBy('createdAt', 'desc'), limit(40))).catch(() => null),
           // Imported notebook history up to today. Optional.
-          getDocs(query(
+          cachedRead(`history:${dayKeyOf(sixtyDayCutoff)}:${dayKeyOf(new Date())}`, 30 * 60_000, () => getDocs(query(
             collection(db, 'salesHistory'),
             where('dateKey', '>=', dayKeyOf(sixtyDayCutoff)),
             where('dateKey', '<=', dayKeyOf(new Date()))
-          )).catch(() => null),
+          ))).catch(() => null),
           // Every active hold, for the Reservations panel (sorted by expiry below).
           getDocs(query(collection(db, 'reservations'), where('status', '==', 'Active'))).catch(() => null),
         ])
@@ -309,13 +328,15 @@ function DashboardContent() {
             reservedStock: Math.max(0, toNum(data.reservedStock)),
             minStock: Math.max(0, toNum(data.minStock)),
             price: Math.max(0, toNum(data.price)),
+            categoryId: typeof data.categoryId === 'string' ? data.categoryId : '',
+            trackingMode: data.trackingMode === 'unit' ? 'unit' as const : data.trackingMode === 'quantity' ? 'quantity' as const : undefined,
             categoryName: String(data.categoryName ?? data.category ?? '').trim() || 'Uncategorized',
             condition: data.condition === 'Refurbished' ? 'Refurbished' : 'New',
             conditionNotes: typeof data.conditionNotes === 'string' ? data.conditionNotes.trim() : '',
             isSingleItem: data.isSingleItem === true,
           }]
         }))
-        setSales(salesSnap.docs.map((d) => {
+        setSales(saleDocs.map((d) => {
           const data = d.data() as Record<string, unknown>
           const items = toLines(data.items)
           return {
@@ -323,6 +344,7 @@ function DashboardContent() {
             items,
             quantity: toNum(data.quantity, items.reduce((s, i) => s + i.quantity, 0)),
             totalAmount: toNum(data.totalAmount),
+            refundedAmount: toNum(data.refundedAmount),
             status: String(data.status ?? 'completed'),
             createdAt: toDate(data.createdAt),
           }
@@ -399,7 +421,8 @@ function DashboardContent() {
     for (const s of completedSales) {
       if (!s.createdAt) continue
       const key = dayKeyOf(s.createdAt)
-      map.set(key, (map.get(key) ?? 0) + s.totalAmount)
+      // What was kept: refunds come off the day the sale was made.
+      map.set(key, (map.get(key) ?? 0) + Math.max(0, s.totalAmount - s.refundedAmount))
     }
     salesHistory.forEach((total, key) => map.set(key, total))
     return map
@@ -431,6 +454,18 @@ function DashboardContent() {
 
   // ── Inventory ─────────────────────────────────────────────────────────────
 
+  // Worth of an item's stock: per-piece items at each piece's price (own price,
+  // or its condition's); held pieces at the item's cheapest condition on the
+  // shelf. Counted items at their price.
+  const valueOf = useCallback((i: InventoryDoc) => {
+    const s = shelf[i.id]
+    if (!s) return i.stock * i.price
+    const priced = s.grades.reduce((n, g) => n + g.count * g.price, 0)
+      + s.ownPriced.reduce((n, g) => n + g.count * (g.minPrice + g.maxPrice) / 2, 0)
+    const heldAt = s.grades.length ? Math.min(...s.grades.map((g) => g.price)) : i.price
+    return priced + s.reserved * heldAt
+  }, [shelf])
+
   const stock = useMemo(() => {
     let low = 0, out = 0, pieces = 0, reserved = 0, value = 0
     for (const i of inventory) {
@@ -439,10 +474,10 @@ function DashboardContent() {
       else if (free <= i.minStock) low++
       pieces += i.stock
       reserved += Math.min(i.reservedStock, i.stock)
-      value += i.stock * i.price
+      value += valueOf(i)
     }
     return { lines: inventory.length, low, out, pieces, reserved, value }
-  }, [inventory])
+  }, [inventory, valueOf])
 
   // Items to restock: out of stock first, then lowest stock relative to minimum.
   const attentionItems = useMemo(() =>
@@ -510,10 +545,12 @@ function DashboardContent() {
       price: i.price,
       condition: i.condition,
       availableStock: Math.max(0, i.stock - i.reservedStock),
+      grades: shelf[i.id]?.grades,
+      trackingMode: i.trackingMode,
       isSingleItem: i.isSingleItem,
       conditionNotes: i.conditionNotes,
     })),
-    [inventory])
+    [inventory, shelf])
 
   // ── Recent activity ───────────────────────────────────────────────────────
 
@@ -624,21 +661,6 @@ function DashboardContent() {
       toast.error('Could not load categories. Please try again.')
     } finally {
       setLoadingCategories(false)
-    }
-  }
-
-  const handleSaveItem = async (values: ProductFormValues) => {
-    if (savingItem) return
-    setSavingItem(true)
-    try {
-      await saveProduct(values, categories)
-      setAddOpen(false)
-      toast.success('Inventory item added successfully.')
-      refresh()
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to save item.')
-    } finally {
-      setSavingItem(false)
     }
   }
 
@@ -848,7 +870,7 @@ function DashboardContent() {
           <section aria-label="Quick actions" className={`shrink-0 p-2.5 ${CARD}`}>
             <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
               <QuickAction onClick={() => setSaleOpen(true)} icon={ShoppingCart} title="New sale" desc="Ring up a sale" hint="or scan any item" tone="primary" />
-              {canAddItem && <QuickAction onClick={openAddItem} busy={loadingCategories} icon={PackagePlus} title="Add item" desc="Put a new item on the shelf" />}
+              {canAddItem && <QuickAction onClick={openAddItem} busy={loadingCategories} icon={PackagePlus} title="Add stock" desc="Put new pieces on the shelf" />}
               {canReserve && <QuickAction onClick={() => setReserveOpen(true)} icon={CalendarPlus} title="Reserve item" desc="Hold stock for a customer" />}
             </div>
           </section>
@@ -857,12 +879,14 @@ function DashboardContent() {
       </div>
 
       {canAddItem && (
-        <ProductModal
+        <ReceiveStockModal
           isOpen={addOpen}
-          onClose={() => { if (!savingItem) setAddOpen(false) }}
-          onSubmit={handleSaveItem}
+          onClose={() => setAddOpen(false)}
           categories={categories}
-          submitting={savingItem}
+          items={inventory.filter((i) => !i.isSingleItem && i.categoryId).map((i) => ({
+            id: i.id, name: i.name, categoryId: i.categoryId, category: i.categoryName, price: i.price, trackingMode: i.trackingMode,
+          }))}
+          onReceived={refresh}
         />
       )}
       <QuickSaleModal

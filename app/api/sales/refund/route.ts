@@ -20,17 +20,30 @@
 // the "how much is left" check, since the sale was read outside any
 // transaction; now the second one re-reads the sale after the first commits
 // and is refused if nothing is left.
+//
+// Unit-tracked lines (lib/inventory/units.ts): the returned pieces go back on
+// the shelf as the same records, with the same codes and labels. A request may
+// name them with unitIds; otherwise the first pieces not yet returned are used.
+// Lines are matched by lineKey, so two lines of one item at different prices
+// (a piece with its own price) are told apart.
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { NextRequest, NextResponse } from 'next/server'
 import { FieldValue } from 'firebase-admin/firestore'
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { getWarrantyDays } from '@/lib/server/storeSettings'
 import { checkPermission, verifiedUid } from '@/lib/server/authorize'
+import { parseUnitLines, type UnitLineRef } from '@/lib/inventory/units'
+import { setUnitsStatus, unitsCollection, parseUnit } from '@/lib/server/units'
 import { getProcessedByInfo } from '@/lib/server/inventory'
+import { forget } from '@/lib/server/readCache'
 
 interface RequestedLine {
   itemId: string
+  /** Which line of the sale; defaults to the item id. */
+  lineKey: string
   quantity: number
+  unitIds: string[]
 }
 
 /** A refusal raised inside the transaction, returned to the caller as is. */
@@ -53,12 +66,15 @@ export async function POST(req: NextRequest) {
 
     const reasonCategory =
       typeof body.reasonCategory === 'string' && body.reasonCategory.trim()
-        ? body.reasonCategory.trim()
+        ? body.reasonCategory.trim().slice(0, INPUT_LIMITS.name)
         : 'Other'
-    const reasonNote = typeof body.reasonNote === 'string' ? body.reasonNote.trim() : ''
+    const reasonNote =
+      typeof body.reasonNote === 'string' ? body.reasonNote.trim().slice(0, INPUT_LIMITS.note) : ''
     // Backwards compatible with the old free-text `reason` field
-    const legacyReason = typeof body.reason === 'string' ? body.reason.trim() : ''
-    const reasonText = [reasonCategory, reasonNote || legacyReason].filter(Boolean).join(' — ')
+    const legacyReason = typeof body.reason === 'string' ? body.reason.trim().slice(0, INPUT_LIMITS.note) : ''
+    const reasonText = [reasonCategory, reasonNote || legacyReason]
+      .filter(Boolean)
+      .join(' — ')
 
     if (!saleId) {
       return NextResponse.json({ error: 'Missing sale ID' }, { status: 400 })
@@ -66,10 +82,17 @@ export async function POST(req: NextRequest) {
 
     const requested: RequestedLine[] = Array.isArray(body.items)
       ? (body.items as Record<string, unknown>[])
-          .map((i) => ({
-            itemId: typeof i.itemId === 'string' ? i.itemId : '',
-            quantity: Math.floor(typeof i.quantity === 'number' ? i.quantity : Number(i.quantity) || 0),
-          }))
+          .map((i) => {
+            const itemId = typeof i.itemId === 'string' ? i.itemId : ''
+            return {
+              itemId,
+              lineKey: typeof i.lineKey === 'string' && i.lineKey ? i.lineKey : itemId,
+              quantity: Math.floor(
+                typeof i.quantity === 'number' ? i.quantity : Number(i.quantity) || 0
+              ),
+              unitIds: Array.isArray(i.unitIds) ? i.unitIds.filter((v): v is string => typeof v === 'string') : [],
+            }
+          })
           .filter((i) => i.itemId && i.quantity > 0)
       : []
     const isPartial = requested.length > 0
@@ -88,20 +111,25 @@ export async function POST(req: NextRequest) {
       if (!saleSnap.exists) throw new RefundError('Sale not found', 404)
 
       const saleData = saleSnap.data() as Record<string, unknown>
-      const currentStatus = typeof saleData.status === 'string' ? saleData.status.toLowerCase() : 'completed'
+      const currentStatus =
+        typeof saleData.status === 'string' ? saleData.status.toLowerCase() : 'completed'
       if (currentStatus === 'refunded') throw new RefundError('This sale has already been fully refunded.')
       if (currentStatus === 'voided') throw new RefundError('Voided sales cannot be refunded.')
 
-      const receiptNumber = typeof saleData.receiptNumber === 'string' ? saleData.receiptNumber : saleId
+      const receiptNumber =
+        typeof saleData.receiptNumber === 'string' ? saleData.receiptNumber : saleId
 
       // Sale lines, including any quantity refunded by previous partial refunds
       const saleLines = (Array.isArray(saleData.items) ? saleData.items : []).map((raw) => {
         const item = raw as Record<string, unknown>
+        const itemId = typeof item.itemId === 'string' ? item.itemId : ''
         return {
           // Everything else on the line is carried through untouched - the
           // sale is rewritten from these lines, and a dropped field is lost.
           raw: item,
-          itemId: typeof item.itemId === 'string' ? item.itemId : '',
+          itemId,
+          lineKey: typeof item.lineKey === 'string' && item.lineKey ? item.lineKey : itemId,
+          unitLines: parseUnitLines(item.unitLines),
           name: typeof item.name === 'string' ? item.name : 'Unknown Item',
           quantity: typeof item.quantity === 'number' ? item.quantity : 1,
           price: typeof item.price === 'number' ? item.price : 0,
@@ -142,24 +170,39 @@ export async function POST(req: NextRequest) {
       }
 
       // ── 3. Resolve which lines to refund ─────────────────────────────────
-      const toRefund: Array<{ itemId: string; name: string; quantity: number; price: number; condition?: string }> = []
+      const toRefund: Array<{
+        itemId: string; lineKey: string; name: string; quantity: number; price: number; condition?: string
+        /** Unit-tracked lines: the pieces coming back. */
+        units: UnitLineRef[]
+      }> = []
+
+      // The pieces of a line still with the customer, named ones first.
+      const returningUnits = (line: (typeof saleLines)[number], quantity: number, named: string[]) => {
+        if (line.unitLines.length === 0) return []
+        const out = line.unitLines.filter((u) => !u.refunded)
+        const chosen = [...out.filter((u) => named.includes(u.unitId)), ...out.filter((u) => !named.includes(u.unitId))]
+        return chosen.slice(0, quantity)
+      }
+
       if (isPartial) {
         for (const r of requested) {
-          const line = saleLines.find((l) => l.itemId === r.itemId)
+          const line =
+            saleLines.find((l) => l.lineKey === r.lineKey) ??
+            saleLines.find((l) => l.itemId === r.itemId && l.quantity - l.refundedQuantity > 0)
           if (!line) throw new RefundError(`Item ${r.itemId} is not part of this sale.`)
-          const already = toRefund.filter((t) => t.itemId === line.itemId).reduce((s, t) => s + t.quantity, 0)
+          const already = toRefund.filter((t) => t.lineKey === line.lineKey).reduce((s, t) => s + t.quantity, 0)
           const remaining = line.quantity - line.refundedQuantity - already
           if (r.quantity > remaining) {
             throw new RefundError(`Cannot refund ${r.quantity} of "${line.name}" — only ${Math.max(0, remaining)} remain${remaining === 1 ? 's' : ''} refundable.`)
           }
-          toRefund.push({ itemId: line.itemId, name: line.name, quantity: r.quantity, price: line.price, condition: line.condition })
+          toRefund.push({ itemId: line.itemId, lineKey: line.lineKey, name: line.name, quantity: r.quantity, price: line.price, condition: line.condition, units: returningUnits(line, r.quantity, r.unitIds) })
         }
       } else {
         // Full refund — everything not yet refunded
         for (const line of saleLines) {
           const remaining = line.quantity - line.refundedQuantity
           if (remaining > 0) {
-            toRefund.push({ itemId: line.itemId, name: line.name, quantity: remaining, price: line.price, condition: line.condition })
+            toRefund.push({ itemId: line.itemId, lineKey: line.lineKey, name: line.name, quantity: remaining, price: line.price, condition: line.condition, units: returningUnits(line, remaining, []) })
           }
         }
       }
@@ -177,17 +220,26 @@ export async function POST(req: NextRequest) {
         round2(total - previousRefundTotal),
       )
 
-      // ── 4. Read every item coming back (all reads before writes) ─────────
+      // ── 4. Read every item and piece coming back (all reads before writes) ─
       const itemIds = Array.from(new Set(toRefund.map((l) => l.itemId).filter(Boolean)))
-      const itemSnaps = await Promise.all(itemIds.map((id) => txn.get(adminDb.collection('inventory').doc(id))))
+      const itemSnaps = new Map(
+        (await Promise.all(itemIds.map((id) => txn.get(adminDb.collection('inventory').doc(id))))).map((s) => [s.id, s])
+      )
+      const unitIds = toRefund.flatMap((l) => l.units.map((u) => u.unitId))
+      const unitSnaps = await Promise.all(unitIds.map((id) => txn.get(unitsCollection().doc(id))))
+      const soldUnits = unitSnaps
+        .filter((us) => us.exists)
+        .map((us) => parseUnit(us.id, us.data() as Record<string, unknown>))
+        .filter((u) => u.status === 'sold')
 
       // ── 5. Restock each item once, and log each line ─────────────────────
       const nowIso = new Date().toISOString()
       const running = new Map<string, { stock: number; reserved: number; condition: unknown }>()
-      for (const snap of itemSnaps) {
-        if (!snap.exists) continue
+      for (const id of itemIds) {
+        const snap = itemSnaps.get(id)
+        if (!snap?.exists) continue
         const d = snap.data() as Record<string, unknown>
-        running.set(snap.id, {
+        running.set(id, {
           stock: typeof d.stock === 'number' ? d.stock : 0,
           reserved: typeof d.reservedStock === 'number' ? d.reservedStock : 0,
           condition: d.condition,
@@ -199,6 +251,9 @@ export async function POST(req: NextRequest) {
         const stockBefore = cur.stock
         const stockAfter = stockBefore + line.quantity
         cur.stock = stockAfter
+        const lineUnits = soldUnits.filter((u) => line.units.some((r) => r.unitId === u.id))
+        setUnitsStatus(txn, lineUnits, 'in_stock', nowIso, { saleId: null })
+        for (const u of lineUnits) txn.update(u.ref, { lastSaleId: saleId, returnedAt: nowIso })
         txn.set(adminDb.collection('stockLogs').doc(), {
           createdAt: FieldValue.serverTimestamp(),
           actionType: 'sale_refund',
@@ -215,7 +270,9 @@ export async function POST(req: NextRequest) {
           userName: actor.name,
           userEmail: actor.email ?? '',
           userId: actor.uid ?? '',
-          remarks: `Refund – ${receiptNumber}: ${reasonText}`,
+          remarks: `Refund – ${receiptNumber}: ${reasonText}` +
+            (lineUnits.length ? ` Units back on the shelf: ${lineUnits.map((u) => '#' + u.unitCode).join(', ')}.` : ''),
+          ...(lineUnits.length ? { unitIds: lineUnits.map((u) => u.id), unitCodes: lineUnits.map((u) => u.unitCode) } : {}),
           refundReasonCategory: reasonCategory,
           referenceId: receiptNumber,
           referenceType: 'refund',
@@ -228,7 +285,8 @@ export async function POST(req: NextRequest) {
 
       // ── 6. Update the sale ───────────────────────────────────────────────
       const updatedItems = saleLines.map((line) => {
-        const refundedQty = toRefund.filter((r) => r.itemId === line.itemId).reduce((s, r) => s + r.quantity, 0)
+        const refundedQty = toRefund.filter((r) => r.lineKey === line.lineKey).reduce((s, r) => s + r.quantity, 0)
+        const returned = new Set(toRefund.filter((r) => r.lineKey === line.lineKey).flatMap((r) => r.units.map((u) => u.unitId)))
         return {
           ...line.raw,
           itemId: line.itemId,
@@ -238,6 +296,9 @@ export async function POST(req: NextRequest) {
           ...(line.condition ? { condition: line.condition } : {}),
           ...(line.categoryId ? { categoryId: line.categoryId } : {}),
           ...(line.categoryName ? { categoryName: line.categoryName } : {}),
+          ...(line.unitLines.length
+            ? { unitLines: line.unitLines.map((u) => (returned.has(u.unitId) ? { ...u, refunded: true } : u)) }
+            : {}),
           refundedQuantity: line.refundedQuantity + refundedQty,
         }
       })
@@ -254,6 +315,8 @@ export async function POST(req: NextRequest) {
       return { fullyRefunded, refundAmount, lines: toRefund.map((l) => ({ name: l.name, quantity: l.quantity })) }
     })
 
+    // A refund changes a past sale: remembered sales reads are out of date.
+    forget('sales:')
     return NextResponse.json({
       success: true,
       partial: !result.fullyRefunded,

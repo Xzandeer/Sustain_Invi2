@@ -16,9 +16,10 @@
 // Actions are permission-gated: canManageInventory for add/edit/adjust,
 // canVoidItems for voiding. Staff without a permission never see the button.
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import Link from 'next/link'
 import { apiFetch } from '@/lib/apiFetch'
-import { Suspense, useEffect, useMemo, useState } from 'react'
+import { Fragment, Suspense, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { collection, onSnapshot } from 'firebase/firestore'
 import { Plus, Tags, Trash2 } from 'lucide-react'
@@ -27,11 +28,15 @@ import { auth, db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import ProductModal, { ProductFormValues } from '@/components/inventory/ProductModal'
 import { saveProduct } from '@/lib/inventory/saveProduct'
-import StockAdjustmentModal from '@/components/inventory/StockAdjustmentModal'
+import StockAdjustmentModal, { type StockAdjustmentValues } from '@/components/inventory/StockAdjustmentModal'
+import UnitsPanel from '@/components/inventory/UnitsPanel'
+import ReceiveStockModal, { type ReceiveTarget } from '@/components/inventory/ReceiveStockModal'
+import { GRADE_LABEL, GRADE_MEANING, GRADE_TONE, UNIT_GRADES, type UnitGrade } from '@/lib/inventory/units'
+import type { TrackingMode } from '@/lib/inventory/units'
 import CategoryModal from '@/components/categories/CategoryModal'
 import { useUserRole } from '@/hooks/useUserRole'
 import { getStockStatus, normalizeInventoryCondition } from '@/lib/server/salesInventoryMetrics'
-import { openLabelPrintWindow } from '@/lib/transactions/labelPrint'
+import { openLabelPrintWindow, openUnitLabelsPrintWindow } from '@/lib/transactions/labelPrint'
 
 // Shape of an inventory row as this page holds it. Lived in a ProductTable
 // component that was never rendered - the table below is inline - so the type
@@ -63,6 +68,8 @@ export interface Product {
   barcode?: string | null
   isSingleItem?: boolean
   conditionNotes?: string
+  /** 'unit' when every piece has its own record - see lib/inventory/units.ts. */
+  trackingMode?: TrackingMode
   createdAtMs?: number
 }
 
@@ -77,6 +84,12 @@ type SortOption =
   | 'price_low' | 'price_high'
   | 'stock_low' | 'stock_high'
   | 'category' | 'category_desc'
+  | 'shelf_long' | 'shelf_short'
+
+/** A piece older than this on the shelf counts as slow-moving. */
+const STALE_DAYS = 60
+
+type TypeFilter = 'all' | 'unit' | 'qty' | 'single'
 
 const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'recent',     label: 'Recently Added' },
@@ -88,6 +101,8 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'stock_low',  label: 'Stock (Low to High)' },
   { value: 'stock_high', label: 'Stock (High to Low)' },
   { value: 'category',   label: 'Category (A\u2013Z)' },
+  { value: 'shelf_long', label: 'Longest on the shelf' },
+  { value: 'shelf_short', label: 'Newest on the shelf' },
 ]
 
 type ColumnKey = 'category' | 'price' | 'stock' | 'reserved' | 'available' | 'condition' | 'status' | 'barcode'
@@ -152,8 +167,11 @@ function InventoryContent() {
     return raw === 'Low Stock' || raw === 'Out of Stock' || raw === 'Available' ? raw : 'all'
   })()
   const [stockStatusFilter, setStockStatusFilter] = useState(initialStatus)
-  // 'stocked' = ordinary items kept in quantity; 'single' = one-off pieces.
-  const [typeFilter, setTypeFilter] = useState<'all' | 'stocked' | 'single'>('all')
+  // unit = tracked per piece; qty = counted only; single = one-off pieces.
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
+  const [staleOnly, setStaleOnly] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
+  const [rowMenuId, setRowMenuId] = useState<string | null>(null)
   const [reservedOnly, setReservedOnly] = useState(false)
   const [minPrice, setMinPrice] = useState('')
   const [maxPrice, setMaxPrice] = useState('')
@@ -203,6 +221,13 @@ function InventoryContent() {
   const [isAdjustmentModalOpen, setIsAdjustmentModalOpen] = useState(false)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
   const [adjustingProduct, setAdjustingProduct] = useState<Product | null>(null)
+  // Item whose pieces are shown under its row.
+  const [unitsProduct, setUnitsProduct] = useState<Product | null>(null)
+  // Receive stock: open, and the item it adds to (null = a new or typed item).
+  const [receiveOpen, setReceiveOpen] = useState(false)
+  const [receiveTarget, setReceiveTarget] = useState<ReceiveTarget | null>(null)
+  // Pieces on the shelf per item and condition (/api/inventory/units/summary).
+  const [shelf, setShelf] = useState<Record<string, { grades: Array<{ grade: UnitGrade; count: number; price: number }>; ownPriced: Array<{ grade: UnitGrade; count: number; minPrice?: number; maxPrice?: number }>; reserved?: number; oldestDays: number | null }>>({})
 
   const [savingProduct, setSavingProduct] = useState(false)
   const [adjustingStock, setAdjustingStock] = useState(false)
@@ -273,6 +298,7 @@ function InventoryContent() {
               barcode: typeof data.barcode === 'string' ? data.barcode : null,
               isSingleItem: data.isSingleItem === true,
               conditionNotes: typeof data.conditionNotes === 'string' ? data.conditionNotes.trim() : '',
+              trackingMode: (data.trackingMode === 'unit' ? 'unit' : 'quantity') as TrackingMode,
               createdAtMs: (() => {
                 const raw = data.createdAt as { seconds?: number } | string | undefined
                 if (raw && typeof raw === 'object' && typeof raw.seconds === 'number') return raw.seconds * 1000
@@ -326,11 +352,24 @@ function InventoryContent() {
         )
       })
       .filter((product) => (categoryFilter === 'all' ? true : product.category === categoryFilter))
-      .filter((product) => (conditionFilter === 'all' ? true : product.condition === conditionFilter))
+      // Condition: items holding at least one piece in it on the shelf; "mixed"
+      // = pieces in two or more conditions. Counted-only items have one
+      // condition (New, or Good for older Refurbished stock).
+      .filter((product) => {
+        if (conditionFilter === 'all') return true
+        const held = product.trackingMode === 'unit'
+          ? new Set([...(shelf[product.id]?.grades ?? []), ...(shelf[product.id]?.ownPriced ?? [])].map((g) => g.grade as string))
+          : new Set([product.condition === 'Refurbished' ? 'Good' : 'New'])
+        return held.has(conditionFilter)
+      })
       .filter((product) => (stockStatusFilter === 'all' ? true : product.stockStatus === stockStatusFilter))
       .filter((product) =>
-        typeFilter === 'all' ? true : typeFilter === 'single' ? product.isSingleItem === true : product.isSingleItem !== true
+        typeFilter === 'all' ? true
+        : typeFilter === 'single' ? product.isSingleItem === true
+        : typeFilter === 'unit' ? product.trackingMode === 'unit' && product.isSingleItem !== true
+        : product.trackingMode !== 'unit' && product.isSingleItem !== true
       )
+      .filter((product) => (staleOnly ? (shelf[product.id]?.oldestDays ?? 0) > STALE_DAYS : true))
       .filter((product) => (reservedOnly ? product.reservedStock > 0 : true))
       .filter((product) =>
         minPriceValue == null || Number.isNaN(minPriceValue) ? true : product.price >= minPriceValue
@@ -339,13 +378,22 @@ function InventoryContent() {
         maxPriceValue == null || Number.isNaN(maxPriceValue) ? true : product.price <= maxPriceValue
       )
       .sort((a, b) => {
+        // What an item sells for: its cheapest / dearest condition on the shelf.
+        const prices = (p: Product) => {
+          const sh = p.trackingMode === 'unit' ? shelf[p.id] : undefined
+          const list = sh ? [...sh.grades.map((g) => g.price), ...sh.ownPriced.flatMap((g) => [g.minPrice ?? 0, g.maxPrice ?? 0]).filter((n) => n > 0)] : []
+          return list.length ? list : [p.price]
+        }
+        const waited = (p: Product) => shelf[p.id]?.oldestDays ?? -1
         switch (sortBy) {
           case 'recent':     return (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0)
           case 'oldest':     return (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0)
           case 'name':       return a.name.localeCompare(b.name)
           case 'name_desc':  return b.name.localeCompare(a.name)
-          case 'price_low':  return a.price - b.price
-          case 'price_high': return b.price - a.price
+          case 'price_low':  return Math.min(...prices(a)) - Math.min(...prices(b))
+          case 'price_high': return Math.max(...prices(b)) - Math.max(...prices(a))
+          case 'shelf_long':  return waited(b) - waited(a)
+          case 'shelf_short': return waited(a) - waited(b)
           case 'stock_low':  return a.quantity - b.quantity
           case 'stock_high': return b.quantity - a.quantity
           case 'category':      return a.category.localeCompare(b.category) || a.name.localeCompare(b.name)
@@ -353,7 +401,7 @@ function InventoryContent() {
           default:           return 0
         }
       })
-  }, [inventory, search, categoryFilter, conditionFilter, stockStatusFilter, typeFilter, reservedOnly, minPrice, maxPrice, voidTab, sortBy])
+  }, [inventory, shelf, search, categoryFilter, conditionFilter, stockStatusFilter, typeFilter, reservedOnly, staleOnly, minPrice, maxPrice, voidTab, sortBy])
 
   const handleSaveProduct = async (values: ProductFormValues) => {
     setError('')
@@ -545,12 +593,7 @@ function InventoryContent() {
     setIsAdjustmentModalOpen(true)
   }
 
-  const handleAdjustStock = async (values: {
-    action: 'add' | 'deduct' | 'transfer'
-    quantity: number
-    targetCondition?: 'New' | 'Refurbished'
-    remarks: string
-  }) => {
+  const handleAdjustStock = async (values: StockAdjustmentValues) => {
     if (!adjustingProduct) return
 
     setAdjustingStock(true)
@@ -569,9 +612,27 @@ function InventoryContent() {
         }),
       })
 
-      const payload = (await response.json()) as { error?: string }
+      const payload = (await response.json()) as {
+        error?: string
+        units?: Array<{ unitCode: string; grade: string }>
+      }
       if (!response.ok) {
         throw new Error(payload.error || 'Failed to adjust stock.')
+      }
+
+      // New pieces each have their own code: offer their labels straight away.
+      const newUnits = payload.units ?? []
+      if (newUnits.length > 0) {
+        const p = adjustingProduct
+        toast.success(`${newUnits.length} new piece${newUnits.length === 1 ? '' : 's'} added with their own codes.`, {
+          action: {
+            label: 'Print labels',
+            onClick: () => openUnitLabelsPrintWindow(
+              { name: p.name, price: p.price, condition: p.condition, categoryName: p.category },
+              newUnits.map((u) => ({ unitCode: u.unitCode, grade: u.grade, price: values.unitPrice ?? null })),
+            ),
+          },
+        })
       }
 
       setIsAdjustmentModalOpen(false)
@@ -593,6 +654,19 @@ function InventoryContent() {
   }
 
   const categoryOptions = useMemo(() => categories, [categories])
+
+  // Pieces per condition, re-read whenever the inventory changes.
+  useEffect(() => {
+    if (!inventory.some((p) => p.trackingMode === 'unit')) return
+    let cancelled = false
+    const t = setTimeout(() => {
+      apiFetch('/api/inventory/units/summary')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (!cancelled && d?.items) setShelf(d.items) })
+        .catch(() => {})
+    }, 250)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [inventory])
   // Unique names: the filter matches by name, so two category documents with
   // the same name must appear once (and would otherwise break React keys).
   const categoryNames = useMemo(
@@ -628,17 +702,37 @@ function InventoryContent() {
   // Clicking cycles asc -> desc -> asc; clicking a different column starts at
   // ascending. The dropdown still works and stays in sync, since both write to
   // the same `sortBy` state.
-  const SORT_PAIRS: Partial<Record<ColumnKey | 'name', [SortOption, SortOption]>> = {
+  const SORT_PAIRS: Partial<Record<ColumnKey | 'name' | 'shelf', [SortOption, SortOption]>> = {
     name:     ['name', 'name_desc'],
     category: ['category', 'category_desc'],
-    price:    ['price_low', 'price_high'],
+    price:    ['price_high', 'price_low'],
     stock:    ['stock_low', 'stock_high'],
+    shelf:    ['shelf_long', 'shelf_short'],
   }
 
   const toggleSort = (col: keyof typeof SORT_PAIRS) => {
     const pair = SORT_PAIRS[col]
     if (!pair) return
     setSortBy(sortBy === pair[0] ? pair[1] : pair[0])
+    setCurrentPage(1)
+  }
+
+  /** A column heading that sorts by its column; the arrow shows the direction. */
+  const sortHead = (label: string, col: keyof typeof SORT_PAIRS, align: 'left' | 'right' = 'left') => {
+    const pair = SORT_PAIRS[col]
+    const on = !!pair && (sortBy === pair[0] || sortBy === pair[1])
+    const second = !!pair && sortBy === pair[1]
+    return (
+      <th className={align === 'right' ? 'px-3 py-2.5 text-right' : 'px-3 py-2.5 text-left'} aria-sort={on ? (second ? 'descending' : 'ascending') : 'none'}>
+        <button type="button" onClick={() => toggleSort(col)} title={`Sort by ${label.toLowerCase()}`}
+          className={`inline-flex items-center gap-1 uppercase tracking-wide transition-colors hover:text-slate-800 ${on ? 'text-blue-600' : ''}`}>
+          {label}
+          <svg aria-hidden className={`h-3 w-3 ${on ? '' : 'text-slate-300'} ${second ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+      </th>
+    )
   }
 
   // '' = not sorted by this column, 'asc' / 'desc' = current direction
@@ -697,20 +791,21 @@ function InventoryContent() {
 
   const hasActiveFilters =
     search.trim() !== '' || categoryFilter !== 'all' || conditionFilter !== 'all' ||
-    stockStatusFilter !== 'all' || typeFilter !== 'all' || reservedOnly ||
+    stockStatusFilter !== 'all' || typeFilter !== 'all' || reservedOnly || staleOnly ||
     minPrice !== '' || maxPrice !== ''
 
   const clearFilters = () => {
     setSearch(''); setCategoryFilter('all'); setConditionFilter('all')
-    setStockStatusFilter('all'); setTypeFilter('all'); setReservedOnly(false)
+    setStockStatusFilter('all'); setTypeFilter('all'); setReservedOnly(false); setStaleOnly(false)
     setMinPrice(''); setMaxPrice('')
   }
 
   // The summary cards double as one-click filters. Clicking the active card
   // again clears it.
-  type QuickKey = 'all' | 'available' | 'low' | 'out' | 'reserved' | 'single'
+  type QuickKey = 'all' | 'available' | 'low' | 'out' | 'reserved' | 'single' | 'stale'
   const activeQuick: QuickKey =
-    reservedOnly ? 'reserved'
+    staleOnly ? 'stale'
+    : reservedOnly ? 'reserved'
     : typeFilter === 'single' ? 'single'
     : stockStatusFilter === 'Available' ? 'available'
     : stockStatusFilter === 'Low Stock' ? 'low'
@@ -724,6 +819,7 @@ function InventoryContent() {
     )
     setReservedOnly(next === 'reserved')
     setTypeFilter(next === 'single' ? 'single' : 'all')
+    setStaleOnly(next === 'stale')
   }
 
   // ── Export CSV ────────────────────────────────────
@@ -751,89 +847,157 @@ function InventoryContent() {
   const formatPrice = (v: number) =>
     v.toLocaleString('en-PH', { style: 'currency', currency: 'PHP', minimumFractionDigits: 2 })
 
-  return (
-    <main className="min-h-[calc(100vh-64px)] bg-slate-50 px-3 py-3 sm:px-5 sm:py-4">
-      <div className="mx-auto max-w-[1400px] space-y-3 sm:space-y-4">
+  // ── Row helpers ───────────────────────────────────────────────────────────
 
-        {/* ── Page header ── */}
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-              <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-              </svg>
-            </div>
-            <div>
-              <h1 className="text-lg font-bold text-slate-900 sm:text-2xl">Inventory</h1>
-              <p className="text-sm text-slate-500">Manage your inventory items and track stock availability.</p>
-            </div>
+  /** One label per piece on the shelf (unit-tracked), or copies of the item code. */
+  const printLabels = async (product: Product) => {
+    if (product.trackingMode === 'unit') {
+      try {
+        const res = await apiFetch(`/api/inventory/${product.id}/units`)
+        const d = (await res.json()) as { data?: Array<{ unitCode: string; grade: string; priceOverride: number | null; status: string }> }
+        const onShelf = (d.data ?? []).filter((u) => u.status === 'in_stock' || u.status === 'reserved')
+        if (onShelf.length === 0) { toast.error('No pieces in the shop to label.'); return }
+        const conditionPrice = new Map((shelf[product.id]?.grades ?? []).map((g) => [g.grade as string, g.price]))
+        openUnitLabelsPrintWindow(
+          { name: product.name, price: product.price, condition: product.condition, categoryName: product.category },
+          onShelf.map((u) => ({ unitCode: u.unitCode, grade: u.grade, price: u.priceOverride ?? conditionPrice.get(u.grade) ?? null })),
+        )
+      } catch {
+        toast.error('Could not load the pieces to label.')
+      }
+      return
+    }
+    if (!product.barcode) {
+      toast.error('This item has no barcode yet. Use More > Assign barcodes first.')
+      return
+    }
+    // One label per unit in stock - every physical item needs its own.
+    openLabelPrintWindow(
+      { name: product.name, barcode: product.barcode, price: product.price, condition: product.condition, categoryName: product.category },
+      Math.max(1, product.quantity)
+    )
+  }
+
+  const openAddFor = (product: Product) => {
+    setReceiveTarget({ id: product.id, name: product.name, categoryId: product.categoryId, category: product.category, price: product.price, trackingMode: product.trackingMode })
+    setReceiveOpen(true)
+  }
+
+  /** Pieces per condition on the shelf, for a unit-tracked item. */
+  const conditionCounts = (product: Product) => {
+    const counts = new Map<UnitGrade, number>()
+    const s = shelf[product.id]
+    s?.grades.forEach((g) => counts.set(g.grade, (counts.get(g.grade) ?? 0) + g.count))
+    s?.ownPriced.forEach((g) => counts.set(g.grade, (counts.get(g.grade) ?? 0) + g.count))
+    return counts
+  }
+
+  /** Lowest to highest shelf price across conditions, or the item price. */
+  const priceText = (product: Product) => {
+    const sh = product.trackingMode === 'unit' ? shelf[product.id] : undefined
+    const prices = sh ? [...sh.grades.map((g) => g.price), ...sh.ownPriced.flatMap((g) => [g.minPrice ?? 0, g.maxPrice ?? 0]).filter((n) => n > 0)] : []
+    if (prices.length === 0) return formatPrice(product.price)
+    const lo = Math.min(...prices), hi = Math.max(...prices)
+    return lo === hi ? formatPrice(lo) : `${formatPrice(hi)} – ${formatPrice(lo)}`
+  }
+
+  const piecesOnSale = sellableInventory.reduce((sum, p) => sum + p.quantity, 0)
+  const piecesReserved = sellableInventory.reduce((sum, p) => sum + Math.min(p.reservedStock, p.quantity), 0)
+  // What the stock would sell for: each piece at its own or its condition's
+  // price; held pieces at the item's cheapest condition; counted items at
+  // their price.
+  const shelfValue = sellableInventory.reduce((sum, p) => {
+    const sh = p.trackingMode === 'unit' ? shelf[p.id] : undefined
+    if (!sh) return sum + p.quantity * p.price
+    const priced = sh.grades.reduce((n, g) => n + g.count * g.price, 0)
+      + sh.ownPriced.reduce((n, g) => n + g.count * (((g.minPrice ?? 0) + (g.maxPrice ?? 0)) / 2), 0)
+    const heldAt = sh.grades.length ? Math.min(...sh.grades.map((g) => g.price)) : p.price
+    return sum + priced + (sh.reserved ?? 0) * heldAt
+  }, 0)
+  const addedText = (ms?: number) => ms ? new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : null
+  const kpiWaiting = sellableInventory.filter((p) => (shelf[p.id]?.oldestDays ?? 0) > STALE_DAYS).length
+
+  const STATUS_BAND: Array<{ key: QuickKey; label: string; value: number; hint?: string; tone: string }> = [
+    { key: 'all', label: 'All items', value: kpiTotal, hint: `${piecesOnSale.toLocaleString('en-PH')} pieces in the shop`, tone: 'text-slate-900' },
+    { key: 'available', label: 'Available', value: kpiAvailable, hint: 'above their minimum', tone: 'text-slate-900' },
+    { key: 'low', label: 'Low stock', value: kpiLowStock, hint: 'at or below minimum', tone: kpiLowStock > 0 ? 'text-amber-600' : 'text-slate-900' },
+    { key: 'out', label: 'Out of stock', value: kpiOutOfStock, hint: 'none left to sell', tone: kpiOutOfStock > 0 ? 'text-red-600' : 'text-slate-900' },
+    { key: 'stale', label: `Waiting ${STALE_DAYS}+ days`, value: kpiWaiting, hint: 'oldest piece unsold', tone: 'text-slate-900' },
+  ]
+
+  const selectCls = (active: boolean) =>
+    `h-8 rounded-lg border bg-white px-2 text-xs focus:outline-none ${active ? 'border-blue-300 text-blue-700' : 'border-slate-200 text-slate-700'}`
+
+  return (
+    <main className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] p-3">
+      <div className="mx-auto flex max-w-[1500px] flex-col gap-2">
+
+        {/* ── Header: the page, its one main action, and the rest under More ── */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">Inventory</h1>
+            {!loading && (
+              <p className="text-xs text-slate-500">
+                <span className="font-semibold tabular-nums text-slate-700">{kpiTotal}</span> items
+                <span className="mx-1.5 text-slate-300">·</span>
+                <span className="font-semibold tabular-nums text-slate-700">{piecesOnSale.toLocaleString('en-PH')}</span> pieces
+                <span className="mx-1.5 text-slate-300">·</span>
+                <span className="font-semibold tabular-nums text-slate-700">{formatPrice(shelfValue)}</span> shelf value
+                {piecesReserved > 0 && (
+                  <>
+                    <span className="mx-1.5 text-slate-300">·</span>
+                    <span className="font-semibold tabular-nums text-blue-600">{piecesReserved}</span> reserved
+                  </>
+                )}
+              </p>
+            )}
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5">
             {canManageInventory && (
               <button
                 onClick={() => setIsCategoryModalOpen(true)}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
+                className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
               >
-                <svg className="h-4 w-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a2 2 0 012-2z" />
-                </svg>
                 Categories
               </button>
             )}
-            {isAdmin && (
+            <div className="relative">
               <button
-                onClick={handleAssignBarcodes}
-                disabled={assigningBarcodes}
-                title="Give a barcode to any item that does not have one yet"
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
+                onClick={() => setMoreOpen((v) => !v)}
+                aria-expanded={moreOpen}
+                className="inline-flex h-9 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
               >
-                <svg className="h-4 w-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v16M8 4v16M12 4v16M16 4v16M20 4v16" />
-                </svg>
-                {assigningBarcodes ? 'Assigning…' : 'Assign Barcodes'}
+                More
+                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
               </button>
-            )}
-            <Link
-              href="/inventory/trash"
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
-            >
-              <svg className="h-4 w-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-              Trash
-            </Link>
+              {moreOpen && (
+                <>
+                  <div className="fixed inset-0 z-20" onClick={() => setMoreOpen(false)} />
+                  <div className="absolute right-0 z-30 mt-1 w-52 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-xs shadow-lg">
+                    <button onClick={() => { setMoreOpen(false); exportCSV() }} className="block w-full px-3 py-2 text-left hover:bg-slate-50">Export CSV</button>
+                    <button onClick={() => { setMoreOpen(false); setVoidTab(voidTab === 'voided' ? 'active' : 'voided'); setCurrentPage(1) }}
+                      className="block w-full px-3 py-2 text-left hover:bg-slate-50">
+                      {voidTab === 'voided' ? 'Back to items on sale' : `Written-off items (${kpiWrittenOff})`}
+                    </button>
+                    <Link href="/inventory/trash" className="block px-3 py-2 hover:bg-slate-50">Trash</Link>
+                  </div>
+                </>
+              )}
+            </div>
             {canManageInventory && (
               <button
-                onClick={() => { setEditingProduct(null); setIsProductModalOpen(true) }}
-                className="inline-flex items-center gap-2 rounded-lg bg-[#1e3a5f] px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#162d4a]"
+                onClick={() => { setReceiveTarget(null); setReceiveOpen(true) }}
+                className="h-9 rounded-lg bg-blue-600 px-3.5 text-xs font-semibold text-white shadow-sm transition hover:bg-blue-700"
               >
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                </svg>
-                Add Inventory Item
+                + Add stock
               </button>
             )}
           </div>
         </div>
 
-        {/* ── Summary cards - each one is also a one-click filter ── */}
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
-          {([
-            { key: 'all', label: 'All items', value: kpiTotal, hint: kpiVoided > 0 ? `${kpiVoided} written off not counted` : 'Everything on sale', tone: 'blue' },
-            { key: 'available', label: 'Available', value: kpiAvailable, hint: 'Above minimum stock', tone: 'emerald' },
-            { key: 'low', label: 'Low stock', value: kpiLowStock, hint: 'At or below minimum', tone: 'amber' },
-            { key: 'out', label: 'Out of stock', value: kpiOutOfStock, hint: 'Needs restocking', tone: 'red' },
-            { key: 'reserved', label: 'Reserved', value: kpiReserved, hint: 'Items with units on hold', tone: 'violet' },
-            { key: 'single', label: 'Single items', value: kpiSingle, hint: 'One-off pieces', tone: 'sky' },
-          ] as const).map((card) => {
-            const tones = {
-              blue: { dot: 'bg-blue-500', ring: 'ring-blue-400 border-blue-300 bg-blue-50/60', num: 'text-slate-900' },
-              emerald: { dot: 'bg-emerald-500', ring: 'ring-emerald-400 border-emerald-300 bg-emerald-50/60', num: 'text-emerald-700' },
-              amber: { dot: 'bg-amber-500', ring: 'ring-amber-400 border-amber-300 bg-amber-50/60', num: 'text-amber-700' },
-              red: { dot: 'bg-red-500', ring: 'ring-red-400 border-red-300 bg-red-50/60', num: 'text-red-600' },
-              violet: { dot: 'bg-violet-500', ring: 'ring-violet-400 border-violet-300 bg-violet-50/60', num: 'text-violet-700' },
-              sky: { dot: 'bg-sky-500', ring: 'ring-sky-400 border-sky-300 bg-sky-50/60', num: 'text-sky-700' },
-            }[card.tone]
+        {/* ── Status band: figures that double as one-click filters ── */}
+        <section className="grid grid-cols-2 divide-slate-200/80 overflow-hidden rounded-xl border border-slate-200/80 bg-white sm:grid-cols-5 sm:divide-x">
+          {STATUS_BAND.map((card) => {
             const active = activeQuick === card.key && voidTab === 'active'
             return (
               <button
@@ -841,533 +1005,277 @@ function InventoryContent() {
                 type="button"
                 onClick={() => applyQuick(card.key)}
                 aria-pressed={active}
-                title={card.key === 'all' ? 'Show all items' : `Show only: ${card.label.toLowerCase()}`}
-                className={`rounded-2xl border bg-white p-3 text-left shadow-sm transition hover:border-slate-300 hover:shadow ${
-                  active ? `ring-2 ${tones.ring}` : 'border-slate-200'
-                }`}
+                className={`relative px-4 py-3 text-left transition ${active ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
               >
-                <p className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
-                  <span className={`h-2 w-2 rounded-full ${tones.dot}`} />
-                  {card.label}
-                </p>
-                <p className={`mt-1 text-2xl font-bold tabular-nums ${card.value > 0 ? tones.num : 'text-slate-300'}`}>
-                  {card.value}
-                </p>
-                <p className="truncate text-[11px] text-slate-400">{card.hint}</p>
+                <p className={`text-[10px] font-semibold uppercase tracking-wide ${active ? 'text-blue-600' : 'text-slate-500'}`}>{card.label}</p>
+                <p className={`mt-0.5 text-2xl font-bold leading-tight tabular-nums ${card.tone}`}>{card.value}</p>
+                {card.hint && <p className="truncate text-[11px] text-slate-400">{card.hint}</p>}
+                {active && <span aria-hidden className="absolute inset-x-0 bottom-0 h-[3px] bg-blue-600" />}
               </button>
             )
           })}
-        </div>
+        </section>
 
-        {/* ── Filters: everything applies as you type or pick ── */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative flex min-w-56 flex-1 items-center">
-              <svg className="absolute left-3 h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        {/* ── One filter row ── */}
+        <section className="rounded-xl border border-slate-200/80 bg-white p-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <div className="relative flex min-w-[220px] flex-1 items-center">
+              <svg className="absolute left-2.5 h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <circle cx="11" cy="11" r="8" /><path strokeLinecap="round" d="M21 21l-4.35-4.35" />
               </svg>
-              <input
+              <input maxLength={INPUT_LIMITS.search}
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search name, category, barcode or condition notes…"
-                className="w-full rounded-lg border border-slate-200 py-2 pl-9 pr-8 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none"
+                placeholder="Search name, category, code or notes"
+                className="h-8 w-full rounded-lg border border-slate-200 pl-8 pr-7 text-xs text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none"
               />
               {search && (
-                <button
-                  type="button"
-                  onClick={() => setSearch('')}
-                  aria-label="Clear search"
-                  className="absolute right-2 rounded p-0.5 text-slate-400 hover:text-slate-600"
-                >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                <button type="button" onClick={() => setSearch('')} aria-label="Clear search" className="absolute right-1.5 rounded p-0.5 text-slate-400 hover:text-slate-600">
+                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
               )}
             </div>
-            <select
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-              aria-label="Category"
-              className={`rounded-lg border bg-white px-3 py-2 text-sm focus:outline-none ${categoryFilter !== 'all' ? 'border-blue-300 text-blue-700' : 'border-slate-200 text-slate-700'}`}
-            >
+            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} aria-label="Category" className={selectCls(categoryFilter !== 'all')}>
               <option value="all">All categories</option>
               {categoryNames.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
-            <select
-              value={conditionFilter}
-              onChange={(e) => setConditionFilter(e.target.value)}
-              aria-label="Condition"
-              className={`rounded-lg border bg-white px-3 py-2 text-sm focus:outline-none ${conditionFilter !== 'all' ? 'border-blue-300 text-blue-700' : 'border-slate-200 text-slate-700'}`}
-            >
+            <select value={conditionFilter} onChange={(e) => setConditionFilter(e.target.value)} aria-label="Condition" className={selectCls(conditionFilter !== 'all')}>
               <option value="all">Any condition</option>
-              <option value="New">New</option>
-              <option value="Refurbished">Refurbished</option>
+              {UNIT_GRADES.map((g) => <option key={g} value={g}>{GRADE_LABEL[g]}</option>)}
             </select>
-            <select
-              value={stockStatusFilter}
-              onChange={(e) => setStockStatusFilter(e.target.value)}
-              aria-label="Stock status"
-              className={`rounded-lg border bg-white px-3 py-2 text-sm focus:outline-none ${stockStatusFilter !== 'all' ? 'border-blue-300 text-blue-700' : 'border-slate-200 text-slate-700'}`}
-            >
-              <option value="all">Any stock status</option>
-              <option value="Available">Available</option>
-              <option value="Low Stock">Low stock</option>
-              <option value="Out of Stock">Out of stock</option>
+            <select value={reservedOnly ? 'reserved' : typeFilter} onChange={(e) => { const v = e.target.value; setReservedOnly(v === 'reserved'); setTypeFilter(v === 'reserved' ? 'all' : (v as TypeFilter)) }} aria-label="Item type" className={selectCls(typeFilter !== 'all')}>
+              <option value="all">All types</option>
+              <option value="unit">Tracked per piece</option>
+              <option value="qty">Counted only</option>
+              <option value="single">One-off pieces</option>
+              <option value="reserved">With reservations</option>
             </select>
-            <select
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value as 'all' | 'stocked' | 'single')}
-              aria-label="Item type"
-              className={`rounded-lg border bg-white px-3 py-2 text-sm focus:outline-none ${typeFilter !== 'all' ? 'border-blue-300 text-blue-700' : 'border-slate-200 text-slate-700'}`}
-            >
-              <option value="all">All item types</option>
-              <option value="stocked">Stocked items</option>
-              <option value="single">Single items</option>
+            <select value={sortBy} onChange={(e) => { setSortBy(e.target.value as SortOption); setCurrentPage(1) }} aria-label="Sort by" className={selectCls(false)}>
+              {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value}>Sort: {o.label}</option>)}
             </select>
-            <div className="flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1">
-              <span className="text-xs text-slate-400">₱</span>
-              <input
-                type="number"
-                min={0}
-                value={minPrice}
-                onChange={(e) => setMinPrice(e.target.value)}
-                placeholder="Min"
-                aria-label="Minimum price"
-                className="w-16 bg-transparent py-1 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none"
-              />
-              <span className="text-xs text-slate-300">–</span>
-              <input
-                type="number"
-                min={0}
-                value={maxPrice}
-                onChange={(e) => setMaxPrice(e.target.value)}
-                placeholder="Max"
-                aria-label="Maximum price"
-                className="w-16 bg-transparent py-1 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none"
-              />
-            </div>
-            <select
-              value={sortBy}
-              onChange={(e) => { setSortBy(e.target.value as SortOption); setCurrentPage(1) }}
-              aria-label="Sort by"
-              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none"
-            >
-              {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>Sort: {o.label}</option>)}
-            </select>
+            <span className="ml-auto flex items-center gap-2 pr-1 text-[11px] text-slate-500">
+              {voidTab === 'voided' && <span className="rounded bg-red-50 px-1.5 py-0.5 font-semibold text-red-600">Written off</span>}
+              {filteredProducts.length} item{filteredProducts.length === 1 ? '' : 's'}
+              {hasActiveFilters && (
+                <button type="button" onClick={clearFilters} className="font-semibold text-blue-600 hover:underline">Clear</button>
+              )}
+            </span>
           </div>
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-            <p className="text-slate-500">
-              Showing <span className="font-semibold text-slate-800">{filteredProducts.length}</span>
-              {' '}of {voidTab === 'active' ? kpiTotal : voidTab === 'voided' ? kpiWrittenOff : inventory.length} item{filteredProducts.length !== 1 ? 's' : ''}
-              {hasActiveFilters ? ' matching your filters' : ''}
-            </p>
-            {hasActiveFilters && (
-              <button
-                type="button"
-                onClick={clearFilters}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium text-blue-600 transition hover:bg-blue-50"
-              >
-                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-                Clear all filters
-              </button>
-            )}
-          </div>
-          {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
-        </div>
+          {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
+        </section>
 
-        {/* ── Inventory List ── */}
-        <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-3 py-3">
-            <div className="flex flex-wrap items-center gap-3">
-              <h2 className="text-base font-semibold text-slate-900">Inventory List</h2>
-              <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-0.5">
-                {(['active', 'voided', 'all'] as const).map((tab) => (
-                  <button
-                    key={tab}
-                    onClick={() => { setVoidTab(tab); setCurrentPage(1) }}
-                    className={`rounded-md px-3 py-1 text-xs font-semibold transition ${
-                      voidTab === tab ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                    }`}
-                  >
-                    {tab === 'active' ? `On sale (${kpiTotal})` : tab === 'voided' ? `Written off (${kpiWrittenOff})` : `All (${inventory.length})`}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={exportCSV}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-              >
-                <svg className="h-4 w-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                </svg>
-                Export
-              </button>
-              <div className="relative">
-                <button
-                  onClick={() => setShowTableOptions(v => !v)}
-                  title="Table options"
-                  className={`flex h-9 w-9 items-center justify-center rounded-lg border transition ${
-                    showTableOptions
-                      ? 'border-blue-300 bg-blue-50 text-blue-600'
-                      : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
-                  }`}
-                >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-                  </svg>
-                </button>
-
-                {showTableOptions && (
-                  <>
-                    {/* click-away backdrop */}
-                    <div className="fixed inset-0 z-20" onClick={() => setShowTableOptions(false)} />
-                    <div className="absolute right-0 z-30 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-3 shadow-lg">
-                      <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Sort By</p>
-                      <select
-                        value={sortBy}
-                        onChange={(e) => { setSortBy(e.target.value as SortOption); setCurrentPage(1) }}
-                        className="mb-3 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm text-slate-800 focus:border-blue-400 focus:outline-none"
-                      >
-                        {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                      </select>
-
-                      <div className="mb-2 flex items-center justify-between">
-                        <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Columns</p>
-                        <button
-                          onClick={() => setVisibleColumns(DEFAULT_COLUMNS)}
-                          className="text-[11px] font-medium text-blue-600 hover:underline"
-                        >
-                          Reset
-                        </button>
-                      </div>
-                      <div className="space-y-0.5">
-                        {COLUMN_LABELS.map(({ key, label }) => (
-                          <label
-                            key={key}
-                            className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm text-slate-700 transition hover:bg-slate-50"
-                          >
-                            <input
-                              type="checkbox"
-                              // ?? false: a preference saved before this column
-                              // existed has no entry for it, and an undefined
-                              // `checked` makes React treat the box as uncontrolled.
-                              checked={visibleColumns[key] ?? false}
-                              onChange={(e) => setVisibleColumns(prev => ({ ...prev, [key]: e.target.checked }))}
-                              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-400"
-                            />
-                            {label}
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-
+        {/* ── The list ── */}
+        <section className="overflow-hidden rounded-xl border border-slate-200/80 bg-white">
           <div className="overflow-x-auto">
             {loading ? (
-              <p className="px-5 py-10 text-center text-sm text-slate-400">Loading products...</p>
+              <p className="px-5 py-10 text-center text-sm text-slate-400">Loading items…</p>
             ) : filteredProducts.length === 0 ? (
               <div className="px-5 py-12 text-center">
                 <p className="text-sm font-medium text-slate-600">No items match your filters.</p>
                 {hasActiveFilters && (
-                  <button
-                    type="button"
-                    onClick={clearFilters}
-                    className="mt-2 text-sm font-medium text-blue-600 hover:underline"
-                  >
-                    Clear all filters
-                  </button>
+                  <button type="button" onClick={clearFilters} className="mt-2 text-sm font-medium text-blue-600 hover:underline">Clear all filters</button>
                 )}
               </div>
             ) : (
-              <table className="w-full text-sm">
-                <thead className="border-b border-slate-100 bg-slate-50 text-xs font-medium text-slate-500">
+              <table className="w-full text-xs">
+                <thead className="border-b border-slate-200 bg-slate-50/70 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                   <tr>
-                    <th className="px-4 py-2.5 text-left">
-                      {(() => { const d = sortDir('name'); return (
-                        <button type="button" onClick={() => toggleSort('name')}
-                          className={`flex items-center gap-1 rounded transition hover:text-slate-900 ${d ? 'text-blue-700 font-semibold' : ''}`} title="Sort by item name">
-                          Item Name
-                          <svg className={`h-3 w-3 transition ${d ? 'text-blue-600' : 'text-slate-300'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d={d === 'desc' ? "M19 14l-7 7m0 0l-7-7m7 7V3" : "M5 10l7-7m0 0l7 7m-7-7v18"} /></svg>
-                        </button>) })()}
-                    </th>
-                    {visibleColumns.category && (
-                    <th className="px-4 py-2.5 text-left">
-                      {(() => { const d = sortDir('category'); return (
-                        <button type="button" onClick={() => toggleSort('category')}
-                          className={`flex items-center gap-1 rounded transition hover:text-slate-900 ${d ? 'text-blue-700 font-semibold' : ''}`} title="Sort by category">
-                          Category
-                          <svg className={`h-3 w-3 transition ${d ? 'text-blue-600' : 'text-slate-300'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d={d === 'desc' ? "M19 14l-7 7m0 0l-7-7m7 7V3" : "M5 10l7-7m0 0l7 7m-7-7v18"} /></svg>
-                        </button>) })()}
-                    </th>)}
-                    {visibleColumns.price && (
-                    <th className="px-4 py-2.5 text-left">
-                      {(() => { const d = sortDir('price'); return (
-                        <button type="button" onClick={() => toggleSort('price')}
-                          className={`flex items-center gap-1 rounded transition hover:text-slate-900 ${d ? 'text-blue-700 font-semibold' : ''}`} title="Sort by price">
-                          Price
-                          <svg className={`h-3 w-3 transition ${d ? 'text-blue-600' : 'text-slate-300'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d={d === 'desc' ? "M19 14l-7 7m0 0l-7-7m7 7V3" : "M5 10l7-7m0 0l7 7m-7-7v18"} /></svg>
-                        </button>) })()}
-                    </th>)}
-                    {visibleColumns.stock && (
-                    <th className="px-4 py-2.5 text-left">
-                      {(() => { const d = sortDir('stock'); return (
-                        <button type="button" onClick={() => toggleSort('stock')}
-                          className={`flex items-center gap-1 rounded transition hover:text-slate-900 ${d ? 'text-blue-700 font-semibold' : ''}`} title="Sort by stock">
-                          Stock
-                          <svg className={`h-3 w-3 transition ${d ? 'text-blue-600' : 'text-slate-300'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d={d === 'desc' ? "M19 14l-7 7m0 0l-7-7m7 7V3" : "M5 10l7-7m0 0l7 7m-7-7v18"} /></svg>
-                        </button>) })()}
-                    </th>)}
-                    {visibleColumns.reserved && (
-                    <th className="px-4 py-2.5 text-left">
-                      <span className="flex items-center gap-1">Reserved
-                        <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                      </span>
-                    </th>)}
-                    {visibleColumns.available && (
-                    <th className="px-4 py-2.5 text-left">
-                      <span className="flex items-center gap-1">Available
-                        <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4" /></svg>
-                      </span>
-                    </th>)}
-                    {visibleColumns.condition && <th className="px-4 py-2.5 text-left">Condition</th>}
-                    {visibleColumns.status && <th className="px-4 py-2.5 text-left">Stock Status</th>}
-                    {visibleColumns.barcode && <th className="px-4 py-2.5 text-left">Barcode</th>}
-                    {/* Only on the Voided tab - the reason is meaningless for active items */}
-                    {voidTab === 'voided' && <th className="px-4 py-2.5 text-left">Write-off Reason</th>}
-                    <th className="px-4 py-2.5 text-left">Actions</th>
+                    <th className="w-8 py-2.5 pl-4" />
+                    {sortHead('Item', 'name')}
+                    <th className="px-3 py-2.5 text-left">{voidTab === 'voided' ? 'Write-off' : 'Pieces by condition'}</th>
+                    {sortHead('Price', 'price', 'right')}
+                    {sortHead('Stock', 'stock')}
+                    {sortHead('On the shelf', 'shelf')}
+                    <th className="w-14 py-2.5 pl-3 pr-4" />
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {paginatedProducts.map((product) => (
-                    <tr
-                      key={product.id}
-                      className={`hover:bg-slate-50 ${
-                        product.isVoided ? 'bg-slate-50/60 text-slate-400'
-                        : product.stockStatus === 'Out of Stock' ? 'bg-red-50/30'
-                        : product.stockStatus === 'Low Stock' ? 'bg-amber-50/30' : ''
-                      }`}
-                    >
-                      {/* Coloured left edge: red = out of stock, amber = low stock. */}
-                      <td className={`px-4 py-3 ${
-                        product.isVoided ? ''
-                        : product.stockStatus === 'Out of Stock' ? 'shadow-[inset_3px_0_0_#ef4444]'
-                        : product.stockStatus === 'Low Stock' ? 'shadow-[inset_3px_0_0_#f59e0b]' : ''
-                      }`}>
-                        <p className="font-medium text-slate-900">
-                          {product.name}
-                          {product.isSingleItem && (
-                            <span className="ml-1.5 inline-flex rounded-full bg-sky-50 px-1.5 py-0.5 align-middle text-[10px] font-semibold text-sky-700 ring-1 ring-inset ring-sky-200">
-                              Single item
-                            </span>
-                          )}
-                        </p>
-                        {!visibleColumns.barcode && product.barcode && (
-                          <p className="font-mono text-[11px] tracking-wider text-slate-400">#{product.barcode}</p>
-                        )}
-                        {product.conditionNotes ? (
-                          <p className="mt-0.5 line-clamp-2 max-w-[300px] text-xs italic text-slate-500" title={product.conditionNotes}>
-                            “{product.conditionNotes}”
-                          </p>
-                        ) : null}
-                      </td>
-                      {visibleColumns.category && <td className="px-4 py-3 text-slate-600">{product.category}</td>}
-                      {visibleColumns.price && <td className="px-4 py-3 font-medium text-slate-800">{formatPrice(product.price)}</td>}
-                      {visibleColumns.stock && (
-                      <td className="px-4 py-3">
-                        {product.isSingleItem ? (
-                          <div>
-                            <p className={`text-sm font-semibold ${product.availableStock > 0 ? 'text-slate-900' : 'text-red-600'}`}>
-                              {product.quantity === 0 ? 'Sold' : product.reservedStock > 0 ? 'On hold' : 'In stock'}
-                            </p>
-                            <p className="text-[11px] text-slate-400">One unit</p>
-                          </div>
-                        ) : (
-                          <div>
-                            <p className={`text-sm font-semibold tabular-nums ${product.quantity > 0 ? 'text-slate-900' : 'text-red-600'}`}>
-                              {product.quantity}
-                            </p>
-                            <p className="text-[11px] text-slate-400">min {product.minStock}</p>
-                          </div>
-                        )}
-                      </td>)}
-                      {visibleColumns.reserved && (
-                      <td className="px-4 py-3">
-                        <span className={product.reservedStock > 0 ? 'font-semibold text-violet-600' : 'text-slate-400'}>
-                          {product.reservedStock}
-                        </span>
-                      </td>)}
-                      {visibleColumns.available && (
-                      <td className="px-4 py-3">
-                        <span className={`font-semibold ${product.availableStock > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                          {product.availableStock}
-                        </span>
-                      </td>)}
-                      {visibleColumns.condition && (
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex rounded-md px-2.5 py-0.5 text-xs font-semibold ${
-                          product.condition === 'New' ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-600'
-                        }`}>
-                          {product.condition}
-                        </span>
-                      </td>)}
-                      {visibleColumns.status && (
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                          product.stockStatus === 'Available'
-                            ? 'bg-emerald-50 text-emerald-700'
-                            : product.stockStatus === 'Low Stock'
-                            ? 'bg-amber-50 text-amber-700'
-                            : 'bg-red-50 text-red-600'
-                        }`}>
-                          <span className={`h-1.5 w-1.5 rounded-full ${
-                            product.stockStatus === 'Available' ? 'bg-emerald-500'
-                            : product.stockStatus === 'Low Stock' ? 'bg-amber-500'
-                            : 'bg-red-500'
-                          }`} />
-                          {product.stockStatus}
-                        </span>
-                      </td>)}
-                      {visibleColumns.barcode && (
-                      <td className="px-4 py-3">
-                        {product.barcode ? (
-                          <span className="font-mono text-xs tracking-wider text-slate-700">
-                            {product.barcode}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-slate-400">—</span>
-                        )}
-                      </td>)}
-                      {voidTab === 'voided' && (
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex rounded-md px-2.5 py-0.5 text-xs font-semibold ${
-                          product.isVoided ? 'bg-red-50 text-red-700' : 'bg-orange-50 text-orange-700'
-                        }`}>
-                          {product.voidReason || 'No reason recorded'}
-                        </span>
-                        <p className="mt-1 text-xs font-medium text-slate-500">
-                          {product.isVoided
-                            ? `Fully voided · ${product.voidedUnits ?? 0} unit${(product.voidedUnits ?? 0) !== 1 ? 's' : ''}`
-                            : `Partly voided · ${product.voidedUnits ?? 0} of ${(product.quantity ?? 0) + (product.voidedUnits ?? 0)} unit${((product.quantity ?? 0) + (product.voidedUnits ?? 0)) !== 1 ? 's' : ''} · still on sale`}
-                        </p>
-                        {product.voidedBy && (
-                          <p className="mt-1 text-xs text-slate-400">
-                            by {product.voidedBy}
-                            {product.voidedAt
-                              ? ` · ${new Date(product.voidedAt).toLocaleDateString('en-PH', {
-                                  month: 'short', day: 'numeric', year: 'numeric',
-                                })}`
-                              : ''}
-                          </p>
-                        )}
-                      </td>)}
-                      <td className="px-4 py-3">
-                        {(canManageInventory || canVoid) ? (
-                          <div className="flex items-center gap-2">
-                            {/* The Voided tab is for managing write-offs, so it offers
-                                only Restore and Void. Editing and stock adjustment
-                                belong on Active, where the item is handled as live
-                                stock.
-                                Fully voided items never show them on any tab: adding
-                                stock to a written-off item would create units that
-                                cannot be sold, and the adjust API rejects it too. */}
-                            {canManageInventory && voidTab !== 'voided' && !product.isVoided && (<>
-                            <button
-                              onClick={() => openEditModal(product)}
-                              title="Edit item"
-                              aria-label={`Edit ${product.name}`}
-                              className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-blue-300 hover:text-blue-600"
-                            >
-                              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                <tbody className="divide-y divide-slate-100">
+                  {paginatedProducts.map((product) => {
+                    const expandable = product.trackingMode === 'unit'
+                    const isOpen = unitsProduct?.id === product.id
+                    const counts = conditionCounts(product)
+                    const out = product.availableStock <= 0 && !product.isVoided
+                    const low = !out && product.stockStatus === 'Low Stock'
+                    const oldest = shelf[product.id]?.oldestDays ?? null
+                    return (
+                      <Fragment key={product.id}>
+                        <tr
+                          onClick={() => { if (expandable) setUnitsProduct(isOpen ? null : product) }}
+                          className={`${expandable ? 'cursor-pointer' : ''} ${isOpen ? 'bg-blue-50/40' : 'hover:bg-slate-50'} ${
+                            product.isVoided ? 'text-slate-400' : out ? 'shadow-[inset_3px_0_0_#ef4444]' : low ? 'shadow-[inset_3px_0_0_#f59e0b]' : ''
+                          }`}
+                        >
+                          <td className="py-3 pl-4 text-slate-400">
+                            {expandable && (
+                              <svg aria-hidden className={`h-3.5 w-3.5 transition-transform ${isOpen ? 'rotate-90 text-blue-600' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                               </svg>
-                            </button>
-                            <button
-                              onClick={() => {
-                                if (!product.barcode) {
-                                  toast.error('This item has no barcode yet. Run Assign Barcodes first.')
-                                  return
-                                }
-                                // One label per unit in stock - every physical
-                                // item needs its own, and they share a code.
-                                openLabelPrintWindow(
-                                  {
-                                    name: product.name,
-                                    barcode: product.barcode,
-                                    price: product.price,
-                                    condition: product.condition,
-                                    categoryName: product.category,
-                                  },
-                                  Math.max(1, product.quantity)
-                                )
-                              }}
-                              title="Print barcode labels"
-                              aria-label={`Print labels for ${product.name}`}
-                              className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-violet-300 hover:text-violet-600"
-                            >
-                              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a1 1 0 001-1v-4a1 1 0 00-1-1H9a1 1 0 00-1 1v4a1 1 0 001 1zM7 7V4a1 1 0 011-1h8a1 1 0 011 1v3" />
-                              </svg>
-                            </button>
-                            <button
-                              onClick={() => openAdjustModal(product)}
-                              title="Adjust stock"
-                              aria-label={`Adjust stock of ${product.name}`}
-                              className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-amber-300 hover:text-amber-600"
-                            >
-                              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                              </svg>
-                            </button>
-                            </>)}
-                            {/* Restore is offered whenever units have been written off,
-                                not only when the whole item was voided. A partly
-                                voided item keeps its Void button too, so more can
-                                be written off if needed. */}
-                            {canVoid && (product.voidedUnits ?? 0) > 0 && !product.isVoided && (
-                              <button
-                                onClick={() => openRestoreModal(product)}
-                                disabled={voidingId === product.id}
-                                title="Restore voided units"
-                                className="flex h-7 items-center gap-1 rounded-lg border border-slate-200 px-2 text-xs font-medium text-slate-500 transition hover:border-emerald-300 hover:text-emerald-600 disabled:opacity-40"
-                              >
-                                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-                                Restore
-                              </button>
                             )}
-                            {canVoid && (product.isVoided ? (
-                              <button
-                                onClick={() => openRestoreModal(product)}
-                                disabled={voidingId === product.id}
-                                title="Restore item"
-                                className="flex h-7 items-center gap-1 rounded-lg border border-slate-200 px-2 text-xs font-medium text-slate-500 transition hover:border-emerald-300 hover:text-emerald-600 disabled:opacity-40"
-                              >
-                                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-                                Restore
-                              </button>
+                          </td>
+                          <td className="px-3 py-3">
+                            <p className="text-[13px] font-semibold text-slate-900">
+                              {product.name}
+                              {product.isSingleItem && <span className="ml-1.5 rounded bg-blue-50 px-1.5 py-px align-middle text-[10px] font-semibold text-blue-600">One-off</span>}
+                              {product.trackingMode !== 'unit' && !product.isSingleItem && <span className="ml-1.5 rounded bg-slate-100 px-1.5 py-px align-middle text-[10px] font-semibold text-slate-500">Counted</span>}
+                            </p>
+                            <p className="text-[11px] text-slate-500">
+                              {product.category}
+                              {product.barcode && <><span className="mx-1 text-slate-300">·</span><span className="tabular-nums">Code {product.barcode}</span></>}
+                            </p>
+                            {product.conditionNotes && (
+                              <p className="max-w-[340px] truncate text-[11px] text-slate-400" title={product.conditionNotes}>{product.conditionNotes}</p>
+                            )}
+                          </td>
+                          <td className="px-3 py-3">
+                            {voidTab === 'voided' ? (
+                              <div>
+                                <span className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${product.isVoided ? 'bg-red-50 text-red-700' : 'bg-orange-50 text-orange-700'}`}>
+                                  {product.voidReason || 'No reason recorded'}
+                                </span>
+                                <p className="mt-1 text-[11px] text-slate-500">
+                                  {product.isVoided ? 'Fully written off' : 'Partly written off, still on sale'} · {product.voidedUnits ?? 0} pcs
+                                  {product.voidedBy ? ` · by ${product.voidedBy}` : ''}
+                                </p>
+                              </div>
+                            ) : product.trackingMode === 'unit' ? (
+                              counts.size === 0 ? <span className="text-[11px] text-slate-400">None on the shelf</span> : (
+                                // One quiet chip per condition: coloured dot, count, name.
+                                <div className="flex flex-wrap gap-1">
+                                  {UNIT_GRADES.filter((g) => counts.has(g)).map((g) => (
+                                    <span key={g} title={`${GRADE_LABEL[g]}: ${GRADE_MEANING[g]}`} className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-600">
+                                      <span className={`h-1.5 w-1.5 rounded-full ${GRADE_TONE[g].dot}`} />
+                                      <span className="font-semibold tabular-nums text-slate-900">{counts.get(g)}</span>{g}
+                                      {(() => {
+                                        const at = shelf[product.id]?.grades.find((x) => x.grade === g)?.price
+                                        return at ? <span className="border-l border-slate-200 pl-1.5 font-semibold tabular-nums text-slate-900">{formatPrice(at)}</span> : null
+                                      })()}
+                                    </span>
+                                  ))}
+                                </div>
+                              )
                             ) : (
-                              <button
-                                onClick={() => setVoidingProduct(product)}
-                                disabled={voidingId === product.id}
-                                title="Write off item"
-                                className="flex h-7 items-center gap-1 rounded-lg border border-slate-200 px-2 text-xs font-medium text-slate-500 transition hover:border-red-300 hover:text-red-600 disabled:opacity-40"
-                              >
-                                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
-                                Write off
-                              </button>
-                            ))}
-                          </div>
-                        ) : (
-                          <span className="text-xs text-slate-400">—</span>
+                              <span className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-600">
+                                <span className={`h-1.5 w-1.5 rounded-full ${product.condition === 'New' ? GRADE_TONE.New.dot : GRADE_TONE.Good.dot}`} />
+                                <span className="font-semibold tabular-nums text-slate-900">{product.quantity}</span>{product.condition === 'New' ? 'New' : 'Used'}
+                              </span>
+                            )}
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">
+                            <p className="text-[13px] font-semibold text-slate-900">{priceText(product)}</p>
+                            {product.trackingMode === 'unit' && (shelf[product.id]?.grades.length ?? 0) > 0 && !shelf[product.id]!.grades.some((g) => g.grade === 'New') && (
+                              <p className="text-[11px] text-slate-400">{formatPrice(product.price)} when New</p>
+                            )}
+                            {product.trackingMode === 'unit' && (shelf[product.id]?.ownPriced.length ?? 0) > 0 && (
+                              <p className="text-[11px] text-slate-400">
+                                {shelf[product.id]!.ownPriced.reduce((n, g) => n + g.count, 0)} with own price
+                              </p>
+                            )}
+                          </td>
+                          <td className="px-3 py-3">
+                            {product.isSingleItem ? (
+                              <p className={`font-semibold ${product.availableStock > 0 ? 'text-slate-900' : 'text-red-600'}`}>
+                                {product.quantity === 0 ? 'Sold' : product.reservedStock > 0 ? 'On hold' : 'In stock'}
+                              </p>
+                            ) : (
+                              <>
+                                <p className="tabular-nums">
+                                  <span className={`text-sm font-bold ${out ? 'text-red-600' : low ? 'text-amber-600' : 'text-slate-900'}`}>{product.availableStock}</span>
+                                  <span className="text-slate-500"> to sell</span>
+                                  {(out || low) && (
+                                    <span className={`ml-1.5 rounded px-1.5 py-px text-[10px] font-semibold ${out ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-700'}`}>{out ? 'Out of stock' : 'Low stock'}</span>
+                                  )}
+                                </p>
+                                <p className="text-[11px] tabular-nums text-slate-400">
+                                  {product.quantity} in the shop
+                                  {product.reservedStock > 0 && <><span className="mx-1 text-slate-300">·</span><span className="text-blue-600">{product.reservedStock} reserved</span></>}
+                                  <span className="mx-1 text-slate-300">·</span>min {product.minStock}
+                                </p>
+                                {(product.voidedUnits ?? 0) > 0 && voidTab !== 'voided' && (
+                                  <p className="text-[11px] tabular-nums text-slate-400">{product.voidedUnits} written off</p>
+                                )}
+                              </>
+                            )}
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-3 tabular-nums">
+                            {oldest !== null ? (
+                              <p className={oldest > STALE_DAYS ? 'font-semibold text-amber-700' : 'text-slate-700'}>
+                                {oldest} day{oldest === 1 ? '' : 's'}
+                                <span className="font-normal text-slate-400"> oldest piece</span>
+                              </p>
+                            ) : (
+                              <p className="text-slate-400">{product.quantity > 0 ? 'Not tracked per piece' : 'Nothing on the shelf'}</p>
+                            )}
+                            {addedText(product.createdAtMs) && <p className="text-[11px] text-slate-400">Added {addedText(product.createdAtMs)}</p>}
+                          </td>
+                          <td className="py-3 pl-3 pr-4 text-right" onClick={(e) => e.stopPropagation()}>
+                            <span className="inline-flex items-center gap-1">
+                              {(canManageInventory || canVoid) && (
+                                <span className="relative">
+                                  <button
+                                    onClick={() => setRowMenuId(rowMenuId === product.id ? null : product.id)}
+                                    aria-label={`More actions for ${product.name}`}
+                                    className="h-7 w-7 rounded-lg border border-slate-200 text-slate-500 transition hover:bg-slate-50"
+                                  >
+                                    ⋯
+                                  </button>
+                                  {rowMenuId === product.id && (
+                                    <>
+                                      <div className="fixed inset-0 z-20" onClick={() => setRowMenuId(null)} />
+                                      <div className="absolute right-0 z-30 mt-1 w-44 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-left text-xs shadow-lg">
+                                        {canManageInventory && !product.isVoided && (
+                                          <>
+                                            {!product.isSingleItem && voidTab !== 'voided' && (
+                                              <button onClick={() => { setRowMenuId(null); openAddFor(product) }} className="block w-full px-3 py-2 text-left font-semibold text-blue-600 hover:bg-slate-50">Add more stock</button>
+                                            )}
+                                            <button onClick={() => { setRowMenuId(null); openEditModal(product) }} className="block w-full px-3 py-2 text-left hover:bg-slate-50">Edit details</button>
+                                            {product.trackingMode !== 'unit' && (
+                                              <>
+                                                <button onClick={() => { setRowMenuId(null); void printLabels(product) }} className="block w-full px-3 py-2 text-left hover:bg-slate-50">Print labels</button>
+                                                <button onClick={() => { setRowMenuId(null); openAdjustModal(product) }} className="block w-full px-3 py-2 text-left hover:bg-slate-50">Adjust stock</button>
+                                              </>
+                                            )}
+                                          </>
+                                        )}
+                                        {canVoid && (product.isVoided || (product.voidedUnits ?? 0) > 0) && (
+                                          <button onClick={() => { setRowMenuId(null); openRestoreModal(product) }} disabled={voidingId === product.id}
+                                            className="block w-full px-3 py-2 text-left text-emerald-700 hover:bg-slate-50 disabled:opacity-40">
+                                            Restore written-off
+                                          </button>
+                                        )}
+                                        {canVoid && !product.isVoided && (
+                                          <button onClick={() => { setRowMenuId(null); setVoidingProduct(product) }} disabled={voidingId === product.id}
+                                            className="block w-full px-3 py-2 text-left text-red-600 hover:bg-slate-50 disabled:opacity-40">
+                                            Write off
+                                          </button>
+                                        )}
+                                        {isAdmin && product.quantity === 0 && product.reservedStock === 0 && (
+                                          <button onClick={() => { setRowMenuId(null); void handleDeleteProduct(product.id) }} disabled={deletingProductId === product.id}
+                                            className="block w-full px-3 py-2 text-left text-red-600 hover:bg-slate-50 disabled:opacity-40">
+                                            Move to trash
+                                          </button>
+                                        )}
+                                      </div>
+                                    </>
+                                  )}
+                                </span>
+                              )}
+                            </span>
+                          </td>
+                        </tr>
+                        {/* The item's pieces, opened by clicking its row. */}
+                        {isOpen && (
+                          <tr>
+                            <td colSpan={7} className="bg-blue-50/20 px-3 pb-3 pt-1">
+                              <div className="ml-8">
+                                <UnitsPanel inline product={product} canEdit={canManageInventory} onClose={() => setUnitsProduct(null)} />
+                              </div>
+                            </td>
+                          </tr>
                         )}
-                      </td>
-                    </tr>
-                  ))}
+                      </Fragment>
+                    )
+                  })}
                 </tbody>
               </table>
             )}
@@ -1375,66 +1283,42 @@ function InventoryContent() {
 
           {/* ── Pagination ── */}
           {filteredProducts.length > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-5 py-3">
-              <div className="flex items-center gap-2 text-sm text-slate-600">
-                <span>Show</span>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-4 py-2 text-[11px] text-slate-500">
+              <span className="flex items-center gap-2">
+                Showing {(currentPage - 1) * itemsPerPage + 1}–{Math.min(currentPage * itemsPerPage, filteredProducts.length)} of {filteredProducts.length} items
                 <select
                   value={itemsPerPage}
                   onChange={(e) => { setItemsPerPage(Number(e.target.value)); setCurrentPage(1) }}
-                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-sm text-slate-700 focus:outline-none"
+                  aria-label="Items per page"
+                  className="rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-700 focus:outline-none"
                 >
-                  {[10, 25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+                  {[10, 25, 50, 100].map((n) => <option key={n} value={n}>{n} per page</option>)}
                 </select>
-                <span>entries</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                  disabled={currentPage === 1}
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50 disabled:opacity-40"
-                >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
-                </button>
+              </span>
+              <span className="flex items-center gap-1">
+                <button onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1}
+                  className="h-7 w-7 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-40" aria-label="Previous page">‹</button>
                 {Array.from({ length: totalPages }, (_, i) => i + 1)
-                  .filter((p) => {
-                    if (totalPages <= 5) return true
-                    if (p === 1 || p === totalPages) return true
-                    if (Math.abs(p - currentPage) <= 1) return true
-                    return false
-                  })
+                  .filter((p) => totalPages <= 5 || p === 1 || p === totalPages || Math.abs(p - currentPage) <= 1)
                   .reduce<Array<number | '...'>>((acc, p, i, arr) => {
                     if (i > 0 && typeof arr[i - 1] === 'number' && (p as number) - (arr[i - 1] as number) > 1) acc.push('...')
                     acc.push(p)
                     return acc
                   }, [])
-                  .map((item, i) =>
-                    item === '...' ? (
-                      <span key={`e-${i}`} className="flex h-8 w-8 items-center justify-center text-slate-400">…</span>
-                    ) : (
-                      <button
-                        key={item}
-                        onClick={() => setCurrentPage(item as number)}
-                        className={`flex h-8 w-8 items-center justify-center rounded-lg border text-sm font-medium transition ${
-                          currentPage === item
-                            ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white'
-                            : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                        }`}
-                      >
-                        {item}
-                      </button>
-                    )
-                  )}
-                <button
-                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                  disabled={currentPage === totalPages}
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50 disabled:opacity-40"
-                >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
-                </button>
-              </div>
+                  .map((item, i) => item === '...' ? (
+                    <span key={`e-${i}`} className="w-5 text-center text-slate-400">…</span>
+                  ) : (
+                    <button key={item} onClick={() => setCurrentPage(item as number)}
+                      className={`h-7 w-7 rounded-md text-[11px] font-semibold ${currentPage === item ? 'bg-[#1a2035] text-white' : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}>
+                      {item}
+                    </button>
+                  ))}
+                <button onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}
+                  className="h-7 w-7 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-40" aria-label="Next page">›</button>
+              </span>
             </div>
           )}
-        </div>
+        </section>
       </div>
 
       <ProductModal
@@ -1455,6 +1339,7 @@ function InventoryContent() {
                 availableStock: editingProduct.availableStock,
                 isSingleItem: editingProduct.isSingleItem === true,
                 conditionNotes: editingProduct.conditionNotes ?? '',
+                trackingMode: editingProduct.trackingMode,
               }
             : undefined
         }
@@ -1469,6 +1354,16 @@ function InventoryContent() {
         onDelete={handleDeleteCategory}
         deletingCategoryId={deletingCategoryId}
         adding={addingCategory}
+      />
+
+      <ReceiveStockModal
+        isOpen={receiveOpen}
+        onClose={() => setReceiveOpen(false)}
+        categories={categoryOptions}
+        items={inventory.filter((p) => !p.isSingleItem).map((p) => ({
+          id: p.id, name: p.name, categoryId: p.categoryId, category: p.category, price: p.price, trackingMode: p.trackingMode,
+        }))}
+        preset={receiveTarget}
       />
 
       <StockAdjustmentModal
@@ -1525,7 +1420,7 @@ function InventoryContent() {
                 min={1}
                 max={maxRestore}
                 value={restoreQty}
-                onChange={(e) => setRestoreQty(Math.floor(Number(e.target.value)))}
+                onChange={(e) => setRestoreQty(Math.min(maxRestore, Math.max(1, Math.floor(Number(e.target.value)) || 1)))}
                 className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-emerald-400 focus:outline-none"
               />
               <p className="mt-1 text-xs text-slate-400">
@@ -1686,7 +1581,7 @@ function VoidModal({
           {reason === 'Other' && (
             <div>
               <label className="mb-1.5 block text-sm font-medium text-slate-700">Describe the reason <span className="text-red-500">*</span></label>
-              <textarea
+              <textarea maxLength={INPUT_LIMITS.note}
                 value={customReason}
                 onChange={(e) => { setCustomReason(e.target.value); setLocalError('') }}
                 rows={3}

@@ -4,7 +4,7 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: oklch(0.98 0.004 255);
+  --background: #F1F5FC;
   --foreground: oklch(0.245 0.026 262);
   --card: oklch(0.995 0.002 255);
   --card-foreground: oklch(0.245 0.026 262);
@@ -75,7 +75,7 @@
 }
 
 @theme inline {
-  --font-sans: 'Geist', 'Geist Fallback';
+  --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'Geist Mono', 'Geist Mono Fallback';
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -131,9 +131,6 @@
   }
   body {
     @apply bg-background text-foreground;
-    background-image:
-      linear-gradient(to bottom, rgba(255,255,255,0.58), rgba(255,255,255,0)),
-      radial-gradient(circle at top, rgba(56, 76, 138, 0.03), transparent 34%);
   }
   ::selection {
     background: color-mix(in oklab, var(--primary) 18%, white);

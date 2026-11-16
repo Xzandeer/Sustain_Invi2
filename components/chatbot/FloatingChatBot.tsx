@@ -3,6 +3,7 @@
 // The floating chat bubble in the corner of every dashboard page.
 // Handles open/close and positioning; the conversation itself lives in ChatBot.
 
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import React, { useEffect, useRef, useState } from 'react'
 import { apiFetch } from '@/lib/apiFetch'
 import { usePathname } from 'next/navigation'
@@ -406,7 +407,7 @@ export default function FloatingChatBot() {
         {/* Input area */}
         <div className="border-t border-slate-100 bg-white px-4 py-3">
           <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-0 transition-all focus-within:border-teal-300 focus-within:bg-white focus-within:ring-2 focus-within:ring-teal-50" style={{ minHeight: '40px' }}>
-            <textarea
+            <textarea maxLength={INPUT_LIMITS.chat}
               ref={inputRef}
               value={input}
               onChange={e => setInput(e.target.value)}
@@ -477,7 +478,7 @@ function ChatHeader({ onClose, onClear, page }: { onClose: () => void; onClear: 
           <JMGLogo size={18} className="text-white" />
         </div>
         <div>
-          <p className="text-sm font-bold text-white leading-tight tracking-wide">JMG Assistant</p>
+          <p className="text-sm font-semibold text-white leading-tight tracking-wide">JMG Assistant</p>
           <div className="flex items-center gap-1.5 mt-0.5">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-300 animate-pulse" />
             <span className="text-[10px] text-white/70 font-medium">
@@ -549,7 +550,7 @@ function FAB({ open, unread, onClick }: { open: boolean; unread: number; onClick
             style={{ animationDuration: '2.5s' }}
           />
           {unread > 0 && (
-            <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white shadow">
+            <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-semibold text-white shadow">
               {unread > 9 ? '9+' : unread}
             </span>
           )}

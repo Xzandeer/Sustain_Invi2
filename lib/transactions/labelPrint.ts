@@ -14,6 +14,7 @@
 
 import type { ReceiptPaperWidth } from '@/lib/transactions/receiptPrint'
 import { getReceiptPaperWidth } from '@/lib/transactions/receiptPrint'
+import { GRADE_LABEL, normalizeUnitGrade } from '@/lib/inventory/units'
 
 export interface LabelItem {
   name: string
@@ -21,6 +22,14 @@ export interface LabelItem {
   price: number
   condition: string
   categoryName?: string
+}
+
+/** One physical piece's label - see lib/inventory/units.ts. */
+export interface UnitLabel {
+  unitCode: string
+  grade: string
+  /** The piece's own price, when it has one. */
+  price?: number | null
 }
 
 // Printable width is narrower than the roll - thermal heads leave a margin.
@@ -69,11 +78,37 @@ export const openLabelPrintWindow = (
         <svg class="bars" jsbarcode-value="${escapeHtml(item.barcode)}"></svg>
       </div>`
 
+  openLabelsWindow(item.name, Array.from({ length: count }, () => label), paperWidth)
+}
+
+/**
+ * One label per physical piece, each with its own code - what a unit-tracked
+ * item needs. Scanning one adds exactly that piece to a sale.
+ */
+export const openUnitLabelsPrintWindow = (
+  item: Omit<LabelItem, 'barcode'>,
+  units: UnitLabel[],
+  paperWidth: ReceiptPaperWidth = getReceiptPaperWidth()
+) => {
+  if (units.length === 0) return
+  const labels = units.slice(0, 200).map((u) => `
+      <div class="label">
+        <div class="name">${escapeHtml(item.name)}</div>
+        <div class="meta">${escapeHtml(GRADE_LABEL[normalizeUnitGrade(u.grade)])}${
+          item.categoryName ? ' · ' + escapeHtml(item.categoryName) : ''
+        } · ${peso(u.price ?? item.price)}</div>
+        <svg class="bars" jsbarcode-value="${escapeHtml(u.unitCode)}"></svg>
+      </div>`)
+  openLabelsWindow(item.name, labels, paperWidth)
+}
+
+const openLabelsWindow = (title: string, labels: string[], paperWidth: ReceiptPaperWidth) => {
+  const paper = PAPER[paperWidth]
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Labels — ${escapeHtml(item.name)}</title>
+  <title>Labels — ${escapeHtml(title)}</title>
   <style>
     @page { size: ${paper.roll} auto; margin: 0; }
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -130,7 +165,7 @@ export const openLabelPrintWindow = (
   </style>
 </head>
 <body>
-  ${Array.from({ length: count }, () => label).join('')}
+  ${labels.join('')}
 
   <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"><\/script>
   <script>

@@ -16,6 +16,7 @@ import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import Sidebar from '@/components/layout/Sidebar'
 import FloatingChatBot from '@/components/chatbot/FloatingChatBot'
+import GlobalScanListener from '@/components/scan/GlobalScanListener'
 import { AI_ASSISTANT_ENABLED } from '@/lib/ai/assistantEnabled'
 
 export default function DashboardLayout({
@@ -72,7 +73,7 @@ export default function DashboardLayout({
         </div>
       )}
 
-      <main className="min-h-screen w-full overflow-y-auto bg-[#f5f6fa] md:ml-52">
+      <main className="min-h-screen w-full overflow-y-auto bg-[#F1F5FC] md:ml-52">
         {/* Phone top bar. Hidden from md up, where the sidebar is always visible. */}
         <div className="sticky top-0 z-30 flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-3 md:hidden">
           <button
@@ -85,13 +86,16 @@ export default function DashboardLayout({
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
             </svg>
           </button>
-          <span className="text-sm font-bold tracking-tight text-slate-900">
+          <span className="text-sm font-semibold tracking-tight text-slate-900">
             JMGs <span className="text-slate-400">JAPAN SURPLUS</span>
           </span>
         </div>
 
         {children}
       </main>
+
+      {/* Scanning an item's code on any page opens a sale with it in the cart. */}
+      <GlobalScanListener />
 
       {/* Switched off - see lib/ai/assistantEnabled.ts for why, and to
           turn it back on. Forecasting does not go through this. */}

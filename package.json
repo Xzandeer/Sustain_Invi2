@@ -5,6 +5,7 @@
   "scripts": {
     "build": "next build",
     "dev": "next dev --webpack",
+    "dev:ca": "node --use-system-ca node_modules/next/dist/bin/next dev --webpack",
     "lint": "eslint .",
     "start": "next start",
     "env:test": "node scripts/use-env.js test",

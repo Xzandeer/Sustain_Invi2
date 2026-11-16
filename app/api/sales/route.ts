@@ -1,4 +1,5 @@
 // Sales API endpoint - POST to create sales, GET to list sales
+import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { NextRequest, NextResponse } from 'next/server'
 import { FieldValue, Timestamp, type Query } from 'firebase-admin/firestore'
 import { getAdminDb } from '@/lib/firebaseAdmin'
@@ -9,6 +10,11 @@ import {
 } from '@/lib/server/inventory'
 import { createTransactionNumber } from '@/lib/server/transactionNumbers'
 import { guardRequest, requireActiveUserRequest } from '@/lib/server/authorize'
+import {
+  describeUnits, isUnitTracked, linesByPrice, parseItemRequests, pickUnitsForParts, readItemUnits, setUnitsStatus, unitPrice,
+  type StoredUnit,
+} from '@/lib/server/units'
+import type { UnitLineRef } from '@/lib/inventory/units'
 import { getStoreSettings } from '@/lib/server/storeSettings'
 import { parseDateRange, toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import {
@@ -44,9 +50,9 @@ const parseCustomerDetails = (input: unknown): CustomerDetails | null => {
   if (!input || typeof input !== 'object') return null
 
   const data = input as Record<string, unknown>
-  const fullName = typeof data.fullName === 'string' ? data.fullName.trim() : ''
-  const email = typeof data.email === 'string' ? data.email.trim() : ''
-  const contactNumber = typeof data.contactNumber === 'string' ? data.contactNumber.trim() : ''
+  const fullName = typeof data.fullName === 'string' ? data.fullName.trim().slice(0, INPUT_LIMITS.name) : ''
+  const email = typeof data.email === 'string' ? data.email.trim().slice(0, INPUT_LIMITS.email) : ''
+  const contactNumber = typeof data.contactNumber === 'string' ? data.contactNumber.trim().slice(0, 15) : ''
 
   return { fullName, email, contactNumber }
 }
@@ -154,36 +160,18 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Step 3: Normalize and validate items (ensure itemId and quantity are valid)
-    const normalizedItems = payloadItems
-      .map((item) => {
-        const record = item as Record<string, unknown>
-        const itemId = typeof record.itemId === 'string' ? record.itemId.trim() : ''
-        const quantity = Math.floor(toNumber(record.quantity, Number.NaN))
-        return { itemId, quantity }
-      })
-      .filter((item) => item.itemId && Number.isFinite(item.quantity) && item.quantity > 0)
-
-    // Step 4: Merge duplicate items (if same itemId appears multiple times, combine quantities)
-    const mergedItems = Array.from(
-      normalizedItems.reduce<Map<string, { itemId: string; quantity: number }>>((result, item) => {
-        const existing = result.get(item.itemId)
-        if (existing) {
-          existing.quantity += item.quantity
-        } else {
-          result.set(item.itemId, { itemId: item.itemId, quantity: item.quantity })
-        }
-
-        return result
-      }, new Map()).values()
-    )
+    // Steps 3-4: One entry per item. A cart can hold one item in several
+    // conditions (each its own price) and scanned pieces; they stay parts of
+    // that item's entry, so its count is updated once.
+    const mergedItems = parseItemRequests(payloadItems)
 
     // Step 5: Require at least one valid item
     if (mergedItems.length === 0) {
       return NextResponse.json({ error: 'Add at least one valid item to continue.' }, { status: 400 })
     }
 
-    // Step 5b: The discount: a peso amount, never negative.
+    // Step 5b: The discount: a peso amount, never negative, never more than the
+    // cart is worth at today's prices (checked again once prices are read).
     const rawDiscount = typeof body.discount === 'number' ? body.discount : Number(body.discount ?? 0)
     if (!Number.isFinite(rawDiscount) || rawDiscount < 0) {
       return NextResponse.json({ error: 'Discount must be zero or more.' }, { status: 400 })
@@ -214,6 +202,8 @@ export async function POST(req: NextRequest) {
     // Step 8: Prepare to track sale line items
     const saleLines: Array<{
       itemId: string
+      /** Tells same-item lines apart (one per price) - refunds match on it. */
+      lineKey: string
       name: string
       quantity: number
       price: number
@@ -221,18 +211,38 @@ export async function POST(req: NextRequest) {
       categoryName: string
       condition: string
       conditionNotes: string
+      /** Unit-tracked items: the exact pieces sold on this line. */
+      unitLines?: UnitLineRef[]
+    }> = []
+    // One entry per item (not per line), for its stock log.
+    const stockMoves: Array<{
+      itemId: string
+      name: string
+      condition: string
+      quantity: number
       stockBefore: number
       stockAfter: number
       reservedBefore: number
       reservedAfter: number
+      units: StoredUnit[]
     }> = []
+
+    // Known before the transaction, so sold units can point at it.
+    const saleRef = getAdminDb().collection('sales').doc()
+
+    // Price by condition, read before the transaction (a read cannot sit inside one).
+    const { gradePricing } = await getStoreSettings()
 
     // Step 9: Atomic transaction - check stock and reduce quantities
     await getAdminDb().runTransaction(async (transaction) => {
       const pendingUpdates: Array<{
         ref: typeof preparedItems[number]['inventoryItem']['ref']
         nextStock: number
+        units: StoredUnit[]
       }> = []
+      // A retried transaction must not repeat lines.
+      saleLines.length = 0
+      stockMoves.length = 0
 
       // Loop through each item in sale
       for (const { requestedItem, inventoryItem } of preparedItems) {
@@ -253,17 +263,27 @@ export async function POST(req: NextRequest) {
         }
 
         const nextStock = currentStock - requestedItem.quantity
+
+        // Unit-tracked: per condition asked for, the scanned pieces then the
+        // oldest on the shelf. Each piece sells at its condition's price (or
+        // its own), so an item can make more than one line - one per price.
+        const units = isUnitTracked(latestData)
+          ? pickUnitsForParts(
+              await readItemUnits(transaction, inventoryItem.id, 'in_stock'),
+              requestedItem.parts,
+              inventoryItem.name
+            )
+          : []
+
         pendingUpdates.push({
           ref: inventoryItem.ref,
           nextStock,
+          units,
         })
 
-        // Record this line item for the sale
-        saleLines.push({
+        const base = {
           itemId: inventoryItem.id,
           name: inventoryItem.name,
-          quantity: requestedItem.quantity,
-          price: inventoryItem.price,
           categoryId: inventoryItem.categoryId,
           categoryName: inventoryItem.categoryName,
           condition: inventoryItem.condition,
@@ -271,10 +291,33 @@ export async function POST(req: NextRequest) {
           // was actually described as when it left the shop, which is what a
           // refund dispute about its condition would turn on.
           conditionNotes: inventoryItem.conditionNotes,
+        }
+        if (units.length > 0) {
+          for (const line of linesByPrice(inventoryItem.id, units, (u) => unitPrice(u, inventoryItem.price, gradePricing))) {
+            saleLines.push({
+              ...base,
+              // New/Refurbished from these pieces' conditions, for older reports.
+              condition: line.condition,
+              lineKey: line.lineKey,
+              quantity: line.quantity,
+              price: line.price,
+              unitLines: line.unitLines,
+            })
+          }
+        } else {
+          saleLines.push({ ...base, lineKey: inventoryItem.id, quantity: requestedItem.quantity, price: inventoryItem.price })
+        }
+
+        stockMoves.push({
+          itemId: inventoryItem.id,
+          name: inventoryItem.name,
+          condition: inventoryItem.condition,
+          quantity: requestedItem.quantity,
           stockBefore: currentStock,
           stockAfter: nextStock,
           reservedBefore: currentReservedStock,
           reservedAfter: currentReservedStock,
+          units,
         })
       }
 
@@ -285,10 +328,12 @@ export async function POST(req: NextRequest) {
           stock: update.nextStock,
           updatedAt: nowIso,
         })
+        setUnitsStatus(transaction, update.units, 'sold', nowIso, { saleId: saleRef.id })
       }
     })
 
-    // Step 10: Totals. The discount never makes the total negative.
+    // Step 10: Totals. The discount was already checked against the subtotal
+    // before any stock moved (see Step 5b).
     const subtotal = round2(saleLines.reduce((sum, item) => sum + item.quantity * item.price, 0))
     const discount = Math.min(requestedDiscount, subtotal)
     const totalAmount = round2(subtotal - discount)
@@ -300,8 +345,7 @@ export async function POST(req: NextRequest) {
     const storeSettings = await getStoreSettings()
     const saleWarrantyDays = storeSettings.warrantyDays
 
-    // Step 11: Create sale document reference and generate unique receipt number
-    const saleRef = getAdminDb().collection('sales').doc()
+    // Step 11: Generate unique receipt number for the sale document
     const numberResult = await createTransactionNumber('sale', saleRef, (numberInfo) => ({
       ...(saleLines.length === 1 ? { itemId: saleLines[0].itemId } : {}),
       id: saleRef.id,
@@ -313,6 +357,7 @@ export async function POST(req: NextRequest) {
       customerSearchEmail: customerDetails.email.toLowerCase(),
       items: saleLines.map((item) => ({
         itemId: item.itemId,
+        ...(item.lineKey !== item.itemId ? { lineKey: item.lineKey } : {}),
         name: item.name,
         quantity: item.quantity,
         price: item.price,
@@ -320,6 +365,7 @@ export async function POST(req: NextRequest) {
         categoryName: item.categoryName,
         condition: item.condition,
         ...(item.conditionNotes ? { conditionNotes: item.conditionNotes } : {}),
+        ...(item.unitLines ? { unitLines: item.unitLines } : {}),
         warrantyDays: saleWarrantyDays,
         status: 'completed',
       })),
@@ -348,7 +394,7 @@ export async function POST(req: NextRequest) {
 
     await Promise.all(
       [
-        ...saleLines.map((item) =>
+        ...stockMoves.map((item) =>
           createStockLog({
             actionType: 'sale_deduction',
             itemId: item.itemId,
@@ -363,7 +409,8 @@ export async function POST(req: NextRequest) {
             reservedAfter: item.reservedAfter,
             user: processedBy,
             relatedId: saleRef.id,
-            remarks: `Sale ${numberResult.value} completed.`,
+            units: item.units.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+            remarks: `Sale ${numberResult.value} completed.` + describeUnits(item.units),
           })
         ),
       ]
@@ -376,7 +423,11 @@ export async function POST(req: NextRequest) {
       price: item.price,
       categoryName: item.categoryName,
       condition: item.condition,
-      ...(item.conditionNotes ? { conditionNotes: item.conditionNotes } : {}),
+      // A unit-tracked line prints each piece's grade and notes, which is what
+      // a later refund about its condition turns on.
+      ...(item.unitLines
+        ? { conditionNotes: item.unitLines.map((u) => `#${u.unitCode} ${u.grade}${u.conditionNotes ? ' - ' + u.conditionNotes : ''}`).join('; ') }
+        : item.conditionNotes ? { conditionNotes: item.conditionNotes } : {}),
       subtotal: item.quantity * item.price,
     }))
 
@@ -443,6 +494,9 @@ export async function POST(req: NextRequest) {
       }
       if (error.message === 'ITEM_NOT_FOUND') {
         return NextResponse.json({ error: 'One or more selected items were not found.' }, { status: 404 })
+      }
+      if (error.message.startsWith('UNITS_UNAVAILABLE:')) {
+        return NextResponse.json({ error: error.message.slice('UNITS_UNAVAILABLE:'.length) }, { status: 409 })
       }
 
       console.error('SALE ERROR:', error)

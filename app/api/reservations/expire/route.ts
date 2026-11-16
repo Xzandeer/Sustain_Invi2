@@ -16,6 +16,8 @@ import { createStockLog } from '@/lib/server/inventory'
 import { toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import { SYSTEM_CANCELLATION_REASON } from '@/lib/reservations/cancellationReasons'
 import { requireActiveUserRequest } from '@/lib/server/authorize'
+import { describeUnits, readHeldUnits, setUnitsStatus, type StoredUnit } from '@/lib/server/units'
+import { normalizeTrackingMode } from '@/lib/inventory/units'
 
 export const dynamic = 'force-dynamic'
 
@@ -25,6 +27,8 @@ interface ReservationItemRecord {
   quantity: number
   price: number
   condition: 'New' | 'Refurbished'
+  /** The exact pieces held (lib/inventory/units.ts). */
+  unitIds: string[]
 }
 
 const parseReservationItems = (items: unknown): ReservationItemRecord[] => {
@@ -40,7 +44,10 @@ const parseReservationItems = (items: unknown): ReservationItemRecord[] => {
       const condition = record.condition === 'Refurbished' ? 'Refurbished' : 'New'
 
       if (!id || !name || quantity <= 0) return null
-      return { id, name, quantity, price, condition }
+      const unitIds = Array.isArray(record.unitIds)
+        ? record.unitIds.filter((v): v is string => typeof v === 'string' && v.length > 0)
+        : []
+      return { id, name, quantity, price, condition, unitIds }
     })
     .filter((item): item is ReservationItemRecord => item !== null)
 }
@@ -99,6 +106,7 @@ export async function POST(req: NextRequest) {
         currentStock: number
         currentReservedStock: number
         nextReservedStock: number
+        units: StoredUnit[]
       }> = []
 
       try {
@@ -122,6 +130,7 @@ export async function POST(req: NextRequest) {
             currentReservedStock: number
             availableBefore: number
             nextReservedStock: number
+            units: StoredUnit[]
           }> = []
 
           for (const item of reservationItems) {
@@ -139,6 +148,11 @@ export async function POST(req: NextRequest) {
               throw new Error('INVALID_RESERVED_STOCK')
             }
 
+            // Held pieces go back on the shelf with the count.
+            const units = normalizeTrackingMode(inventoryData.trackingMode) === 'unit'
+              ? await readHeldUnits(transaction, item.id, reservationId, item.unitIds)
+              : []
+
             releases.push({
               ref: inventoryRef,
               item,
@@ -146,6 +160,7 @@ export async function POST(req: NextRequest) {
               currentReservedStock,
               availableBefore,
               nextReservedStock,
+              units,
             })
           }
 
@@ -156,6 +171,7 @@ export async function POST(req: NextRequest) {
               reservedStock: r.nextReservedStock,
               updatedAt: nowIso,
             })
+            setUnitsStatus(transaction, r.units, 'in_stock', nowIso)
 
             pendingLogs.push({
               itemId: r.item.id,
@@ -166,6 +182,7 @@ export async function POST(req: NextRequest) {
               currentStock: r.currentStock,
               currentReservedStock: r.currentReservedStock,
               nextReservedStock: r.nextReservedStock,
+              units: r.units,
             })
           }
 
@@ -195,7 +212,8 @@ export async function POST(req: NextRequest) {
               reservedAfter: log.nextReservedStock,
               user: SYSTEM_USER,
               relatedId: reservationId,
-              remarks: `Reservation expired - ${SYSTEM_CANCELLATION_REASON}`,
+              units: log.units.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+              remarks: `Reservation expired - ${SYSTEM_CANCELLATION_REASON}` + describeUnits(log.units),
             })
           )
         )

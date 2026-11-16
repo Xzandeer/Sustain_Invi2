@@ -9,8 +9,10 @@
 // that applied on the day it was made, so past transactions keep the window
 // the customer was actually promised.
 
+import { INPUT_LIMITS, clampIntegerInput } from '@/lib/constants/limits'
 import { useState, useEffect } from 'react'
 import { checkPassword, PASSWORD_RULE_HINT } from '@/lib/auth/passwordPolicy'
+import { DEFAULT_GRADE_PRICING, GRADE_LABEL, GRADE_MEANING, UNIT_GRADES, GRADE_TONE, type GradePricing } from '@/lib/inventory/units'
 import { apiFetch } from '@/lib/apiFetch'
 import {
   EmailAuthProvider,
@@ -62,6 +64,8 @@ function SettingsContent() {
   // Store policy state
   const [warrantyDays, setWarrantyDays] = useState('7')
   const [reservationDays, setReservationDays] = useState('7')
+  // Price by condition - share of an item's base price, per condition.
+  const [gradePricing, setGradePricing] = useState<GradePricing>({ ...DEFAULT_GRADE_PRICING })
   const [policyLoading, setPolicyLoading] = useState(false)
   const [policyError, setPolicyError] = useState('')
   const [policySuccess, setPolicySuccess] = useState('')
@@ -159,6 +163,7 @@ function SettingsContent() {
           if (typeof d.warrantyDays === 'number') setWarrantyDays(String(d.warrantyDays))
           if (typeof d.reservationDays === 'number') setReservationDays(String(d.reservationDays))
           if (typeof d.lastBackupAt === 'string') setLastBackupAt(d.lastBackupAt)
+          if (d.gradePricing && typeof d.gradePricing === 'object') setGradePricing(d.gradePricing as GradePricing)
         }
       })
       .catch(() => {})
@@ -175,6 +180,7 @@ function SettingsContent() {
         body: JSON.stringify({
           warrantyDays: Number(warrantyDays),
           reservationDays: Number(reservationDays),
+          gradePricing,
           requestedByUid: auth.currentUser?.uid ?? '',
           updatedByEmail: auth.currentUser?.email ?? '',
         }),
@@ -183,6 +189,7 @@ function SettingsContent() {
       if (!res.ok) throw new Error(data.error || 'Failed to save.')
       setWarrantyDays(String(data.warrantyDays))
       if (typeof data.reservationDays === 'number') setReservationDays(String(data.reservationDays))
+      if (data.gradePricing) setGradePricing(data.gradePricing as GradePricing)
       setPolicySuccess('Store policy updated.')
     } catch (err) {
       setPolicyError(err instanceof Error ? err.message : 'Failed to save settings.')
@@ -267,7 +274,7 @@ function SettingsContent() {
   }
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-slate-100 px-4 py-8 sm:px-6 lg:px-8">
+    <main className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-4 py-8 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-[1700px] space-y-6">
 
         {/* Page header */}
@@ -279,7 +286,7 @@ function SettingsContent() {
             </svg>
           </div>
           <div>
-            <h1 className="text-lg font-bold text-slate-900 sm:text-2xl">Settings</h1>
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">Settings</h1>
             <p className="mt-0.5 text-sm text-slate-500">Manage your account preferences.</p>
           </div>
         </header>
@@ -290,7 +297,7 @@ function SettingsContent() {
           {/* Left nav */}
           <aside className="w-52 shrink-0 rounded-xl border bg-white shadow-sm overflow-hidden">
             <div className="px-3 py-3">
-              <p className="px-3 pb-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-400">Account</p>
+              <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-400">Account</p>
               {navItems.map((item) => (
                 <button
                   key={item.key}
@@ -315,7 +322,7 @@ function SettingsContent() {
             {activeSection === 'profile' && (
               <section className="rounded-xl border bg-white shadow-sm">
                 <div className="border-b border-slate-100 px-6 py-4">
-                  <h2 className="text-base font-bold text-slate-900">Profile</h2>
+                  <h2 className="text-base font-semibold text-slate-900">Profile</h2>
                   <p className="mt-0.5 text-sm text-slate-500">Update your display name.</p>
                 </div>
                 <div className="px-6 py-6">
@@ -332,7 +339,7 @@ function SettingsContent() {
                   <form onSubmit={handleUpdateProfile} className="max-w-md space-y-4">
                     <div>
                       <label className="mb-1.5 block text-xs font-semibold text-slate-600">Full Name</label>
-                      <input
+                      <input maxLength={INPUT_LIMITS.name}
                         type="text"
                         value={name}
                         onChange={e => setName(e.target.value)}
@@ -342,7 +349,7 @@ function SettingsContent() {
                     </div>
                     <div>
                       <label className="mb-1.5 block text-xs font-semibold text-slate-600">Email Address</label>
-                      <input
+                      <input maxLength={INPUT_LIMITS.email}
                         type="email"
                         value={email}
                         disabled
@@ -368,7 +375,7 @@ function SettingsContent() {
             {activeSection === 'password' && (
               <section className="rounded-xl border bg-white shadow-sm">
                 <div className="border-b border-slate-100 px-6 py-4">
-                  <h2 className="text-base font-bold text-slate-900">Change Password</h2>
+                  <h2 className="text-base font-semibold text-slate-900">Change Password</h2>
                   <p className="mt-0.5 text-sm text-slate-500">Enter your current password to set a new one.</p>
                 </div>
                 <div className="px-6 py-6">
@@ -385,7 +392,7 @@ function SettingsContent() {
                   <form onSubmit={handleChangePassword} className="max-w-md space-y-4">
                     <div>
                       <label className="mb-1.5 block text-xs font-semibold text-slate-600">Current Password</label>
-                      <input
+                      <input maxLength={INPUT_LIMITS.password}
                         type="password"
                         value={current}
                         onChange={e => setCurrent(e.target.value)}
@@ -395,7 +402,7 @@ function SettingsContent() {
                     </div>
                     <div>
                       <label className="mb-1.5 block text-xs font-semibold text-slate-600">New Password</label>
-                      <input
+                      <input maxLength={INPUT_LIMITS.password}
                         type="password"
                         value={newPw}
                         onChange={e => setNewPw(e.target.value)}
@@ -406,7 +413,7 @@ function SettingsContent() {
                     </div>
                     <div>
                       <label className="mb-1.5 block text-xs font-semibold text-slate-600">Confirm New Password</label>
-                      <input
+                      <input maxLength={INPUT_LIMITS.password}
                         type="password"
                         value={confirm}
                         onChange={e => setConfirm(e.target.value)}
@@ -432,7 +439,7 @@ function SettingsContent() {
             {activeSection === 'policy' && isAdmin && (
               <section className="rounded-xl border bg-white shadow-sm">
                 <div className="border-b border-slate-100 px-6 py-4">
-                  <h2 className="text-base font-bold text-slate-900">Store Policy</h2>
+                  <h2 className="text-base font-semibold text-slate-900">Store Policy</h2>
                   <p className="mt-0.5 text-sm text-slate-500">
                     Set the store-wide rules applied to every transaction.
                   </p>
@@ -459,7 +466,7 @@ function SettingsContent() {
                           min={0}
                           max={365}
                           value={warrantyDays}
-                          onChange={(e) => setWarrantyDays(e.target.value)}
+                          onChange={(e) => setWarrantyDays(clampIntegerInput(e.target.value, String(warrantyDays), 365))}
                           required
                           className="w-32 rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                         />
@@ -481,7 +488,7 @@ function SettingsContent() {
                           min={1}
                           max={90}
                           value={reservationDays}
-                          onChange={(e) => setReservationDays(e.target.value)}
+                          onChange={(e) => setReservationDays(clampIntegerInput(e.target.value, String(reservationDays), 90))}
                           required
                           className="w-32 rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                         />
@@ -491,6 +498,39 @@ function SettingsContent() {
                         Stock is held for a customer for this long. After that the hold
                         lapses and the units return to available stock. An active hold can
                         be extended, and a lapsed one reinstated if the stock is still there.
+                      </p>
+                    </div>
+
+                    {/* Price by condition. Each piece sells at this share of its
+                        item's base price unless it has a price of its own. */}
+                    <div>
+                      <label className="mb-1.5 block text-xs font-semibold text-slate-600">
+                        Price by Condition
+                      </label>
+                      <div className="overflow-hidden rounded-xl border border-slate-200">
+                        {UNIT_GRADES.map((g) => (
+                          <div key={g} className="flex items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 last:border-0">
+                            <span className="min-w-0 text-sm text-slate-700">
+                              <span className="flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${GRADE_TONE[g].dot}`} />{GRADE_LABEL[g]}</span>
+                              <span className="block pl-4 text-[11px] text-slate-400">{GRADE_MEANING[g]}</span>
+                            </span>
+                            <span className="flex items-center gap-2">
+                              <input
+                                type="number"
+                                min={1}
+                                max={100}
+                                value={gradePricing[g]}
+                                onChange={(e) => setGradePricing((cur) => ({ ...cur, [g]: Math.min(100, Math.max(0, Math.floor(Number(e.target.value)) || 0)) }))}
+                                className="w-20 rounded-lg border border-slate-300 px-2 py-1.5 text-right text-sm tabular-nums outline-none focus:border-blue-500"
+                              />
+                              <span className="w-24 text-xs text-slate-500">% · ₱1,000 → ₱{Math.round(1000 * (gradePricing[g] || 0) / 100).toLocaleString('en-PH')}</span>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-xs text-slate-500">
+                        A piece sells at this share of its item&apos;s base price. A piece given its own
+                        price keeps it. Changing these updates shelf prices of pieces without their own price.
                       </p>
                     </div>
 
@@ -551,7 +591,7 @@ function SettingsContent() {
             {activeSection === 'backup' && isAdmin && (
               <section className="rounded-xl border bg-white shadow-sm">
                 <div className="border-b border-slate-100 px-6 py-4">
-                  <h2 className="text-base font-bold text-slate-900">Data Backup</h2>
+                  <h2 className="text-base font-semibold text-slate-900">Data Backup</h2>
                   <p className="mt-0.5 text-sm text-slate-500">
                     Download a complete copy of the store&apos;s records, or restore one.
                   </p>
