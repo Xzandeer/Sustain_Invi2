@@ -193,7 +193,7 @@ export default function UnitInsights() {
                           </p>
                         </div>
                         <span className={`shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold tabular-nums ${slow ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>
-                          {s.days}d
+                          {s.days} {s.days === 1 ? 'day' : 'days'}
                         </span>
                       </li>
                     )
