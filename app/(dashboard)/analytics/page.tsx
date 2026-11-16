@@ -1147,6 +1147,9 @@ function AnalyticsContent() {
   // safe for both live and seeded data.
   const rangeStartMs = activeRange.start.getTime()
   const rangeEndMs = activeRange.end.getTime()
+  // The cards compare with the period of the same length just before, so its
+  // sales are loaded too. (Without them every "vs last period" read 0.0%.)
+  const loadFromMs = getPreviousPeriodRange(activeRange.start, activeRange.end).start.getTime()
 
   useEffect(() => {
     let cancelled = false
@@ -1155,7 +1158,7 @@ function AnalyticsContent() {
       setSalesLoading(true)
       try {
         // Days before today are remembered between visits (lib/client/readCache).
-        const saleDocs = await loadSalesBetween(rangeStartMs, rangeEndMs)
+        const saleDocs = await loadSalesBetween(loadFromMs, rangeEndMs)
         if (cancelled) return
 
         // Every figure on this page is what the shop kept:
@@ -1217,7 +1220,7 @@ function AnalyticsContent() {
 
     loadSales()
     return () => { cancelled = true }
-  }, [rangeStartMs, rangeEndMs])
+  }, [loadFromMs, rangeEndMs])
 
   // Reservations made in the selected range. This used to read every
   // reservation ever made on each visit, a cost that only grew. Restricted to
