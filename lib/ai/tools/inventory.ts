@@ -171,7 +171,7 @@ export async function getOutOfStockItems(): Promise<string> {
   const items = snap.docs
     .map(d => ({ id: d.id, ...d.data() } as Record<string, unknown>))
     .filter(d => !d.isDeleted && !d.isVoided && toNum(d.stock) === 0)
-    .map(d => `• ${d.name} (${d.categoryName ?? 'Unknown'}) — price when New: ${fmt(toNum(d.price))}`)
+    .map(d => `• ${d.name} (${d.categoryName ?? 'Unknown'}) — price: ${fmt(toNum(d.price))}`)
 
   const result = items.length === 0
     ? 'Great news — no items are completely out of stock.'

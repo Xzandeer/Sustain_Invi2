@@ -12,7 +12,6 @@
 import { INPUT_LIMITS, clampIntegerInput } from '@/lib/constants/limits'
 import { useState, useEffect } from 'react'
 import { checkPassword, PASSWORD_RULE_HINT } from '@/lib/auth/passwordPolicy'
-import { DEFAULT_GRADE_PRICING, GRADE_LABEL, GRADE_MEANING, UNIT_GRADES, GRADE_TONE, type GradePricing } from '@/lib/inventory/units'
 import { apiFetch } from '@/lib/apiFetch'
 import {
   EmailAuthProvider,
@@ -64,8 +63,6 @@ function SettingsContent() {
   // Store policy state
   const [warrantyDays, setWarrantyDays] = useState('7')
   const [reservationDays, setReservationDays] = useState('7')
-  // Price by condition - share of an item's base price, per condition.
-  const [gradePricing, setGradePricing] = useState<GradePricing>({ ...DEFAULT_GRADE_PRICING })
   const [policyLoading, setPolicyLoading] = useState(false)
   const [policyError, setPolicyError] = useState('')
   const [policySuccess, setPolicySuccess] = useState('')
@@ -163,7 +160,6 @@ function SettingsContent() {
           if (typeof d.warrantyDays === 'number') setWarrantyDays(String(d.warrantyDays))
           if (typeof d.reservationDays === 'number') setReservationDays(String(d.reservationDays))
           if (typeof d.lastBackupAt === 'string') setLastBackupAt(d.lastBackupAt)
-          if (d.gradePricing && typeof d.gradePricing === 'object') setGradePricing(d.gradePricing as GradePricing)
         }
       })
       .catch(() => {})
@@ -180,7 +176,6 @@ function SettingsContent() {
         body: JSON.stringify({
           warrantyDays: Number(warrantyDays),
           reservationDays: Number(reservationDays),
-          gradePricing,
           requestedByUid: auth.currentUser?.uid ?? '',
           updatedByEmail: auth.currentUser?.email ?? '',
         }),
@@ -189,7 +184,6 @@ function SettingsContent() {
       if (!res.ok) throw new Error(data.error || 'Failed to save.')
       setWarrantyDays(String(data.warrantyDays))
       if (typeof data.reservationDays === 'number') setReservationDays(String(data.reservationDays))
-      if (data.gradePricing) setGradePricing(data.gradePricing as GradePricing)
       setPolicySuccess('Store policy updated.')
     } catch (err) {
       setPolicyError(err instanceof Error ? err.message : 'Failed to save settings.')
@@ -498,39 +492,6 @@ function SettingsContent() {
                         Stock is held for a customer for this long. After that the hold
                         lapses and the units return to available stock. An active hold can
                         be extended, and a lapsed one reinstated if the stock is still there.
-                      </p>
-                    </div>
-
-                    {/* Price by condition. Each piece sells at this share of its
-                        item's base price unless it has a price of its own. */}
-                    <div>
-                      <label className="mb-1.5 block text-xs font-semibold text-slate-600">
-                        Price by Condition
-                      </label>
-                      <div className="overflow-hidden rounded-xl border border-slate-200">
-                        {UNIT_GRADES.map((g) => (
-                          <div key={g} className="flex items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 last:border-0">
-                            <span className="min-w-0 text-sm text-slate-700">
-                              <span className="flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${GRADE_TONE[g].dot}`} />{GRADE_LABEL[g]}</span>
-                              <span className="block pl-4 text-[11px] text-slate-400">{GRADE_MEANING[g]}</span>
-                            </span>
-                            <span className="flex items-center gap-2">
-                              <input
-                                type="number"
-                                min={1}
-                                max={100}
-                                value={gradePricing[g]}
-                                onChange={(e) => setGradePricing((cur) => ({ ...cur, [g]: Math.min(100, Math.max(0, Math.floor(Number(e.target.value)) || 0)) }))}
-                                className="w-20 rounded-lg border border-slate-300 px-2 py-1.5 text-right text-sm tabular-nums outline-none focus:border-blue-500"
-                              />
-                              <span className="w-24 text-xs text-slate-500">% · ₱1,000 → ₱{Math.round(1000 * (gradePricing[g] || 0) / 100).toLocaleString('en-PH')}</span>
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                      <p className="mt-2 text-xs text-slate-500">
-                        A piece sells at this share of its item&apos;s base price. A piece given its own
-                        price keeps it. Changing these updates shelf prices of pieces without their own price.
                       </p>
                     </div>
 

@@ -3,12 +3,12 @@
 // Add stock - a batch of pieces, each in its own condition.
 //
 // Three panels, left to right:
-//   1. Batch   - the item, how many pieces arrived and the price when New.
+//   1. Batch   - the item, how many pieces arrived and their price.
 //   2. Pieces  - one card per piece. They all start in the same condition;
 //                select the ones that differ and set their condition, a note
 //                or an exact price from the bar that appears.
 //   3. Check   - the batch by condition with its value, then save.
-// Prices follow the condition (Settings: price by condition) unless a piece is
+// Every piece sells at the batch price, whatever its condition, unless a piece is
 // given an exact price. Saving creates one record per piece
 // (lib/inventory/units.ts) and can print their labels.
 //
@@ -201,7 +201,7 @@ export default function ReceiveStockModal({ isOpen, onClose, categories, items, 
     if (!existing && (!name.trim() || !categoryId)) { toast.error('Enter the item name and category.'); return }
     if (n <= 0) { toast.error('Enter how many pieces arrived.'); return }
     if (n > MAX_STOCK) { toast.error(`Add at most ${MAX_STOCK} pieces at a time.`); return }
-    if (base <= 0) { toast.error('Enter the price when New, or give every piece its own price.'); return }
+    if (base <= 0) { toast.error('Enter the price, or give every piece its own price.'); return }
     setSaving(true)
     try {
       const res = await apiFetch('/api/inventory/receive', {
@@ -299,7 +299,7 @@ export default function ReceiveStockModal({ isOpen, onClose, categories, items, 
                   <input type="number" min={1} max={MAX_PIECES} value={count} onChange={(e) => setCount(clampIntegerInput(e.target.value, count, MAX_PIECES))} disabled={saving} className={`${field} tabular-nums`} />
                 </label>
                 <label className="block">
-                  <span className={label}>Price when New{allPriced && <span className="font-normal text-slate-400"> (optional)</span>}</span>
+                  <span className={label}>Price{allPriced && <span className="font-normal text-slate-400"> (optional)</span>}</span>
                   <input maxLength={INPUT_LIMITS.money} inputMode="decimal" value={basePrice} onChange={(e) => setBasePrice(clampPriceInput(e.target.value, basePrice))} disabled={saving}
                     placeholder={allPriced && derivedBase > 0 ? `₱${derivedBase.toLocaleString('en-PH')}` : '₱0'} className={`${field} tabular-nums`} />
                 </label>

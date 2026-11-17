@@ -5,8 +5,8 @@
 // Excellent, Very Good, Good, Fair, For parts
 // (GRADE_LABEL and GRADE_MEANING below hold the wording staff see). There
 // are no separate New and Refurbished item records any more - an item holds all
-// of its pieces, whatever their condition, and each condition sells at a share
-// of the item's base price (Settings: price by condition). New/Refurbished is
+// of its pieces, whatever their condition, and every piece sells at the item's
+// price unless it has a price of its own. New/Refurbished is
 // still written on items and sale lines for older reports, derived from the
 // pieces: all New = 'New', anything used = 'Refurbished'.
 //
@@ -73,31 +73,24 @@ const GRADE_ALIASES: Record<string, UnitGrade> = { 'Like new': 'Excellent' }
 export type GradePricing = Record<UnitGrade, number>
 export const DEFAULT_GRADE_PRICING: GradePricing = {
   'New': 100,
-  'Excellent': 90,
-  'Very Good': 80,
-  'Good': 70,
-  'Fair': 50,
-  'For parts': 25,
+  'Excellent': 100,
+  'Very Good': 100,
+  'Good': 100,
+  'Fair': 100,
+  'For parts': 100,
 }
 
-/** Reads stored percentages, falling back per condition to the defaults. */
-export const normalizeGradePricing = (value: unknown): GradePricing => {
-  const raw = (value ?? {}) as Record<string, unknown>
-  // A percentage saved under an old name counts for the condition it became.
-  for (const [old, current] of Object.entries(GRADE_ALIASES)) {
-    if (raw[current] === undefined && raw[old] !== undefined) raw[current] = raw[old]
-  }
-  return Object.fromEntries(
-    UNIT_GRADES.map((g) => {
-      const n = typeof raw[g] === 'number' ? (raw[g] as number) : Number(raw[g])
-      return [g, Number.isFinite(n) && n > 0 && n <= 100 ? Math.round(n) : DEFAULT_GRADE_PRICING[g]]
-    })
-  ) as GradePricing
-}
+/**
+ * Condition no longer changes the price (the owner's decision): every piece
+ * sells at its item's price unless it has a price of its own. Percentages
+ * saved earlier are ignored, so old settings cannot bring the discount back.
+ */
+export const normalizeGradePricing = (_value?: unknown): GradePricing => ({ ...DEFAULT_GRADE_PRICING })
 
-/** A piece's price from its condition: base x share, to the whole peso. */
-export const gradePrice = (basePrice: number, grade: UnitGrade, pricing: GradePricing = DEFAULT_GRADE_PRICING) =>
-  Math.max(1, Math.round((basePrice * pricing[grade]) / 100))
+
+/** A piece's price when it has none of its own: the item's price, whatever its condition. */
+export const gradePrice = (basePrice: number, _grade?: UnitGrade, _pricing?: GradePricing) =>
+  Math.max(1, Math.round(basePrice))
 
 /**
  * New/Refurbished for older reports, worked out from the pieces' conditions:

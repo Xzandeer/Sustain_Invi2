@@ -1164,7 +1164,7 @@ function InventoryContent() {
                           <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">
                             <p className="text-[13px] font-semibold text-slate-900">{priceText(product)}</p>
                             {product.trackingMode === 'unit' && (shelf[product.id]?.grades.length ?? 0) > 0 && !shelf[product.id]!.grades.some((g) => g.grade === 'New') && (
-                              <p className="text-[11px] text-slate-400">{formatPrice(product.price)} when New</p>
+                              <p className="text-[11px] text-slate-400">{formatPrice(product.price)} each</p>
                             )}
                             {product.trackingMode === 'unit' && (shelf[product.id]?.ownPriced.length ?? 0) > 0 && (
                               <p className="text-[11px] text-slate-400">
