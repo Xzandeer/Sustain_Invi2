@@ -84,7 +84,9 @@ export default function ReceiveStockModal({ isOpen, onClose, categories, items, 
     setBasePrice(preset ? String(preset.price) : '')
     setMinStock('')
     setDefaultGrade('Good')
-    setPieces([])
+    // One card for the one piece above. (An empty list stayed empty when the
+    // count was already 1, since the effect that builds cards only runs on a change.)
+    setPieces([{ grade: 'Good', note: '', price: null, selected: false }])
     setBulkNote('')
     setBulkPrice('')
     setLastClicked(null)
@@ -244,7 +246,7 @@ export default function ReceiveStockModal({ isOpen, onClose, categories, items, 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 md:pl-[calc(13rem+1rem)]" role="dialog" aria-modal="true" aria-labelledby="add-stock-title">
-      <div className="flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-2xl bg-[#F1F5FC] shadow-2xl">
+      <div className="flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-2xl bg-[#F1F5FC] shadow-2xl lg:h-[calc(100vh-2rem)]">
         <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3">
           <div>
             <h2 id="add-stock-title" className="text-lg font-bold tracking-tight text-slate-900">Add stock</h2>
@@ -253,9 +255,9 @@ export default function ReceiveStockModal({ isOpen, onClose, categories, items, 
           <button type="button" onClick={onClose} disabled={saving} aria-label="Close" className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40"><X className="h-5 w-5" /></button>
         </div>
 
-        <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-3 lg:grid-cols-12">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-3 lg:grid-cols-12 lg:grid-rows-[minmax(0,1fr)]">
           {/* 1. Batch */}
-          <section className="rounded-xl border border-slate-200/80 bg-white p-4 lg:col-span-3">
+          <section className="rounded-xl border border-slate-200/80 bg-white p-4 lg:col-span-3 lg:overflow-y-auto">
             <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800"><span className={step}>1</span>Batch</h3>
             <div className="mt-3 space-y-3">
               <div className="relative">
@@ -314,7 +316,7 @@ export default function ReceiveStockModal({ isOpen, onClose, categories, items, 
           </section>
 
           {/* 2. Pieces */}
-          <section className="flex min-h-[320px] flex-col rounded-xl border border-slate-200/80 bg-white lg:col-span-6">
+          <section className="flex min-h-[320px] flex-col rounded-xl border border-slate-200/80 bg-white lg:col-span-6 lg:min-h-0">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
               <div>
                 <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800"><span className={step}>2</span>{unitMode ? 'Pieces' : 'Condition'}</h3>
@@ -359,7 +361,7 @@ export default function ReceiveStockModal({ isOpen, onClose, categories, items, 
             )}
 
             {unitMode ? (
-              <div className="grid grid-cols-2 content-start gap-2 overflow-y-auto p-4 sm:grid-cols-3 xl:grid-cols-5">
+              <div className="grid min-h-0 flex-1 grid-cols-2 content-start gap-2 overflow-y-auto p-4 sm:grid-cols-3 xl:grid-cols-5">
                 {pieces.map((p, i) => (
                   <button key={i} type="button" onClick={(e) => clickPiece(i, e.shiftKey)} aria-pressed={p.selected}
                     className={`rounded-lg border p-2.5 text-left transition-colors ${p.selected ? 'border-blue-600 bg-blue-50 ring-1 ring-blue-600' : 'border-slate-200 hover:border-slate-300'}`}>
@@ -402,7 +404,7 @@ export default function ReceiveStockModal({ isOpen, onClose, categories, items, 
           </section>
 
           {/* 3. Check and save */}
-          <section className="flex flex-col rounded-xl border border-slate-200/80 bg-white p-4 lg:col-span-3">
+          <section className="flex flex-col rounded-xl border border-slate-200/80 bg-white p-4 lg:col-span-3 lg:overflow-y-auto">
             <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800"><span className={step}>3</span>Check and save</h3>
             <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2.5">
               <p className="truncate text-[13px] font-semibold text-slate-900">{(existing?.name ?? name.trim()) || 'Item not named yet'}</p>

@@ -20,6 +20,7 @@ import Link from 'next/link'
 import { toast } from 'sonner'
 import { Loader2, Minus, Plus, Printer, ScanLine, Search, ShoppingCart, X } from 'lucide-react'
 import { apiFetch } from '@/lib/apiFetch'
+import { useFitRows } from '@/lib/client/useFitRows'
 import { forgetReads } from '@/lib/client/readCache'
 import { auth } from '@/lib/firebase'
 import { openReceiptPrintWindow } from '@/lib/transactions/receiptPrint'
@@ -71,7 +72,6 @@ interface CartLine {
 const currency = (value: number) =>
   value.toLocaleString('en-PH', { style: 'currency', currency: 'PHP', minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-const PAGE_SIZE = 8
 const SCAN_GAP_MS = 100
 
 export default function QuickSaleModal({
@@ -108,6 +108,8 @@ export default function QuickSaleModal({
   const [error, setError] = useState('')
   const [done, setDone] = useState<SaleReceiptDocument | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+  // As many products per page as the window has room for.
+  const { ref: listRef, rows: PAGE_SIZE } = useFitRows()
 
   const reset = useCallback(() => {
     setSearch(''); setPage(1); setCart([]); setDiscountMode('peso'); setDiscountInput('')
@@ -442,7 +444,7 @@ export default function QuickSaleModal({
                     : <ScanLine aria-hidden className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-300" />}
                 </div>
               </div>
-              <div className="min-h-0 flex-1 overflow-auto">
+              <div ref={listRef} className="min-h-0 flex-1 overflow-auto">
                 <table className="w-full text-sm">
                   <thead className="sticky top-0 z-10 bg-slate-50 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                     <tr>
@@ -470,7 +472,7 @@ export default function QuickSaleModal({
                       const ownCount = ownGroups.reduce((s, g) => s + g.pieces.length, 0)
                       const left = item.availableStock - inCartFor(item.id)
                       return (
-                        <tr key={item.id} className="hover:bg-slate-50/70">
+                        <tr key={item.id} data-row className="hover:bg-slate-50/70">
                           <td className="px-5 py-2.5">
                             <p className="font-medium text-slate-900">
                               {item.name}
@@ -580,7 +582,7 @@ export default function QuickSaleModal({
                 <p className="text-sm font-semibold text-slate-900">Cart</p>
                 <span className="text-xs tabular-nums text-slate-500">{pieces} piece{pieces === 1 ? '' : 's'}</span>
               </div>
-              <div className="max-h-64 divide-y divide-slate-100 overflow-y-auto px-4">
+              <div className="max-h-64 divide-y divide-slate-100 overflow-y-auto px-4 lg:max-h-none lg:min-h-0 lg:flex-1">
                 {cart.length === 0 ? (
                   <p className="py-6 text-center text-xs text-slate-400">Cart is empty. Add items from the list or scan a label.</p>
                 ) : cart.map((l) => (
