@@ -7,6 +7,7 @@
 //     [itemId]: {
 //       grades:    [{ grade, count, price }]   in-stock pieces at their condition price
 //       ownPriced: [{ grade, count, minPrice, maxPrice }]   pieces with a price of their own
+//       ownPieces: [{ id, unitCode, grade, price }]        those pieces one by one, oldest first
 //       reserved:  number
 //       oldestDays: number | null
 //     }
@@ -38,15 +39,19 @@ export async function GET(req: NextRequest) {
     type Acc = {
       grades: Map<UnitGrade, number>
       own: Map<UnitGrade, number[]>
+      ownPieces: Array<{ id: string; unitCode: string; grade: UnitGrade; price: number; receivedMs: number }>
       reserved: number
       oldest: number | null
     }
     const acc = new Map<string, Acc>()
     for (const [itemId, entry] of shelf) {
       if (!basePrice.has(itemId)) continue
-      const a: Acc = { grades: new Map(), own: new Map(), reserved: entry.reserved, oldest: null }
+      const a: Acc = { grades: new Map(), own: new Map(), ownPieces: [], reserved: entry.reserved, oldest: null }
       for (const p of entry.pieces) {
-        if (p.own !== null) a.own.set(p.grade, [...(a.own.get(p.grade) ?? []), p.own])
+        if (p.own !== null) {
+          a.own.set(p.grade, [...(a.own.get(p.grade) ?? []), p.own])
+          a.ownPieces.push({ id: p.id, unitCode: p.unitCode, grade: p.grade, price: p.own, receivedMs: p.receivedMs ?? 0 })
+        }
         else a.grades.set(p.grade, (a.grades.get(p.grade) ?? 0) + 1)
         if (p.receivedMs !== null) {
           const days = Math.max(0, Math.floor((now - p.receivedMs) / 86_400_000))
@@ -68,6 +73,10 @@ export async function GET(req: NextRequest) {
         minPrice: Math.min(...a.own.get(g)!),
         maxPrice: Math.max(...a.own.get(g)!),
       })),
+      // So the POS can sell one with a click, not only by scanning its label.
+      ownPieces: a.ownPieces
+        .sort((x, y) => x.receivedMs - y.receivedMs)
+        .map(({ id, unitCode, grade, price }) => ({ id, unitCode, grade, price })),
       reserved: a.reserved,
       oldestDays: a.oldest,
     }]))

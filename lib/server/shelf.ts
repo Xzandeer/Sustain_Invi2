@@ -16,6 +16,8 @@ import { toNumber } from '@/lib/server/salesInventoryMetrics'
 import { fingerprint, remember } from '@/lib/server/readCache'
 
 export interface ShelfPiece {
+  id: string
+  unitCode: string
   grade: UnitGrade
   /** A price of its own, or null to sell at its condition's price. */
   own: number | null
@@ -60,6 +62,8 @@ export async function loadShelf(): Promise<Shelf> {
       else {
         const received = Date.parse(String(u.receivedAt ?? ''))
         entry.pieces.push({
+          id: d.id,
+          unitCode: typeof u.unitCode === 'string' ? u.unitCode : '',
           grade: normalizeUnitGrade(u.grade),
           own: typeof u.priceOverride === 'number' && u.priceOverride > 0 ? u.priceOverride : null,
           receivedMs: Number.isNaN(received) ? null : received,

@@ -2,15 +2,17 @@
 
 // New sale - opened from the dashboard's Quick Actions.
 //
-// The Sales POS in a window: search or scan, a cart with the same rules, the
-// customer's details, and checkout. It sends the same POST /api/sales request
+// The Sales POS in a window: search or scan, a cart with the same rules, a
+// discount, and checkout. Customer details are only taken for reservations. It sends the same POST /api/sales request
 // as the Sales page, so stock, piece status, stock logs and the receipt are
 // written exactly as they are there.
 //
 // Pieces tracked one by one (lib/inventory/units.ts) are sold by condition:
 // each condition on the shelf is its own Add button at its own price, and the
 // server picks the oldest piece of it. A scanned piece label adds that exact
-// piece. Counted-only items add one at a time, as on the POS.
+// piece. Pieces with a price of their own are offered by price too: a click
+// adds the oldest one not yet in the cart. Counted-only items add one at a
+// time, as on the POS.
 
 import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -40,9 +42,12 @@ export interface SellableItem {
 interface ShelfGrade { grade: UnitGrade; count: number; price: number }
 interface ShelfEntry {
   grades: ShelfGrade[]
-  /** Pieces with a price of their own: sold by scanning their label. */
-  ownPriced?: Array<{ grade: UnitGrade; count: number; minPrice: number; maxPrice: number }>
+  /** Pieces with a price of their own, one by one, oldest first. */
+  ownPieces?: Array<{ id: string; unitCode: string; grade: UnitGrade; price: number }>
 }
+
+/** Own-price pieces of one condition and price - one button. */
+interface OwnGroup { grade: UnitGrade; price: number; pieces: Array<{ id: string; unitCode: string }> }
 
 interface ScannedUnit { id: string; unitCode: string; grade: string; price: number; ownPrice?: boolean }
 
@@ -95,9 +100,9 @@ export default function QuickSaleModal({
   // to the item's New price (that sold Good or Fair pieces at the New price).
   const [shelfStatus, setShelfStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const shelfRequest = useRef(0)
-  const [fullName, setFullName] = useState('')
-  const [contactNumber, setContactNumber] = useState('')
-  const [email, setEmail] = useState('')
+  // Discount as pesos or a percentage of the subtotal, as on the Sales page.
+  const [discountMode, setDiscountMode] = useState<'peso' | 'percent'>('peso')
+  const [discountInput, setDiscountInput] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [looking, setLooking] = useState(false)
   const [error, setError] = useState('')
@@ -105,7 +110,7 @@ export default function QuickSaleModal({
   const searchRef = useRef<HTMLInputElement>(null)
 
   const reset = useCallback(() => {
-    setSearch(''); setPage(1); setCart([]); setFullName(''); setContactNumber(''); setEmail('')
+    setSearch(''); setPage(1); setCart([]); setDiscountMode('peso'); setDiscountInput('')
     setError(''); setDone(null); setSubmitting(false)
   }, [])
 
@@ -163,6 +168,17 @@ export default function QuickSaleModal({
     { key: `${item.id}:${g.grade}`, itemId: item.id, name: item.name, price: g.price, max: g.count, label: GRADE_LABEL[g.grade] ?? g.grade, grade: g.grade },
     item.availableStock,
   )
+
+  /** Adds the oldest piece of the group not yet in the cart. */
+  const addOwn = (item: SellableItem, g: OwnGroup) => {
+    const next = g.pieces.find((p) => !cart.some((l) => l.key === `${item.id}#${p.id}`))
+    if (!next) return `All ${GRADE_LABEL[g.grade]} pieces at ${currency(g.price)} are in the cart.`
+    return addLine({
+      key: `${item.id}#${next.id}`, itemId: item.id, name: item.name, price: g.price, max: 1,
+      label: `${GRADE_LABEL[g.grade]} · #${next.unitCode}`,
+      units: [{ id: next.id, unitCode: next.unitCode, grade: g.grade, price: g.price, ownPrice: true }], fixed: true,
+    }, item.availableStock)
+  }
 
   const report = (refusal: string | null) => { setError(refusal ?? ''); if (refusal) toast.error(refusal) }
 
@@ -225,7 +241,7 @@ export default function QuickSaleModal({
   useEffect(() => { if (!isOpen) initialDone.current = null }, [isOpen])
 
   // A USB scanner types fast and ends with Enter. Caught here wherever focus
-  // is, except the customer fields; the search box handles its own Enter.
+  // is, except text fields; the search box handles its own Enter.
   useEffect(() => {
     if (!isOpen || done) return
     let buffer = ''
@@ -292,9 +308,12 @@ export default function QuickSaleModal({
   const pageSafe = Math.min(page, pageCount)
   const visible = filtered.slice((pageSafe - 1) * PAGE_SIZE, pageSafe * PAGE_SIZE)
 
-  const total = cart.reduce((s, l) => s + l.price * l.quantity, 0)
+  const subtotal = cart.reduce((s, l) => s + l.price * l.quantity, 0)
+  // A percentage follows the subtotal; never more than the subtotal.
+  const discount = Math.min(subtotal, Math.max(0,
+    discountMode === 'percent' ? (subtotal * (Number(discountInput) || 0)) / 100 : Number(discountInput) || 0))
+  const total = Math.max(0, subtotal - discount)
   const pieces = cart.reduce((s, l) => s + l.quantity, 0)
-  const contactInvalid = contactNumber.length > 0 && contactNumber.length !== 11
 
   const setQty = (key: string, next: number) => {
     setError('')
@@ -313,7 +332,7 @@ export default function QuickSaleModal({
   // ── Checkout: the same request the Sales page sends ──────────────────────
 
   const checkout = async () => {
-    if (cart.length === 0 || submitting || contactInvalid) return
+    if (cart.length === 0 || submitting) return
     setSubmitting(true)
     setError('')
     try {
@@ -327,7 +346,10 @@ export default function QuickSaleModal({
             ...(l.grade ? { grade: l.grade } : {}),
             ...(l.units?.length ? { unitIds: l.units.map((u) => u.id) } : {}),
           })),
-          customerDetails: { fullName: fullName.trim(), email: email.trim(), contactNumber: contactNumber.trim() },
+          // The peso discount; the server checks it against the subtotal.
+          discount: Math.round(discount * 100) / 100,
+          // A walk-in sale: customer details are only taken for reservations.
+          customerDetails: { fullName: '', email: '', contactNumber: '' },
           processedBy: {
             uid: auth.currentUser?.uid ?? '',
             email: auth.currentUser?.email ?? '',
@@ -357,8 +379,8 @@ export default function QuickSaleModal({
   const input = 'w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none disabled:opacity-60'
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-3 sm:p-4" role="dialog" aria-modal="true" aria-labelledby="quick-sale-title">
-      <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 md:pl-[calc(13rem+1rem)]" role="dialog" aria-modal="true" aria-labelledby="quick-sale-title">
+      <div className={`flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ${done ? '' : 'lg:h-[calc(100vh-2rem)]'}`}>
         {/* Header */}
         <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-3.5">
           <div className="flex items-center gap-3">
@@ -395,7 +417,7 @@ export default function QuickSaleModal({
             </div>
           </div>
         ) : (
-          <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(0,1fr)_360px] lg:overflow-hidden">
+          <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(0,1fr)_400px] lg:overflow-hidden">
             {/* Products */}
             <div className="flex min-h-0 flex-col border-b border-slate-100 lg:border-b-0 lg:border-r">
               <div className="px-5 py-3">
@@ -438,8 +460,14 @@ export default function QuickSaleModal({
                       const out = item.availableStock <= 0
                       const perPiece = item.trackingMode === 'unit'
                       const grades = (shelf[item.id]?.grades ?? []).slice().sort((a, b) => UNIT_GRADES.indexOf(a.grade) - UNIT_GRADES.indexOf(b.grade))
-                      const own = shelf[item.id]?.ownPriced ?? []
-                      const ownCount = own.reduce((s, g) => s + g.count, 0)
+                      const ownGroups: OwnGroup[] = []
+                      for (const p of shelf[item.id]?.ownPieces ?? []) {
+                        const g = ownGroups.find((o) => o.grade === p.grade && o.price === p.price)
+                        if (g) g.pieces.push(p)
+                        else ownGroups.push({ grade: p.grade, price: p.price, pieces: [p] })
+                      }
+                      ownGroups.sort((a, b) => UNIT_GRADES.indexOf(a.grade) - UNIT_GRADES.indexOf(b.grade) || b.price - a.price)
+                      const ownCount = ownGroups.reduce((s, g) => s + g.pieces.length, 0)
                       const left = item.availableStock - inCartFor(item.id)
                       return (
                         <tr key={item.id} className="hover:bg-slate-50/70">
@@ -481,19 +509,26 @@ export default function QuickSaleModal({
                                     <span className="rounded bg-slate-100 px-1 text-[10px] tabular-nums text-slate-500">{g.count}</span>
                                   </button>
                                 ))}
-                                {ownCount > 0 && (() => {
-                                  const lo = Math.min(...own.map((g) => g.minPrice))
-                                  const hi = Math.max(...own.map((g) => g.maxPrice))
+                                {ownGroups.map((g) => {
+                                  const inCart = g.pieces.filter((p) => cart.some((l) => l.key === `${item.id}#${p.id}`)).length
+                                  const remaining = g.pieces.length - inCart
                                   return (
-                                    <span title="These pieces have a price of their own. Scan the piece's label to sell one."
-                                      className="inline-flex items-center gap-1 rounded-md border border-dashed border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-500">
-                                      <ScanLine aria-hidden className="h-3 w-3" />
-                                      {ownCount} own price
-                                      <span className="font-semibold tabular-nums text-slate-700">{lo === hi ? currency(lo) : `${currency(hi)} – ${currency(lo)}`}</span>
-                                      · scan
-                                    </span>
+                                    <button
+                                      key={`${g.grade}:${g.price}`}
+                                      type="button"
+                                      onClick={() => report(addOwn(item, g))}
+                                      disabled={out || left <= 0 || remaining <= 0 || submitting}
+                                      title={`Add one ${GRADE_LABEL[g.grade]} piece priced on its own · ${remaining} on the shelf`}
+                                      className="inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50/40 px-2 py-1 text-xs text-slate-700 transition hover:border-blue-300 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                      <span className={`h-1.5 w-1.5 rounded-full ${GRADE_TONE[g.grade]?.dot ?? 'bg-slate-400'}`} />
+                                      {GRADE_LABEL[g.grade] ?? g.grade}
+                                      <span className="font-semibold tabular-nums text-slate-900">{currency(g.price)}</span>
+                                      <span className="text-[10px] font-semibold text-blue-600">own price</span>
+                                      <span className="rounded bg-slate-100 px-1 text-[10px] tabular-nums text-slate-500">{remaining}</span>
+                                    </button>
                                   )
-                                })()}
+                                })}
                                 {grades.length === 0 && ownCount === 0 && <span className="text-xs text-slate-400">None on the shelf</span>}
                               </>) : grades.length > 0 ? grades.map((g) => (
                                 <button
@@ -539,7 +574,7 @@ export default function QuickSaleModal({
               )}
             </div>
 
-            {/* Cart, customer, checkout */}
+            {/* Cart, discount, checkout */}
             <div className="flex min-h-0 flex-col bg-slate-50/50 lg:overflow-y-auto">
               <div className="flex items-baseline justify-between border-b border-slate-100 px-4 py-3">
                 <p className="text-sm font-semibold text-slate-900">Cart</p>
@@ -565,33 +600,44 @@ export default function QuickSaleModal({
                 ))}
               </div>
 
-              <div className="space-y-2 border-t border-slate-100 px-4 py-3">
-                <p className="text-xs font-semibold text-slate-700">Customer <span className="font-normal text-slate-400">(optional)</span></p>
-                <input maxLength={INPUT_LIMITS.name} type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Name" disabled={submitting} className={input} />
-                <div className="grid grid-cols-2 gap-2">
-                  <input type="tel" inputMode="numeric" maxLength={11} value={contactNumber}
-                    onChange={(e) => setContactNumber(e.target.value.replace(/\D/g, '').slice(0, 11))}
-                    placeholder="09XXXXXXXXX" disabled={submitting}
-                    className={`${input} ${contactInvalid ? 'border-rose-300 focus:border-rose-400' : ''}`} />
-                  <input maxLength={INPUT_LIMITS.email} type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" disabled={submitting} className={input} />
-                </div>
-                {contactInvalid && <p className="text-xs text-rose-500">Contact number must be 11 digits ({contactNumber.length}/11).</p>}
-              </div>
-
               {error && <p className="mx-4 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
 
               <div className="mt-auto space-y-3 border-t border-slate-200 bg-white px-4 py-3">
-                <div className="flex items-baseline justify-between">
-                  <span className="text-sm text-slate-600">Total</span>
-                  <span className="text-2xl font-bold tabular-nums text-slate-900">{currency(total)}</span>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs text-slate-600">
+                    <span>Subtotal</span>
+                    <span className="font-medium tabular-nums text-slate-800">{currency(subtotal)}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 text-xs text-slate-600">
+                    <span className="flex items-center gap-1.5">
+                      Discount
+                      <span className="inline-flex overflow-hidden rounded-md border border-slate-200 bg-white">
+                        {(['peso', 'percent'] as const).map((mode) => (
+                          <button key={mode} type="button" onClick={() => setDiscountMode(mode)} aria-pressed={discountMode === mode}
+                            className={`px-2 py-0.5 text-[11px] font-semibold transition ${discountMode === mode ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-50'}`}>
+                            {mode === 'peso' ? '₱' : '%'}
+                          </button>
+                        ))}
+                      </span>
+                      {discountMode === 'percent' && discount > 0 && <span className="text-[11px] tabular-nums text-slate-400">= {currency(discount)}</span>}
+                    </span>
+                    <input maxLength={INPUT_LIMITS.money} type="text" inputMode="decimal" value={discountInput}
+                      onChange={(e) => { const raw = e.target.value; if (raw === '' || /^\d*\.?\d*$/.test(raw)) setDiscountInput(raw) }}
+                      placeholder="0" disabled={cart.length === 0 || submitting} aria-label="Discount"
+                      className="h-8 w-24 rounded-lg border border-slate-200 bg-white px-2 text-right text-xs tabular-nums text-slate-800 focus:border-blue-500 focus:outline-none disabled:opacity-50" />
+                  </div>
+                  <div className="flex items-baseline justify-between border-t border-slate-200 pt-2">
+                    <span className="text-sm font-semibold text-slate-900">Total</span>
+                    <span className="text-2xl font-bold tabular-nums text-slate-900">{currency(total)}</span>
+                  </div>
                 </div>
                 <button
                   type="button"
                   onClick={checkout}
-                  disabled={cart.length === 0 || submitting || contactInvalid}
+                  disabled={cart.length === 0 || submitting}
                   className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-blue-600 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {submitting ? <><Loader2 aria-hidden className="h-4 w-4 animate-spin" /> Completing sale…</> : 'Complete sale'}
+                  {submitting ? <><Loader2 aria-hidden className="h-4 w-4 animate-spin" /> Completing sale…</> : cart.length > 0 ? `Complete sale · ${currency(total)}` : 'Complete sale'}
                 </button>
               </div>
             </div>
