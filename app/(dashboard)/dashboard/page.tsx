@@ -41,6 +41,7 @@ import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { useUserRole } from '@/hooks/useUserRole'
 import ReceiveStockModal from '@/components/inventory/ReceiveStockModal'
 import ReserveItemModal, { type ReservableItem } from '@/components/dashboard/ReserveItemModal'
+import { conditionSummary, heldLinesOf, type HeldLine } from '@/lib/reservations/heldLines'
 import QuickSaleModal from '@/components/dashboard/QuickSaleModal'
 import { expireReservations } from '@/lib/reservations/reservationExpiration'
 import type { CategoryRef } from '@/lib/inventory/saveProduct'
@@ -82,7 +83,11 @@ interface InventoryDoc {
   isSingleItem: boolean
 }
 interface ReservationDoc { id: string; customer: string; items: LineItem[]; createdAt: Date | null }
-interface ActiveReservation { id: string; customer: string; items: LineItem[]; expiresAt: Date | null }
+interface ActiveReservation {
+  id: string; customer: string; items: LineItem[]; expiresAt: Date | null
+  /** What is held, per condition and price (lib/reservations/heldLines). */
+  held: HeldLine[]
+}
 interface StockLogDoc {
   id: string
   actionType: string
@@ -377,6 +382,7 @@ function DashboardContent() {
                 (typeof data.customerName === 'string' && data.customerName.trim()) ||
                 'Walk-in Customer',
               items: toLines(data.items).filter((i) => i.quantity > 0),
+              held: heldLinesOf(data.items),
               expiresAt: toDate(data.expiresAt),
             }
           })
@@ -499,8 +505,9 @@ function DashboardContent() {
         reserved: Math.min(i.reservedStock, i.stock),
         stock: i.stock,
         holders: (activeReservations ?? []).flatMap((r) => {
-          const qty = r.items.filter((l) => l.name === i.name).reduce((n, l) => n + l.quantity, 0)
-          return qty > 0 ? [{ id: r.id, customer: r.customer, qty, expiresAt: r.expiresAt }] : []
+          const lines = r.held.filter((l) => l.id === i.id)
+          const qty = lines.reduce((n, l) => n + l.quantity, 0)
+          return qty > 0 ? [{ id: r.id, customer: r.customer, qty, conditions: conditionSummary(lines), expiresAt: r.expiresAt }] : []
         }),
       }))
       .sort((a, b) => b.reserved - a.reserved || a.name.localeCompare(b.name)),
@@ -513,7 +520,7 @@ function DashboardContent() {
       return reservedItems.map((i) => ({
         id: i.id,
         name: i.name,
-        sub: i.holders.length > 0 ? i.holders.map((h) => `${h.customer} (${h.qty})`).join(', ') : i.categoryName,
+        sub: i.holders.length > 0 ? i.holders.map((h) => `${h.customer} (${h.conditions || h.qty})`).join(', ') : i.categoryName,
         figure: `${pcs(i.stock - i.reserved)} free`,
         tag: `${pcs(i.reserved)} held`,
         tagTone: 'bg-blue-50 text-blue-600',
@@ -545,12 +552,12 @@ function DashboardContent() {
       price: i.price,
       condition: i.condition,
       availableStock: Math.max(0, i.stock - i.reservedStock),
-      grades: shelf[i.id]?.grades,
+      // Condition prices are read by the New sale and Reserve windows themselves.
       trackingMode: i.trackingMode,
       isSingleItem: i.isSingleItem,
       conditionNotes: i.conditionNotes,
     })),
-    [inventory, shelf])
+    [inventory])
 
   // ── Recent activity ───────────────────────────────────────────────────────
 
@@ -792,7 +799,10 @@ function DashboardContent() {
                         <li key={r.id} className="flex items-center gap-3 border-b border-slate-100 py-1.5 last:border-0 xl:min-h-0 xl:flex-1">
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-xs font-semibold text-slate-800" title={r.customer}>{r.customer}</p>
-                            <p className="truncate text-xs text-slate-500">{productOf(r.items)}, {pcs(qty)}</p>
+                            <p className="truncate text-xs text-slate-500" title={conditionSummary(r.held)}>
+                              {productOf(r.items)}, {pcs(qty)}
+                              {r.held.length > 0 && <span className="text-slate-400"> · {conditionSummary(r.held)}</span>}
+                            </p>
                           </div>
                           <span
                             title={r.expiresAt ? `Expires ${r.expiresAt.toLocaleString('en-US')}` : 'No expiry set'}

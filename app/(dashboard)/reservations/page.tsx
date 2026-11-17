@@ -50,17 +50,14 @@ import {
   STORE_TAGLINE,
 } from '@/lib/transactions/transactionDocuments'
 import { expireReservations } from '@/lib/reservations/reservationExpiration'
+import { heldLinesOf, type HeldLine } from '@/lib/reservations/heldLines'
+import { GRADE_TONE, type UnitGrade } from '@/lib/inventory/units'
 
 type ReservationStatus = 'Active' | 'AwaitingCollection' | 'Completed' | 'Cancelled' | 'Expired'
 type TabId = 'all' | ReservationStatus
 
-interface ReservationItem {
-  id: string
-  name: string
-  quantity: number
-  price: number
+interface ReservationItem extends HeldLine {
   categoryName: string
-  condition: string
 }
 
 interface Reservation {
@@ -122,8 +119,11 @@ function ConditionBadge({ condition }: { condition: string }) {
     Good: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
     'Like New': 'bg-violet-50 text-violet-700 ring-violet-200',
   }
+  // A piece's condition (Excellent, Fair, ...) in the same colour as everywhere else.
+  const base = condition.replace(/ ×\d+$/, '') // "Good ×2" is still Good
+  const tone = GRADE_TONE[base as UnitGrade]?.chip ?? map[base]
   return (
-    <span className={'inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold ring-1 ring-inset ' + (map[condition] ?? 'bg-slate-100 text-slate-600 ring-slate-200')}>
+    <span className={'inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold ring-1 ring-inset ' + (tone ?? 'bg-slate-100 text-slate-600 ring-slate-200')}>
       {condition}
     </span>
   )
@@ -299,24 +299,9 @@ function ReservationsContent() {
       (snap) => {
         const records = snap.docs.map((d) => {
           const data = d.data() as Record<string, unknown>
-          const items = Array.isArray(data.items)
-            ? data.items
-                .map((item) => {
-                  const ri = item as Record<string, unknown>
-                  const name = typeof ri.name === 'string' ? ri.name.trim() : ''
-                  const id = typeof ri.id === 'string' ? ri.id : ''
-                  if (!id || !name) return null
-                  return {
-                    id,
-                    name,
-                    quantity: Math.max(0, toNumber(ri.quantity, 0)),
-                    price: Math.max(0, toNumber(ri.price, 0)),
-                    categoryName: '',
-                    condition: typeof ri.condition === 'string' ? ri.condition : 'New',
-                  } satisfies ReservationItem
-                })
-                .filter((x): x is ReservationItem => x !== null && x.quantity > 0)
-            : []
+          // One line per condition and price of the pieces held, not the
+          // item's own condition and New price (lib/reservations/heldLines).
+          const items: ReservationItem[] = heldLinesOf(data.items).map((l) => ({ ...l, categoryName: '' }))
 
           return {
             id: d.id,
@@ -465,7 +450,8 @@ function ReservationsContent() {
   const topCategory = useMemo(() => {
     const catMap: Record<string, number> = {}
     reservations.forEach((r) => {
-      r.items.forEach((item) => {
+      // Once per product, however many conditions of it are held.
+      r.items.filter((item, i, all) => all.findIndex((o) => o.id === item.id) === i).forEach((item) => {
         const cat = inventoryCategoryById[item.id] || item.categoryName || 'Uncategorized'
         catMap[cat] = (catMap[cat] ?? 0) + 1
       })
@@ -546,6 +532,7 @@ function ReservationsContent() {
         quantity: item.quantity,
         price: item.price,
         condition: item.condition,
+        ...(item.unitCodes.length > 0 ? { conditionNotes: item.unitCodes.map((c) => `#${c}`).join(', ') } : {}),
         categoryName: item.categoryName,
         subtotal: item.price * item.quantity,
       })),
@@ -999,13 +986,19 @@ function ReservationsContent() {
                                 // own quantity, which the collapsed view cannot.
                                 <div className="space-y-1.5">
                                   {r.items.map((item) => (
-                                    <div key={item.id} className="flex items-start gap-1.5">
+                                    <div key={item.key} className="flex items-start gap-1.5">
                                       <span className="mt-0.5 shrink-0 rounded bg-slate-100 px-1 text-[10px] font-bold text-slate-600">
                                         {item.quantity}×
                                       </span>
                                       <div className="min-w-0">
                                         <p className="text-xs font-semibold leading-snug text-slate-800">{item.name}</p>
-                                        <ConditionBadge condition={item.condition} />
+                                        <div className="flex flex-wrap items-center gap-1">
+                                          <ConditionBadge condition={item.condition} />
+                                          <span className="text-[11px] tabular-nums text-slate-500">₱{item.price.toLocaleString('en-PH')}</span>
+                                        </div>
+                                        {item.unitCodes.length > 0 && (
+                                          <p className="text-[10px] text-slate-400">{item.unitCodes.map((c) => `#${c}`).join(', ')}</p>
+                                        )}
                                       </div>
                                     </div>
                                   ))}
@@ -1021,16 +1014,23 @@ function ReservationsContent() {
                                   <p className="text-xs font-semibold leading-snug text-slate-800">
                                     {r.items[0].name}
                                   </p>
+                                  {/* Every condition of the first product held; "more" counts other products. */}
                                   <div className="mt-0.5 flex flex-wrap items-center gap-1">
-                                    <ConditionBadge condition={r.items[0].condition} />
-                                    {r.items.length > 1 && (
-                                      <button
-                                        onClick={() => setOpenItemsId(r.id)}
-                                        className="rounded-md bg-blue-50 px-1.5 py-0.5 text-[11px] font-semibold text-blue-700 ring-1 ring-inset ring-blue-200 transition-colors hover:bg-blue-100"
-                                      >
-                                        +{r.items.length - 1} more
-                                      </button>
-                                    )}
+                                    {r.items.filter((i) => i.id === r.items[0].id).map((i) => (
+                                      <ConditionBadge key={i.key} condition={i.quantity > 1 ? `${i.condition} ×${i.quantity}` : i.condition} />
+                                    ))}
+                                    {(() => {
+                                      const others = new Set(r.items.filter((i) => i.id !== r.items[0].id).map((i) => i.id)).size
+                                      const split = r.items.length > 1
+                                      return split ? (
+                                        <button
+                                          onClick={() => setOpenItemsId(r.id)}
+                                          className="rounded-md bg-blue-50 px-1.5 py-0.5 text-[11px] font-semibold text-blue-700 ring-1 ring-inset ring-blue-200 transition-colors hover:bg-blue-100"
+                                        >
+                                          {others > 0 ? `+${others} more` : 'Details'}
+                                        </button>
+                                      ) : null
+                                    })()}
                                   </div>
                                 </div>
                               )
@@ -1436,7 +1436,7 @@ function ReservationsContent() {
                 <div className="my-2 border-t border-dashed border-slate-300" />
 
                 {ticketRes.items.map((item) => (
-                  <div key={item.id} className="mb-1.5">
+                  <div key={item.key} className="mb-1.5">
                     <p className="font-semibold text-slate-900">{item.name}</p>
                     <div className="flex justify-between">
                       <span className="text-slate-500">{item.quantity} × ₱{item.price.toLocaleString('en-PH')} ({item.condition})</span>

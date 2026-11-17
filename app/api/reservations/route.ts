@@ -10,11 +10,12 @@ import {
   getProcessedByInfo,
 } from '@/lib/server/inventory'
 import {
-  describeUnits, isUnitTracked, linesByPrice, parseItemRequests, pickUnitsForParts, readItemUnits, setUnitsStatus, toLineRef,
+  describeUnits, isUnitTracked, parseItemRequests, pickUnitsForParts, readItemUnits, setUnitsStatus, toLineRef,
   unitPrice, type StoredUnit,
 } from '@/lib/server/units'
 import { getStoreSettings } from '@/lib/server/storeSettings'
 import type { UnitLineRef } from '@/lib/inventory/units'
+import { heldLines } from '@/lib/reservations/heldLines'
 import { createTransactionNumber } from '@/lib/server/transactionNumbers'
 import { parseDateRange, toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import {
@@ -338,15 +339,17 @@ export async function POST(req: NextRequest) {
 
     // STEP 6: Build ticket document + receipt record
     console.log('[reservations POST] step 6: building documents')
+    // One line per condition and price of the pieces held, named by that
+    // condition (Good, Fair...) - not the item's New/Refurbished.
     const ticketItems: TransactionLineItem[] = reservationItems.flatMap((item) =>
       item.units.length > 0
-        ? linesByPrice(item.id, item.units, (u) => item.unitLines.find((l) => l.unitId === u.id)?.price ?? item.price).map((line) => ({
+        ? heldLines({ id: item.id, name: item.name, quantity: item.quantity, price: item.price, condition: item.condition, unitLines: item.unitLines }).map((line) => ({
             itemId: item.id,
             name: item.name,
             quantity: line.quantity,
             price: line.price,
-            condition: item.condition,
-            conditionNotes: line.unitLines.map((u) => `#${u.unitCode} ${u.grade}`).join('; '),
+            condition: line.condition,
+            ...(line.unitCodes.length > 0 ? { conditionNotes: line.unitCodes.map((c) => `#${c}`).join(', ') } : {}),
             subtotal: line.quantity * line.price,
           }))
         : [{
