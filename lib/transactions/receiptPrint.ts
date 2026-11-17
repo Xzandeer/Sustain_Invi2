@@ -32,6 +32,14 @@ export const setReceiptPaperWidth = (width: ReceiptPaperWidth) => {
 // names, the seller's address - is escaped before it goes into the receipt
 // HTML. Unescaped, a note like "lid <cracked> & taped" breaks the printed
 // layout, and markup in a customer name would run in the print window.
+// Older receipts stored "#00000226 New" under a line already marked New, so
+// the condition printed twice. Drop a piece's condition when it matches its line.
+const withoutRepeatedCondition = (notes: string, condition: string): string => {
+  if (!condition) return notes
+  const c = condition.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return notes.replace(new RegExp(`(#\\w+) ${c}(?=;|$| -)`, 'g'), '$1')
+}
+
 const esc = (value: unknown): string =>
   String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -372,6 +380,12 @@ export const openReceiptPrintWindow = (
         <div class="receipt-date">${formatTransactionDateTime(isSale ? document.transactionDate : document.reservationDate)}</div>
       </div>
 
+      ${isSale ? `
+      <div class="section">
+        <div class="section-label">Cashier</div>
+        <div class="section-content">${esc(document.processedBy)}</div>
+      </div>` : ''}
+
       ${!isSale ? `
       <div class="section customer-info">
         <div class="section-label">Customer</div>
@@ -401,7 +415,7 @@ export const openReceiptPrintWindow = (
             <tr>
               <td class="item-col-name">
                 <div class="item-name">${esc(item.name)}</div>
-                <div class="item-condition">${esc(item.condition)}${item.conditionNotes ? ` &middot; ${esc(item.conditionNotes)}` : ''}</div>
+                <div class="item-condition">${esc(item.condition)}${item.conditionNotes ? ` &middot; ${esc(withoutRepeatedCondition(item.conditionNotes, item.condition))}` : ''}</div>
               </td>
               <td class="item-col-qty">${item.quantity}</td>
               ${isSale ? `<td class="item-col-price">${formatCurrency(item.price)}</td>` : ''}
@@ -441,9 +455,6 @@ export const openReceiptPrintWindow = (
         ${isSale ? document.note : ''}
       </div>
 
-      <div class="processed-by">
-        ${isSale ? 'Thank you for your purchase' : 'Keep this ticket for claiming'}
-      </div>
     </div>
   </div>
 

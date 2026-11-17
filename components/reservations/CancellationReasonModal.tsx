@@ -71,7 +71,7 @@ export function CancellationReasonModal({
               <XCircle className="h-5 w-5 text-red-600" />
             </div>
             <div>
-              <AlertDialogTitle>Cancel Reservation</AlertDialogTitle>
+              <AlertDialogTitle>Cancel reservation</AlertDialogTitle>
               <AlertDialogDescription className="text-xs">
                 Reservation {reservationNumber} for {customerName}
               </AlertDialogDescription>
@@ -122,7 +122,7 @@ export function CancellationReasonModal({
         <div className="flex gap-3">
           <AlertDialogCancel asChild>
             <Button variant="outline" disabled={isLoading}>
-              Keep Reservation
+              Keep reservation
             </Button>
           </AlertDialogCancel>
           <Button
@@ -131,7 +131,7 @@ export function CancellationReasonModal({
             onClick={handleConfirm}
             className="flex-1"
           >
-            Cancel Reservation
+            Cancel reservation
           </Button>
         </div>
       </AlertDialogContent>

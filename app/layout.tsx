@@ -17,22 +17,11 @@ export const metadata: Metadata = {
   title: 'SUSTAIN - Inventory & Sales Tracking',
   description: 'Surplus Shop Inventory & Sales Tracking System',
   generator: 'v0.app',
+  // The shop logo is the only icon file in /public; the old icon-*.png and
+  // icon.svg entries pointed at files that do not exist (two 404s per page).
   icons: {
-    icon: [
-      {
-        url: '/icon-light-32x32.png',
-        media: '(prefers-color-scheme: light)',
-      },
-      {
-        url: '/icon-dark-32x32.png',
-        media: '(prefers-color-scheme: dark)',
-      },
-      {
-        url: '/icon.svg',
-        type: 'image/svg+xml',
-      },
-    ],
-    apple: '/apple-icon.png',
+    icon: '/Logo.png',
+    apple: '/Logo.png',
   },
 }
 

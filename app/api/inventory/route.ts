@@ -249,7 +249,7 @@ export async function POST(req: NextRequest) {
         reservedBefore: existingVariant.reservedStock,
         reservedAfter: existingVariant.reservedStock,
         user: processedBy,
-        units: createdUnits.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+        units: createdUnits.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })),
         remarks: (remarks || 'Inventory stock increased from add item flow.') + describeUnits(createdUnits),
       })
 
@@ -309,7 +309,7 @@ export async function POST(req: NextRequest) {
       quantityChanged: quantity,
       quantityAfter: quantity,
       user: processedBy,
-      units: created.units.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+      units: created.units.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })),
       remarks: (remarks || 'New inventory variant created.') + describeUnits(created.units),
     })
 

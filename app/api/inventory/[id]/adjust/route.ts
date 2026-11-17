@@ -103,7 +103,7 @@ async function adjustUnits(ctx: {
         quantityBefore: before.stock, quantityChanged: ctx.quantity, quantityAfter: after,
         stockBefore: before.stock, stockAfter: after, reservedBefore: before.reserved, reservedAfter: before.reserved,
         user: ctx.processedBy,
-        units: created.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+        units: created.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })),
         remarks: (ctx.remarks || 'Manual stock increase.') + describeUnits(created),
       })
       return NextResponse.json({ success: true, units: created.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })) }, { status: 200 })
@@ -134,7 +134,7 @@ async function adjustUnits(ctx: {
         quantityBefore: before.stock, quantityChanged: -ctx.quantity, quantityAfter: after,
         stockBefore: before.stock, stockAfter: after, reservedBefore: before.reserved, reservedAfter: before.reserved,
         user: ctx.processedBy,
-        units: removed.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+        units: removed.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })),
         remarks: (ctx.remarks || 'Manual stock deduction.') + describeUnits(removed),
       })
       return NextResponse.json({ success: true }, { status: 200 })
@@ -181,7 +181,7 @@ async function adjustUnits(ctx: {
       txn.update(targetRef, { stock: nextTarget, quantity: nextTarget, stockStatus: getStockStatus({ stock: nextTarget, minStock: target.minStock }), updatedAt: nowIso })
       for (const u of moved) txn.update(u.ref, { itemId: targetId, updatedAt: nowIso })
     })
-    const unitsRef = moved.map((u) => ({ id: u.id, unitCode: u.unitCode }))
+    const unitsRef = moved.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade }))
     await createStockLog({
       actionType: 'stock_transferred_out',
       itemId: ctx.id, itemName: ctx.itemName, condition: ctx.sourceCondition,

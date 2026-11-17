@@ -64,7 +64,7 @@ export default function UnitInsights() {
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-slate-900">Stock movement by piece</h3>
-          <p className="mt-0.5 text-xs text-slate-400">How long pieces wait on the shelf, and how fast each condition sells</p>
+          <p className="mt-0.5 text-xs text-slate-500">How long pieces wait on the shelf, and how fast each condition sells</p>
         </div>
         {data && soldTotal > 0 && (
           <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500">
@@ -74,14 +74,14 @@ export default function UnitInsights() {
       </div>
 
       {error ? (
-        <p className="py-10 text-center text-sm text-slate-400">{error}</p>
+        <p className="py-10 text-center text-sm text-slate-500">{error}</p>
       ) : !data ? (
         <div className="mt-4 space-y-3">
           <div className="h-16 animate-pulse rounded-xl bg-slate-50" />
           <div className="h-48 animate-pulse rounded-xl bg-slate-50" />
         </div>
       ) : data.summary.onShelf === 0 && data.timeToSell.length === 0 ? (
-        <p className="py-10 text-center text-sm text-slate-400">No pieces on the shelf or sold yet. This fills in as stock is added and sold.</p>
+        <p className="py-10 text-center text-sm text-slate-500">No pieces on the shelf or sold yet. This fills in as stock is added and sold.</p>
       ) : (
         <>
           {/* Four figures */}
@@ -90,7 +90,7 @@ export default function UnitInsights() {
               <div key={s.label} className="px-4 py-3">
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{s.label}</p>
                 <p className={`mt-0.5 truncate text-xl font-bold leading-tight tabular-nums ${s.tone}`}>{s.value}</p>
-                <p className="truncate text-[11px] text-slate-400">{s.hint}</p>
+                <p className="truncate text-[11px] text-slate-500">{s.hint}</p>
               </div>
             ))}
           </div>
@@ -100,10 +100,10 @@ export default function UnitInsights() {
             <div className="rounded-xl border border-slate-200/80 p-3.5">
               <div className="mb-3 flex items-baseline justify-between gap-2">
                 <h4 className="text-xs font-semibold text-slate-800">Days on the shelf, by category</h4>
-                <span className="text-[10px] text-slate-400">average wait</span>
+                <span className="text-[10px] text-slate-500">average wait</span>
               </div>
               {data.aging.length === 0 ? (
-                <p className="py-6 text-center text-xs text-slate-400">Nothing on the shelf.</p>
+                <p className="py-6 text-center text-xs text-slate-500">Nothing on the shelf.</p>
               ) : (
                 <ul className="space-y-3">
                   {data.aging.map((a) => {
@@ -119,7 +119,7 @@ export default function UnitInsights() {
                           {/* Where "slow to move" starts */}
                           <span aria-hidden className="absolute -top-0.5 h-2.5 w-px bg-slate-400" style={{ left: `${(stale / agingMax) * 100}%` }} title={`${stale} days`} />
                         </div>
-                        <p className="mt-1 text-[11px] text-slate-400">
+                        <p className="mt-1 text-[11px] text-slate-500">
                           {a.count} piece{a.count === 1 ? '' : 's'} · oldest {days(a.oldestDays)}
                           {a.staleCount > 0 && <span className="text-amber-700"> · {a.staleCount} over {stale} days</span>}
                         </p>
@@ -128,7 +128,7 @@ export default function UnitInsights() {
                   })}
                 </ul>
               )}
-              <p className="mt-3 flex items-center gap-1.5 border-t border-slate-100 pt-2 text-[10px] text-slate-400">
+              <p className="mt-3 flex items-center gap-1.5 border-t border-slate-100 pt-2 text-[10px] text-slate-500">
                 <span aria-hidden className="inline-block h-2.5 w-px bg-slate-400" /> marks {stale} days
               </p>
             </div>
@@ -137,10 +137,10 @@ export default function UnitInsights() {
             <div className="rounded-xl border border-slate-200/80 p-3.5">
               <div className="mb-3 flex items-baseline justify-between gap-2">
                 <h4 className="text-xs font-semibold text-slate-800">Days to sell, by condition</h4>
-                <span className="text-[10px] text-slate-400">half sell within</span>
+                <span className="text-[10px] text-slate-500">half sell within</span>
               </div>
               {data.timeToSell.length === 0 ? (
-                <p className="py-6 text-center text-xs text-slate-400">No pieces sold in the last {data.summary.soldWindowDays} days.</p>
+                <p className="py-6 text-center text-xs text-slate-500">No pieces sold in the last {data.summary.soldWindowDays} days.</p>
               ) : (
                 <ul className="space-y-3">
                   {data.timeToSell.map((g) => {
@@ -157,7 +157,7 @@ export default function UnitInsights() {
                         <div className="mt-1 h-1.5 rounded-full bg-slate-100">
                           <div className={`h-full rounded-full ${GRADE_TONE[grade].bar}`} style={{ width: `${Math.max(3, (g.medianDays / sellMax) * 100)}%` }} />
                         </div>
-                        <p className="mt-1 text-[11px] text-slate-400">
+                        <p className="mt-1 text-[11px] text-slate-500">
                           {g.count.toLocaleString('en-PH')} sold · average {days(g.averageDays)}
                         </p>
                       </li>
@@ -171,10 +171,10 @@ export default function UnitInsights() {
             <div className="rounded-xl border border-slate-200/80 p-3.5">
               <div className="mb-2 flex items-baseline justify-between gap-2">
                 <h4 className="text-xs font-semibold text-slate-800">Waiting longest</h4>
-                <span className="text-[10px] text-slate-400">on the shelf</span>
+                <span className="text-[10px] text-slate-500">on the shelf</span>
               </div>
               {data.slowest.length === 0 ? (
-                <p className="py-6 text-center text-xs text-slate-400">Nothing on the shelf.</p>
+                <p className="py-6 text-center text-xs text-slate-500">Nothing on the shelf.</p>
               ) : (
                 <ul className="divide-y divide-slate-100">
                   {data.slowest.map((s, i) => {
@@ -182,14 +182,14 @@ export default function UnitInsights() {
                     const slow = s.days > stale
                     return (
                       <li key={s.unitCode} className="flex items-center gap-2.5 py-2">
-                        <span className="w-4 shrink-0 text-right text-[11px] tabular-nums text-slate-400">{i + 1}</span>
+                        <span className="w-4 shrink-0 text-right text-[11px] tabular-nums text-slate-500">{i + 1}</span>
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-xs font-semibold text-slate-800" title={s.itemName}>{s.itemName}</p>
                           <p className="flex items-center gap-1.5 truncate text-[11px] text-slate-500">
                             <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${GRADE_TONE[grade].dot}`} />
                             {GRADE_LABEL[grade]}
                             <span className="text-slate-300">·</span>
-                            <span className="font-mono text-[10px] text-slate-400">#{s.unitCode}</span>
+                            <span className="font-mono text-[10px] text-slate-500">#{s.unitCode}</span>
                           </p>
                         </div>
                         <span className={`shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold tabular-nums ${slow ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>

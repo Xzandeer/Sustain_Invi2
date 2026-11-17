@@ -130,7 +130,7 @@ function Pagination({ total, page, perPage, onPage, onPerPage }: { total: number
     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-4 py-3 text-sm">
       <span className="text-slate-500">Showing {from}–{to} of <span className="font-semibold text-slate-700">{total}</span> items</span>
       <div className="flex items-center gap-1.5">
-        <select value={perPage} onChange={e => { onPerPage(Number(e.target.value)); onPage(1) }}
+        <select aria-label="Rows per page" value={perPage} onChange={e => { onPerPage(Number(e.target.value)); onPage(1) }}
           className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm text-slate-700 focus:outline-none">
           {[10, 25, 50].map(n => <option key={n} value={n}>{n} per page</option>)}
         </select>
@@ -139,9 +139,9 @@ function Pagination({ total, page, perPage, onPage, onPerPage }: { total: number
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
         </button>
         {nums.map((p, i) => p === '...'
-          ? <span key={'e' + i} className="flex h-8 w-8 items-center justify-center text-slate-400">…</span>
+          ? <span key={'e' + i} className="flex h-8 w-8 items-center justify-center text-slate-500">…</span>
           : <button key={p} onClick={() => onPage(p as number)}
-              className={'flex h-8 w-8 items-center justify-center rounded-lg border text-sm font-medium transition ' + (page === p ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50')}>
+              className={'flex h-8 w-8 items-center justify-center rounded-lg border text-sm font-medium transition ' + (page === p ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50')}>
               {p}
             </button>
         )}
@@ -296,7 +296,7 @@ function InventoryTrashContent() {
   const resetFilters = () => { setSearch(''); setCategoryFilter('all'); setConditionFilter('all'); setReasonFilter('all'); setStockFilter('all'); setStartDate(''); setEndDate(''); setCurrentPage(1) }
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-3 py-3 sm:px-5 sm:py-4">
+    <div className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-3 py-3 sm:px-5 sm:py-4">
       <div className="mx-auto max-w-[1400px] space-y-3">
 
         {/* ── Header ── */}
@@ -326,7 +326,7 @@ function InventoryTrashContent() {
               <svg className="h-4.5 w-4.5 h-5 w-5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
             </div>
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Total Items</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Total Items</p>
               <p className="text-2xl font-bold text-slate-900">{summary.total}</p>
             </div>
           </div>
@@ -362,8 +362,8 @@ function InventoryTrashContent() {
         {/* ── Filter Bar ── */}
         <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm">
           <div className="flex min-w-[200px] flex-1 items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5">
-            <svg className="h-4 w-4 shrink-0 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="11" cy="11" r="8"/><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35"/></svg>
-            <input maxLength={INPUT_LIMITS.search} type="text" value={search} onChange={e => { setSearch(e.target.value); setCurrentPage(1) }}
+            <svg className="h-4 w-4 shrink-0 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="11" cy="11" r="8"/><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35"/></svg>
+            <input aria-label="Search trash" maxLength={INPUT_LIMITS.search} type="text" value={search} onChange={e => { setSearch(e.target.value); setCurrentPage(1) }}
               placeholder="Search by item name, SKU, or reason..."
               className="w-full bg-transparent text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none" />
             {search && (
@@ -372,23 +372,23 @@ function InventoryTrashContent() {
               </button>
             )}
           </div>
-          <select value={categoryFilter} onChange={e => { setCategoryFilter(e.target.value); setCurrentPage(1) }}
+          <select aria-label="Filter by category" value={categoryFilter} onChange={e => { setCategoryFilter(e.target.value); setCurrentPage(1) }}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:outline-none">
             <option value="all">All Categories</option>
             {categories.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
-          <select value={conditionFilter} onChange={e => { setConditionFilter(e.target.value); setCurrentPage(1) }}
+          <select aria-label="Filter by condition" value={conditionFilter} onChange={e => { setConditionFilter(e.target.value); setCurrentPage(1) }}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:outline-none">
             <option value="all">All Conditions</option>
             <option value="New">New</option>
             <option value="Refurbished">Refurbished</option>
           </select>
-          <select value={reasonFilter} onChange={e => { setReasonFilter(e.target.value); setCurrentPage(1) }}
+          <select aria-label="Filter by reason" value={reasonFilter} onChange={e => { setReasonFilter(e.target.value); setCurrentPage(1) }}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:outline-none">
             <option value="all">All Reasons</option>
             {VOID_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
-          <select value={stockFilter} onChange={e => { setStockFilter(e.target.value); setCurrentPage(1) }}
+          <select aria-label="Filter by stock" value={stockFilter} onChange={e => { setStockFilter(e.target.value); setCurrentPage(1) }}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:outline-none">
             <option value="all">All Statuses</option>
             <option value="has_stock">Has Stock</option>
@@ -396,11 +396,11 @@ function InventoryTrashContent() {
             <option value="no_stock">No Stock</option>
           </select>
           <div className="flex items-center gap-1.5">
-            <input type="date" value={startDate} max={endDate || undefined}
+            <input aria-label="From date" type="date" value={startDate} max={endDate || undefined}
               onChange={e => { setStartDate(e.target.value); setCurrentPage(1) }}
               className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm text-slate-700 focus:outline-none" />
             <span className="text-slate-300">—</span>
-            <input type="date" value={endDate} min={startDate || undefined}
+            <input aria-label="To date" type="date" value={endDate} min={startDate || undefined}
               onChange={e => { setEndDate(e.target.value); setCurrentPage(1) }}
               className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm text-slate-700 focus:outline-none" />
           </div>
@@ -419,15 +419,15 @@ function InventoryTrashContent() {
 
           {loading ? (
             <div className="flex items-center justify-center py-16">
-              <svg className="h-6 w-6 animate-spin text-slate-400" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+              <svg className="h-6 w-6 animate-spin text-slate-500" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
             </div>
           ) : filteredItems.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
               <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100">
-                <svg className="h-7 w-7 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                <svg className="h-7 w-7 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
               </div>
               <p className="text-sm font-semibold text-slate-700">No trashed items</p>
-              <p className="mt-1 text-xs text-slate-400">Written-off items will appear here</p>
+              <p className="mt-1 text-xs text-slate-500">Written-off items will appear here</p>
               {hasActiveFilters && (
                 <button onClick={resetFilters} className="mt-3 text-xs font-medium text-blue-600 hover:underline">Clear filters</button>
               )}
@@ -438,14 +438,14 @@ function InventoryTrashContent() {
                 <table className="w-full min-w-[860px] text-sm">
                   <thead>
                     <tr className="border-b border-slate-100 bg-slate-50 text-left">
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Item</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Category</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Condition</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Date written off</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Reason</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Written off by</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Status</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Actions</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Item</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Category</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Condition</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Date written off</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Reason</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Written off by</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Status</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
@@ -460,7 +460,7 @@ function InventoryTrashContent() {
                         <tr key={item.id} className="transition-colors hover:bg-slate-50/70">
                           <td className="px-4 py-3 align-middle">
                             <p className="font-semibold text-slate-900">{item.name}</p>
-                            <p className="mt-0.5 font-mono text-[11px] text-slate-400">{item.sku}</p>
+                            <p className="mt-0.5 font-mono text-[11px] text-slate-500">{item.sku}</p>
                           </td>
                           <td className="px-4 py-3 align-middle text-sm text-slate-600">{item.category}</td>
                           <td className="px-4 py-3 align-middle"><ConditionBadge condition={item.condition} /></td>
@@ -477,7 +477,7 @@ function InventoryTrashContent() {
                                   'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ' +
                                   (canRestore
                                     ? 'border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50'
-                                    : 'cursor-not-allowed border border-slate-200 bg-slate-50 text-slate-400')
+                                    : 'cursor-not-allowed border border-slate-200 bg-slate-50 text-slate-500')
                                 }
                               >
                                 {actionId === item.id ? (
@@ -519,6 +519,6 @@ function InventoryTrashContent() {
         </div>
 
       </div>
-    </main>
+    </div>
   )
 }

@@ -621,7 +621,7 @@ export async function PATCH(req: Request, context: RouteContext) {
           ...log,
           user: processedBy,
           relatedId: id,
-          units: units?.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+          units: units?.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })),
         })
       )
     )

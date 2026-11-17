@@ -138,11 +138,14 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       )
     }
-    if (!/^\d{11}$/.test(customerDetails.contactNumber)) {
+    if (!/^09\d{9}$/.test(customerDetails.contactNumber)) {
       return NextResponse.json(
-        { error: 'An 11-digit contact number is required for reservations.' },
+        { error: 'An 11-digit contact number starting with 09 is required for reservations.' },
         { status: 400 }
       )
+    }
+    if (customerDetails.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerDetails.email)) {
+      return NextResponse.json({ error: 'Enter a valid email address, or leave it empty.' }, { status: 400 })
     }
 
     // One line per item - the hold, claim and release code updates each item
@@ -331,7 +334,7 @@ export async function POST(req: NextRequest) {
           reservedAfter: item.reservedAfter,
           user: processedBy,
           relatedId: reservationRef.id,
-          units: item.units.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+          units: item.units.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })),
           remarks: `Reservation ${numberResult.value} created.` + describeUnits(item.units),
         })
       )

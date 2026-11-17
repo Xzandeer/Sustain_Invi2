@@ -19,11 +19,14 @@
 // Used by Inventory (Add stock, and a row's "Add more stock") and the
 // dashboard's Add stock quick action.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react'
+import { useWindowFocus } from '@/lib/client/useWindowFocus'
+import { useConfirm } from '@/components/shared/ConfirmDialog'
 import { Loader2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiFetch } from '@/lib/apiFetch'
 import { INPUT_LIMITS, MAX_CONDITION_NOTES, MAX_STOCK, clampIntegerInput, clampPriceInput } from '@/lib/constants/limits'
+import { blockDecimalKeys } from '@/lib/client/blockDecimalKeys'
 import {
   DEFAULT_GRADE_PRICING, GRADE_LABEL, GRADE_MEANING, GRADE_TONE, UNIT_GRADES, gradePrice,
   type GradePricing, type TrackingMode, type UnitGrade,
@@ -133,13 +136,30 @@ export default function ReceiveStockModal({ isOpen, onClose, categories, items, 
     setPieces((cur) => Array.from({ length: n }, (_, i) => cur[i] ?? { grade: defaultGrade, note: '', price: null, selected: false }))
   }, [n, unitMode, defaultGrade])
 
+  // Closing with unsaved work (Esc or ✕) asks first, in the app's own window.
+  const { confirm, confirmDialog } = useConfirm()
+  const requestClose = async () => {
+    if (saving) return
+    if ((name.trim() !== '' && !preset) || basePrice !== '') {
+      const ok = await confirm({ title: 'Discard this stock?', message: 'What you entered for this batch will be cleared.', confirmLabel: 'Discard', cancelLabel: 'Keep editing', tone: 'danger' })
+      if (!ok) return
+    }
+    onClose()
+  }
+  const requestCloseRef = useRef(requestClose)
+  requestCloseRef.current = requestClose
+
   // Escape closes, except while saving.
   useEffect(() => {
     if (!isOpen) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !saving) onClose() }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !saving) void requestCloseRef.current() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [isOpen, saving, onClose])
+  }, [isOpen, saving])
+
+  // Focus moves into the window and Tab stays inside it.
+  const panelRef = useRef<HTMLDivElement>(null)
+  useWindowFocus(panelRef, isOpen)
 
   if (!isOpen) return null
 
@@ -246,13 +266,14 @@ export default function ReceiveStockModal({ isOpen, onClose, categories, items, 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 md:pl-[calc(13rem+1rem)]" role="dialog" aria-modal="true" aria-labelledby="add-stock-title">
-      <div className="flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-2xl bg-[#F1F5FC] shadow-2xl lg:h-[calc(100vh-2rem)]">
+      {confirmDialog}
+      <div ref={panelRef} className="flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-2xl bg-[#F1F5FC] shadow-2xl lg:h-[calc(100vh-2rem)]">
         <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3">
           <div>
             <h2 id="add-stock-title" className="text-lg font-bold tracking-tight text-slate-900">Add stock</h2>
             <p className="text-xs text-slate-500">Enter the batch once, then mark only the pieces that differ.</p>
           </div>
-          <button type="button" onClick={onClose} disabled={saving} aria-label="Close" className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40"><X className="h-5 w-5" /></button>
+          <button type="button" onClick={() => void requestClose()} disabled={saving} aria-label="Close" className="rounded-lg p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40"><X className="h-5 w-5" /></button>
         </div>
 
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-3 lg:grid-cols-12 lg:grid-rows-[minmax(0,1fr)]">
@@ -270,13 +291,13 @@ export default function ReceiveStockModal({ isOpen, onClose, categories, items, 
                 {/* The closest few items already in the shop, only while typing. */}
                 {nameFocused && suggestions.length > 0 && (
                   <ul className="absolute inset-x-0 z-10 mt-1 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
-                    <li className="px-2.5 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Already in the shop</li>
+                    <li className="px-2.5 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Already in the shop</li>
                     {suggestions.map((i) => (
                       <li key={i.id}>
                         <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => { setName(i.name); setCategoryId(i.categoryId); setNameFocused(false) }}
                           className="flex w-full items-baseline justify-between gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-blue-50">
                           <span className="truncate font-medium text-slate-800">{i.name}</span>
-                          <span className="shrink-0 text-[11px] text-slate-400">{i.category}</span>
+                          <span className="shrink-0 text-[11px] text-slate-500">{i.category}</span>
                         </button>
                       </li>
                     ))}
@@ -298,18 +319,18 @@ export default function ReceiveStockModal({ isOpen, onClose, categories, items, 
               <div className="grid grid-cols-2 gap-2">
                 <label className="block">
                   <span className={label}>Pieces</span>
-                  <input type="number" min={1} max={MAX_PIECES} value={count} onChange={(e) => setCount(clampIntegerInput(e.target.value, count, MAX_PIECES))} disabled={saving} className={`${field} tabular-nums`} />
+                  <input type="number" min={1} max={MAX_PIECES} value={count} onKeyDown={blockDecimalKeys} onChange={(e) => setCount(clampIntegerInput(e.target.value, count, MAX_PIECES))} disabled={saving} className={`${field} tabular-nums`} />
                 </label>
                 <label className="block">
-                  <span className={label}>Price{allPriced && <span className="font-normal text-slate-400"> (optional)</span>}</span>
+                  <span className={label}>Price{allPriced && <span className="font-normal text-slate-500"> (optional)</span>}</span>
                   <input maxLength={INPUT_LIMITS.money} inputMode="decimal" value={basePrice} onChange={(e) => setBasePrice(clampPriceInput(e.target.value, basePrice))} disabled={saving}
                     placeholder={allPriced && derivedBase > 0 ? `₱${derivedBase.toLocaleString('en-PH')}` : '₱0'} className={`${field} tabular-nums`} />
                 </label>
               </div>
               {!existing && (
                 <label className="block">
-                  <span className={label}>Minimum stock <span className="font-normal text-slate-400">(optional)</span></span>
-                  <input type="number" min={0} max={MAX_STOCK} value={minStock} onChange={(e) => setMinStock(clampIntegerInput(e.target.value, minStock))} disabled={saving} placeholder="0" className={`${field} tabular-nums`} />
+                  <span className={label}>Minimum stock <span className="font-normal text-slate-500">(optional)</span></span>
+                  <input type="number" min={0} max={MAX_STOCK} value={minStock} onKeyDown={blockDecimalKeys} onChange={(e) => setMinStock(clampIntegerInput(e.target.value, minStock))} disabled={saving} placeholder="0" className={`${field} tabular-nums`} />
                 </label>
               )}
             </div>
@@ -366,7 +387,7 @@ export default function ReceiveStockModal({ isOpen, onClose, categories, items, 
                   <button key={i} type="button" onClick={(e) => clickPiece(i, e.shiftKey)} aria-pressed={p.selected}
                     className={`rounded-lg border p-2.5 text-left transition-colors ${p.selected ? 'border-blue-600 bg-blue-50 ring-1 ring-blue-600' : 'border-slate-200 hover:border-slate-300'}`}>
                     <div className="flex items-center justify-between gap-1">
-                      <span className="text-[11px] font-semibold tabular-nums text-slate-400">#{i + 1}</span>
+                      <span className="text-[11px] font-semibold tabular-nums text-slate-500">#{i + 1}</span>
                       <span title={`${GRADE_LABEL[p.grade]}: ${GRADE_MEANING[p.grade]}`} className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-700">
                         <span className={`h-1.5 w-1.5 rounded-full ${GRADE_TONE[p.grade].dot}`} />{p.grade}
                       </span>
@@ -379,7 +400,7 @@ export default function ReceiveStockModal({ isOpen, onClose, categories, items, 
                     </p>
                   </button>
                 ))}
-                {pieces.length === 0 && <p className="col-span-full py-10 text-center text-xs text-slate-400">Enter how many pieces arrived.</p>}
+                {pieces.length === 0 && <p className="col-span-full py-10 text-center text-xs text-slate-500">Enter how many pieces arrived.</p>}
               </div>
             ) : (
               <p className="p-6 text-sm text-slate-600">
@@ -424,7 +445,7 @@ export default function ReceiveStockModal({ isOpen, onClose, categories, items, 
                   </span>
                 </div>
               ))}
-              {groups.length === 0 && <p className="py-3 text-center text-xs text-slate-400">No pieces yet.</p>}
+              {groups.length === 0 && <p className="py-3 text-center text-xs text-slate-500">No pieces yet.</p>}
             </div>
             <div className="mt-3 flex items-baseline justify-between border-t border-slate-100 pt-3">
               <span className="text-xs text-slate-500">{n} piece{n === 1 ? '' : 's'} · batch value</span>

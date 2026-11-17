@@ -44,6 +44,21 @@ export type UnitStatus = 'in_stock' | 'reserved' | 'sold' | 'written_off'
  */
 export const UNIT_GRADES = ['New', 'Excellent', 'Very Good', 'Good', 'Fair', 'For parts'] as const
 export type UnitGrade = (typeof UNIT_GRADES)[number]
+
+/**
+ * "Good ×2, Fair" for a set of pieces, best condition first. Used as the
+ * condition of a stock log, so the log shows the pieces that actually moved
+ * rather than the item's derived New/Refurbished label.
+ */
+export function gradeSummary(grades: readonly string[]): string {
+  const counts = new Map<string, number>()
+  for (const g of grades) if (g) counts.set(g, (counts.get(g) ?? 0) + 1)
+  const rank = (g: string) => { const i = (UNIT_GRADES as readonly string[]).indexOf(g); return i < 0 ? 99 : i }
+  return Array.from(counts)
+    .sort((a, b) => rank(a[0]) - rank(b[0]))
+    .map(([g, n]) => (n > 1 ? `${g} ×${n}` : g))
+    .join(', ')
+}
 export const DEFAULT_UNIT_GRADE: UnitGrade = 'Good'
 
 /** What staff see. "Used /" makes new-versus-used plain at a glance. */

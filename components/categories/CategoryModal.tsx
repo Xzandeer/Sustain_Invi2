@@ -3,7 +3,8 @@
 // Dialog wrapper around CategoryManager, opened from the Inventory page.
 
 import { INPUT_LIMITS } from '@/lib/constants/limits'
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
+import { useWindowFocus } from '@/lib/client/useWindowFocus'
 import { Trash2, X } from 'lucide-react'
 
 interface Category {
@@ -32,6 +33,17 @@ export default function CategoryModal({
 }: CategoryModalProps) {
   const [name, setName] = useState('')
 
+  // Focus moves into the window and Tab stays inside it.
+  const panelRef = useRef<HTMLDivElement>(null)
+  useWindowFocus(panelRef, isOpen)
+  // Esc closes, like the other windows.
+  useEffect(() => {
+    if (!isOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isOpen, onClose])
+
   if (!isOpen) return null
 
   const handleAdd = async () => {
@@ -42,11 +54,11 @@ export default function CategoryModal({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
-      <div className="w-full max-w-xl rounded-xl bg-white p-6 shadow-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" role="dialog" aria-modal="true" aria-labelledby="category-modal-title">
+      <div ref={panelRef} className="w-full max-w-xl rounded-xl bg-white p-6 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-xl font-semibold text-slate-900">Categories</h2>
-          <button onClick={onClose} className="text-slate-500 transition hover:text-slate-700" title="Close">
+          <h2 id="category-modal-title" className="text-lg font-semibold text-slate-900">Categories</h2>
+          <button onClick={onClose} className="text-slate-500 transition hover:text-slate-700" title="Close" aria-label="Close">
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -72,7 +84,7 @@ export default function CategoryModal({
         </div>
 
         <div className="mt-4 space-y-2">
-          <label className="text-sm font-medium text-slate-900">Add Category</label>
+          <label className="text-sm font-medium text-slate-900">Add category</label>
           <div className="flex items-center gap-2">
             <input maxLength={INPUT_LIMITS.name}
               value={name}
@@ -83,7 +95,7 @@ export default function CategoryModal({
             <button
               onClick={handleAdd}
               disabled={adding}
-              className="rounded-lg bg-sky-900 px-3 py-2 text-sm font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
               Add
             </button>

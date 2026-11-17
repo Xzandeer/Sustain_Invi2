@@ -20,6 +20,7 @@ import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { db } from '@/lib/firebase'
 import { getStockLogActionLabel, resolveStockLogAction, ResolvedStockLogAction, ALL_STOCK_LOG_ACTIONS } from '@/lib/inventory/stockLogActions'
 import { toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
+import { UNIT_GRADES } from '@/lib/inventory/units'
 
 interface StockLogRecord {
   id: string
@@ -133,8 +134,8 @@ function QtyBadge({ change, before, after }: { change: number; before: number; a
       <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-sm font-semibold ${color}`}>
         {change > 0 ? '+' : ''}{change === 0 ? '—' : change}
       </span>
-      {change !== 0 && <p className="mt-0.5 text-xs text-slate-400">{before} → {after}</p>}
-      {change === 0 && <p className="mt-0.5 text-xs text-slate-400">N/A</p>}
+      {change !== 0 && <p className="mt-0.5 text-xs text-slate-500">{before} → {after}</p>}
+      {change === 0 && <p className="mt-0.5 text-xs text-slate-500">N/A</p>}
     </div>
   )
 }
@@ -159,7 +160,7 @@ function Pagination({ total, page, perPage, onPage, onPerPage }: { total: number
     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-4 py-3 text-sm">
       <span className="text-slate-500">Showing {from} to {to} of <span className="font-semibold text-slate-700">{total}</span> logs</span>
       <div className="flex items-center gap-1.5">
-        <select value={perPage} onChange={e => { onPerPage(Number(e.target.value)); onPage(1) }}
+        <select aria-label="Rows per page" value={perPage} onChange={e => { onPerPage(Number(e.target.value)); onPage(1) }}
           className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm text-slate-700 focus:outline-none">
           {[10, 25, 50].map(n => <option key={n} value={n}>{n}</option>)}
         </select>
@@ -169,10 +170,10 @@ function Pagination({ total, page, perPage, onPage, onPerPage }: { total: number
         </button>
         {pageNums.map((p, i) =>
           p === '...' ? (
-            <span key={`e${i}`} className="flex h-8 w-8 items-center justify-center text-slate-400">…</span>
+            <span key={`e${i}`} className="flex h-8 w-8 items-center justify-center text-slate-500">…</span>
           ) : (
             <button key={p} onClick={() => onPage(p as number)}
-              className={`flex h-8 w-8 items-center justify-center rounded-lg border text-sm font-medium transition ${page === p ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}>
+              className={`flex h-8 w-8 items-center justify-center rounded-lg border text-sm font-medium transition ${page === p ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}>
               {p}
             </button>
           )
@@ -231,7 +232,12 @@ function InventoryLogsContent() {
             id: doc.id, actionType, resolvedAction,
             itemId: typeof data.itemId === 'string' ? data.itemId : '',
             itemName: typeof data.itemName === 'string' ? data.itemName : 'Unnamed Item',
-            condition: typeof data.condition === 'string' ? data.condition : 'Unknown',
+            // Per-piece logs written before pieces' conditions were stored only
+            // carry the item's derived New/Refurbished label, which says nothing
+            // about the piece that moved - show no condition rather than a wrong one.
+            condition: Array.isArray(data.unitCodes) && data.unitCodes.length > 0 && !Array.isArray(data.unitGrades)
+              ? ''
+              : typeof data.condition === 'string' ? data.condition : '',
             previousValue: typeof data.previousValue === 'string' ? data.previousValue : '',
             newValue: typeof data.newValue === 'string' ? data.newValue : '',
             quantityBefore: toNumber(data.quantityBefore, 0),
@@ -284,7 +290,8 @@ function InventoryLogsContent() {
       const idx = [log.itemName, log.itemId, log.userName, log.userEmail, log.relatedId, log.previousValue, log.newValue, log.remarks, getStockLogActionLabel(log.resolvedAction)].join(' ').toLowerCase()
       const matchesSearch = !term || idx.includes(term)
       const matchesAction = actionFilter === 'all' || log.resolvedAction === actionFilter
-      const matchesCond = conditionFilter === 'all' || log.condition === conditionFilter
+      // A log can cover several conditions ("Good ×2, Fair").
+      const matchesCond = conditionFilter === 'all' || log.condition.split(', ').map((c) => c.replace(/ ×d+$/, '')).includes(conditionFilter)
       const t = log.createdAt?.getTime()
       const matchesDate = t == null ? !startTime && !endTime : (startTime == null || t >= startTime) && (endTime == null || t <= endTime)
       const tabMatch = matchesTab(activeTab, log.resolvedAction)
@@ -384,23 +391,18 @@ function InventoryLogsContent() {
   const headerTime = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-3 py-3 sm:px-5 sm:py-4">
+    <div className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-3 py-3 sm:px-5 sm:py-4">
       <div className="mx-auto max-w-[1400px] space-y-3">
 
         {/* ── Header ── */}
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-              </svg>
-            </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight text-slate-900">Stock Logs</h1>
               <p className="text-xs text-slate-500">Track all inventory changes, item updates, reservations, and sales in one place.</p>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 text-xs text-slate-400">
+          <div className="flex items-center gap-1.5 text-xs text-slate-500">
             <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
             <span>{headerDate}</span>
             <span className="text-slate-300">·</span>
@@ -412,13 +414,13 @@ function InventoryLogsContent() {
         <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm">
           {/* Search */}
           <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5">
-            <svg className="h-4 w-4 shrink-0 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="11" cy="11" r="8"/><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35"/></svg>
-            <input maxLength={INPUT_LIMITS.search} type="text" value={search} onChange={e => { setSearch(e.target.value); setCurrentPage(1) }}
+            <svg className="h-4 w-4 shrink-0 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="11" cy="11" r="8"/><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35"/></svg>
+            <input aria-label="Search logs" maxLength={INPUT_LIMITS.search} type="text" value={search} onChange={e => { setSearch(e.target.value); setCurrentPage(1) }}
               placeholder="Search by item name, reference, user, or remarks..."
               className="w-full min-w-0 bg-transparent text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none" />
           </div>
           {/* Actions */}
-          <select value={actionFilter} onChange={e => { setActionFilter(e.target.value); setCurrentPage(1) }}
+          <select aria-label="Filter by action" value={actionFilter} onChange={e => { setActionFilter(e.target.value); setCurrentPage(1) }}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:outline-none">
             <option value="all">All Actions ({logs.length})</option>
             {actionOptions.map(({ action, count }) => (
@@ -428,14 +430,14 @@ function InventoryLogsContent() {
             ))}
           </select>
           {/* Conditions */}
-          <select value={conditionFilter} onChange={e => { setConditionFilter(e.target.value); setCurrentPage(1) }}
+          <select aria-label="Filter by condition" value={conditionFilter} onChange={e => { setConditionFilter(e.target.value); setCurrentPage(1) }}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:outline-none">
             <option value="all">All Conditions</option>
-            <option value="New">New</option>
-            <option value="Refurbished">Refurbished</option>
+            {UNIT_GRADES.map((g) => <option key={g} value={g}>{g}</option>)}
+            <option value="Refurbished">Refurbished (older logs)</option>
           </select>
           {/* Quick ranges */}
-          <select
+          <select aria-label="Quick date range"
             onChange={(e) => { applyRange(e.target.value as 'today' | 'week' | 'month' | 'lastMonth' | 'all'); e.target.selectedIndex = 0 }}
             defaultValue=""
             title="Set the date range"
@@ -449,11 +451,11 @@ function InventoryLogsContent() {
           </select>
           {/* Date range */}
           <div className="flex items-center gap-1.5">
-            <input type="date" value={startDate} max={endDate || undefined}
+            <input aria-label="From date" type="date" value={startDate} max={endDate || undefined}
               onChange={e => { setStartDate(e.target.value); setCurrentPage(1) }}
               className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm text-slate-700 focus:outline-none" />
             <span className="text-slate-300">—</span>
-            <input type="date" value={endDate} min={startDate || undefined}
+            <input aria-label="To date" type="date" value={endDate} min={startDate || undefined}
               onChange={e => { setEndDate(e.target.value); setCurrentPage(1) }}
               className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm text-slate-700 focus:outline-none" />
           </div>
@@ -463,7 +465,7 @@ function InventoryLogsContent() {
             onClick={exportLogsCsv}
             disabled={filteredLogs.length === 0}
             title="Download the filtered log entries as a CSV file"
-            className="flex items-center gap-1.5 rounded-lg bg-[#1e3a5f] px-3 py-1.5 text-sm font-medium text-white transition hover:bg-[#162d4a] disabled:cursor-not-allowed disabled:opacity-40">
+            className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40">
             <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
             </svg>
@@ -487,9 +489,9 @@ function InventoryLogsContent() {
               </svg>
             </div>
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Total Logs</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Total Logs</p>
               <p className="text-2xl font-bold text-slate-900">{summary.total}</p>
-              <p className="text-xs text-slate-400">Audit records</p>
+              <p className="text-xs text-slate-500">Audit records</p>
             </div>
           </div>
           {/* Stock Changes */}
@@ -502,7 +504,7 @@ function InventoryLogsContent() {
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-500">Stock Changes</p>
               <p className="text-2xl font-bold text-slate-900">{summary.stockChanges}</p>
-              <p className="text-xs text-slate-400">Quantity adjustments</p>
+              <p className="text-xs text-slate-500">Quantity adjustments</p>
             </div>
           </div>
           {/* Item Updates */}
@@ -515,7 +517,7 @@ function InventoryLogsContent() {
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-wider text-violet-500">Item Updates</p>
               <p className="text-2xl font-bold text-slate-900">{summary.itemUpdates}</p>
-              <p className="text-xs text-slate-400">Created &amp; modified</p>
+              <p className="text-xs text-slate-500">Created &amp; modified</p>
             </div>
           </div>
           {/* Reservations & Sales */}
@@ -528,7 +530,7 @@ function InventoryLogsContent() {
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-500">Reservations &amp; Sales</p>
               <p className="text-2xl font-bold text-slate-900">{summary.reservationAndSales}</p>
-              <p className="text-xs text-slate-400">Transactions</p>
+              <p className="text-xs text-slate-500">Transactions</p>
             </div>
           </div>
         </div>
@@ -540,7 +542,7 @@ function InventoryLogsContent() {
           <div className="flex overflow-x-auto border-b border-slate-100 px-4">
             {TABS.map(tab => (
               <button key={tab.id} onClick={() => { setActiveTab(tab.id); setCurrentPage(1) }}
-                className={`shrink-0 border-b-2 px-3 py-3 text-sm font-medium transition ${activeTab === tab.id ? 'border-[#1e3a5f] text-[#1e3a5f]' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
+                className={`shrink-0 border-b-2 px-3 py-3 text-sm font-medium transition ${activeTab === tab.id ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
                 {tab.label}
               </button>
             ))}
@@ -549,9 +551,9 @@ function InventoryLogsContent() {
           {/* Error / Loading */}
           {error && <p className="px-4 py-3 text-sm text-red-600">{error}</p>}
           {loading ? (
-            <p className="px-4 py-8 text-center text-sm text-slate-400">Loading stock logs...</p>
+            <p className="px-4 py-8 text-center text-sm text-slate-500">Loading stock logs...</p>
           ) : filteredLogs.length === 0 ? (
-            <p className="px-4 py-8 text-center text-sm text-slate-400">No stock logs found.</p>
+            <p className="px-4 py-8 text-center text-sm text-slate-500">No stock logs found.</p>
           ) : (
             <>
               {/* Table */}
@@ -593,7 +595,7 @@ function InventoryLogsContent() {
                             onClick={() => setExpandedId(isOpen ? null : log.id)}
                             className="cursor-pointer transition hover:bg-slate-50">
                             {/* Chevron */}
-                            <td className="px-3 py-3 text-slate-400">
+                            <td className="px-3 py-3 text-slate-500">
                               <svg className={`h-4 w-4 transition-transform ${isOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                               </svg>
@@ -642,8 +644,8 @@ function InventoryLogsContent() {
                             </td>
                             {/* Actions */}
                             <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
-                              <button onClick={() => setExpandedId(isOpen ? null : log.id)}
-                                className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-400 transition hover:border-slate-300 hover:text-slate-600">
+                              <button onClick={() => setExpandedId(isOpen ? null : log.id)} aria-label={(isOpen ? "Hide details for " : "Show details for ") + log.itemName} aria-expanded={isOpen}
+                                className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-slate-300 hover:text-slate-600">
                                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                               </button>
                             </td>
@@ -654,7 +656,7 @@ function InventoryLogsContent() {
                                 <div className="flex flex-wrap gap-6">
                                   {hasBefore && (
                                     <div>
-                                      <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Before</p>
+                                      <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Before</p>
                                       <div className="flex flex-wrap items-center gap-2">
                                         <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm">
                                           <span className="text-xs text-slate-500">Stock</span>
@@ -684,7 +686,7 @@ function InventoryLogsContent() {
                                   )}
                                   {hasAfter && (
                                     <div>
-                                      <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">After</p>
+                                      <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">After</p>
                                       <div className="flex flex-wrap items-center gap-2">
                                         <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm">
                                           <span className="text-xs text-slate-500">Stock</span>
@@ -713,7 +715,7 @@ function InventoryLogsContent() {
                                     the row you have to open on purpose. This is
                                     what an auditor traces a record by; it is not
                                     what the owner reads every day. */}
-                                <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 border-t border-slate-200 pt-2 text-[11px] text-slate-400">
+                                <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 border-t border-slate-200 pt-2 text-[11px] text-slate-500">
                                   <span>Recorded <span className="text-slate-600">{formatDate(log.createdAt)}</span></span>
                                   {log.userEmail && <span>By <span className="text-slate-600">{log.userEmail}</span></span>}
                                   <span>Item ID <span className="font-mono text-slate-600">{log.itemId}</span></span>
@@ -741,6 +743,6 @@ function InventoryLogsContent() {
           )}
         </div>
       </div>
-    </main>
+    </div>
   )
 }

@@ -16,6 +16,8 @@
 
 import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useWindowFocus } from '@/lib/client/useWindowFocus'
+import { useConfirm } from '@/components/shared/ConfirmDialog'
 import Link from 'next/link'
 import { toast } from 'sonner'
 import { Loader2, Minus, Plus, Printer, ScanLine, Search, ShoppingCart, X } from 'lucide-react'
@@ -272,13 +274,26 @@ export default function QuickSaleModal({
     return () => window.removeEventListener('keydown', onKey, true)
   }, [isOpen, done])
 
+  // Closing with unsaved work (Esc or ✕) asks first, in the app's own window.
+  const { confirm, confirmDialog } = useConfirm()
+  const requestClose = async () => {
+    if (submitting) return
+    if (cart.length > 0 && !done) {
+      const ok = await confirm({ title: 'Discard this sale?', message: 'The items in the cart will be removed.', confirmLabel: 'Discard', cancelLabel: 'Keep selling', tone: 'danger' })
+      if (!ok) return
+    }
+    onClose()
+  }
+  const requestCloseRef = useRef(requestClose)
+  requestCloseRef.current = requestClose
+
   // Escape closes, except mid-checkout.
   useEffect(() => {
     if (!isOpen) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !submitting) onClose() }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !submitting) void requestCloseRef.current() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [isOpen, submitting, onClose])
+  }, [isOpen, submitting])
 
   // Live stock fell (another counter sold it): trim the cart rather than let
   // the API refuse the whole sale.
@@ -315,6 +330,9 @@ export default function QuickSaleModal({
   const discount = Math.min(subtotal, Math.max(0,
     discountMode === 'percent' ? (subtotal * (Number(discountInput) || 0)) / 100 : Number(discountInput) || 0))
   const total = Math.max(0, subtotal - discount)
+  // A discount that would leave nothing to pay is refused, not quietly capped.
+  const requestedDiscount = Math.max(0, discountMode === 'percent' ? (subtotal * (Number(discountInput) || 0)) / 100 : Number(discountInput) || 0)
+  const discountTooBig = cart.length > 0 && requestedDiscount > 0 && requestedDiscount >= subtotal
   const pieces = cart.reduce((s, l) => s + l.quantity, 0)
 
   const setQty = (key: string, next: number) => {
@@ -334,7 +352,7 @@ export default function QuickSaleModal({
   // ── Checkout: the same request the Sales page sends ──────────────────────
 
   const checkout = async () => {
-    if (cart.length === 0 || submitting) return
+    if (cart.length === 0 || submitting || discountTooBig) return
     setSubmitting(true)
     setError('')
     try {
@@ -376,13 +394,18 @@ export default function QuickSaleModal({
     }
   }
 
+  // Focus moves into the window and Tab stays inside it.
+  const panelRef = useRef<HTMLDivElement>(null)
+  useWindowFocus(panelRef, isOpen)
+
   if (!isOpen) return null
 
   const input = 'w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none disabled:opacity-60'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 md:pl-[calc(13rem+1rem)]" role="dialog" aria-modal="true" aria-labelledby="quick-sale-title">
-      <div className={`flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ${done ? '' : 'lg:h-[calc(100vh-2rem)]'}`}>
+      {confirmDialog}
+      <div ref={panelRef} className={`flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ${done ? '' : 'lg:h-[calc(100vh-2rem)]'}`}>
         {/* Header */}
         <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-3.5">
           <div className="flex items-center gap-3">
@@ -394,7 +417,7 @@ export default function QuickSaleModal({
           </div>
           <div className="flex items-center gap-2">
             <Link href="/sales" className="hidden rounded-lg px-2.5 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 sm:block">Open Sales page</Link>
-            <button type="button" onClick={onClose} disabled={submitting} className="rounded-lg p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40" aria-label="Close">
+            <button type="button" onClick={() => void requestClose()} disabled={submitting} className="rounded-lg p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40" aria-label="Close">
               <X className="h-5 w-5" />
             </button>
           </div>
@@ -424,7 +447,7 @@ export default function QuickSaleModal({
             <div className="flex min-h-0 flex-col border-b border-slate-100 lg:border-b-0 lg:border-r">
               <div className="px-5 py-3">
                 <div className="relative">
-                  <Search aria-hidden className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <Search aria-hidden className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
                   <input maxLength={INPUT_LIMITS.search}
                     ref={searchRef}
                     type="search"
@@ -440,7 +463,7 @@ export default function QuickSaleModal({
                     autoFocus
                     className={`${input} pl-9 pr-9`}
                   />
-                  {looking ? <Loader2 aria-hidden className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-slate-400" />
+                  {looking ? <Loader2 aria-hidden className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-slate-500" />
                     : <ScanLine aria-hidden className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-300" />}
                 </div>
               </div>
@@ -455,9 +478,9 @@ export default function QuickSaleModal({
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {loading ? (
-                      <tr><td colSpan={3} className="py-8 text-center text-sm text-slate-400">Loading products…</td></tr>
+                      <tr><td colSpan={3} className="py-8 text-center text-sm text-slate-500">Loading products…</td></tr>
                     ) : visible.length === 0 ? (
-                      <tr><td colSpan={3} className="py-8 text-center text-sm text-slate-400">{items.length === 0 ? 'No products in inventory.' : 'No products match your search.'}</td></tr>
+                      <tr><td colSpan={3} className="py-8 text-center text-sm text-slate-500">{items.length === 0 ? 'No products in inventory.' : 'No products match your search.'}</td></tr>
                     ) : visible.map((item) => {
                       const out = item.availableStock <= 0
                       const perPiece = item.trackingMode === 'unit'
@@ -531,7 +554,7 @@ export default function QuickSaleModal({
                                     </button>
                                   )
                                 })}
-                                {grades.length === 0 && ownCount === 0 && <span className="text-xs text-slate-400">None on the shelf</span>}
+                                {grades.length === 0 && ownCount === 0 && <span className="text-xs text-slate-500">None on the shelf</span>}
                               </>) : grades.length > 0 ? grades.map((g) => (
                                 <button
                                   key={g.grade}
@@ -584,7 +607,7 @@ export default function QuickSaleModal({
               </div>
               <div className="max-h-64 divide-y divide-slate-100 overflow-y-auto px-4 lg:max-h-none lg:min-h-0 lg:flex-1">
                 {cart.length === 0 ? (
-                  <p className="py-6 text-center text-xs text-slate-400">Cart is empty. Add items from the list or scan a label.</p>
+                  <p className="py-6 text-center text-xs text-slate-500">Cart is empty. Add items from the list or scan a label.</p>
                 ) : cart.map((l) => (
                   <div key={l.key} className="flex items-center gap-2 py-2.5">
                     <div className="min-w-0 flex-1">
@@ -621,13 +644,14 @@ export default function QuickSaleModal({
                           </button>
                         ))}
                       </span>
-                      {discountMode === 'percent' && discount > 0 && <span className="text-[11px] tabular-nums text-slate-400">= {currency(discount)}</span>}
+                      {discountMode === 'percent' && discount > 0 && <span className="text-[11px] tabular-nums text-slate-500">= {currency(discount)}</span>}
                     </span>
                     <input maxLength={INPUT_LIMITS.money} type="text" inputMode="decimal" value={discountInput}
                       onChange={(e) => { const raw = e.target.value; if (raw === '' || /^\d*\.?\d*$/.test(raw)) setDiscountInput(raw) }}
-                      placeholder="0" disabled={cart.length === 0 || submitting} aria-label="Discount"
+                      placeholder="0" disabled={cart.length === 0 || submitting} aria-label="Discount" aria-invalid={discountTooBig}
                       className="h-8 w-24 rounded-lg border border-slate-200 bg-white px-2 text-right text-xs tabular-nums text-slate-800 focus:border-blue-500 focus:outline-none disabled:opacity-50" />
                   </div>
+                  {discountTooBig && <p role="alert" className="text-right text-[11px] font-medium text-rose-600">The discount must be less than the subtotal.</p>}
                   <div className="flex items-baseline justify-between border-t border-slate-200 pt-2">
                     <span className="text-sm font-semibold text-slate-900">Total</span>
                     <span className="text-2xl font-bold tabular-nums text-slate-900">{currency(total)}</span>
@@ -636,7 +660,7 @@ export default function QuickSaleModal({
                 <button
                   type="button"
                   onClick={checkout}
-                  disabled={cart.length === 0 || submitting}
+                  disabled={cart.length === 0 || submitting || discountTooBig}
                   className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-blue-600 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {submitting ? <><Loader2 aria-hidden className="h-4 w-4 animate-spin" /> Completing sale…</> : cart.length > 0 ? `Complete sale · ${currency(total)}` : 'Complete sale'}

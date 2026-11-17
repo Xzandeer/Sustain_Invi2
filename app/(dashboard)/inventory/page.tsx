@@ -31,7 +31,7 @@ import { saveProduct } from '@/lib/inventory/saveProduct'
 import StockAdjustmentModal, { type StockAdjustmentValues } from '@/components/inventory/StockAdjustmentModal'
 import UnitsPanel from '@/components/inventory/UnitsPanel'
 import ReceiveStockModal, { type ReceiveTarget } from '@/components/inventory/ReceiveStockModal'
-import { GRADE_LABEL, GRADE_MEANING, GRADE_TONE, UNIT_GRADES, type UnitGrade } from '@/lib/inventory/units'
+import { GRADE_LABEL, GRADE_MEANING, GRADE_TONE, UNIT_GRADES, gradeSummary, type UnitGrade } from '@/lib/inventory/units'
 import type { TrackingMode } from '@/lib/inventory/units'
 import CategoryModal from '@/components/categories/CategoryModal'
 import { useUserRole } from '@/hooks/useUserRole'
@@ -172,6 +172,13 @@ function InventoryContent() {
   const [staleOnly, setStaleOnly] = useState(false)
   const [moreOpen, setMoreOpen] = useState(false)
   const [rowMenuId, setRowMenuId] = useState<string | null>(null)
+  // Esc closes the More menu and a row's ⋯ menu.
+  useEffect(() => {
+    if (!moreOpen && !rowMenuId) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setMoreOpen(false); setRowMenuId(null) } }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [moreOpen, rowMenuId])
   const [reservedOnly, setReservedOnly] = useState(false)
   const [minPrice, setMinPrice] = useState('')
   const [maxPrice, setMaxPrice] = useState('')
@@ -929,7 +936,7 @@ function InventoryContent() {
     `h-8 rounded-lg border bg-white px-2 text-xs focus:outline-none ${active ? 'border-blue-300 text-blue-700' : 'border-slate-200 text-slate-700'}`
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] p-3">
+    <div className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] p-3">
       <div className="mx-auto flex max-w-[1500px] flex-col gap-2">
 
         {/* ── Header: the page, its one main action, and the rest under More ── */}
@@ -1009,7 +1016,7 @@ function InventoryContent() {
               >
                 <p className={`text-[10px] font-semibold uppercase tracking-wide ${active ? 'text-blue-600' : 'text-slate-500'}`}>{card.label}</p>
                 <p className={`mt-0.5 text-2xl font-bold leading-tight tabular-nums ${card.tone}`}>{card.value}</p>
-                {card.hint && <p className="truncate text-[11px] text-slate-400">{card.hint}</p>}
+                {card.hint && <p className="truncate text-[11px] text-slate-500">{card.hint}</p>}
                 {active && <span aria-hidden className="absolute inset-x-0 bottom-0 h-[3px] bg-blue-600" />}
               </button>
             )
@@ -1020,10 +1027,10 @@ function InventoryContent() {
         <section className="rounded-xl border border-slate-200/80 bg-white p-2">
           <div className="flex flex-wrap items-center gap-1.5">
             <div className="relative flex min-w-[220px] flex-1 items-center">
-              <svg className="absolute left-2.5 h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <svg className="absolute left-2.5 h-3.5 w-3.5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <circle cx="11" cy="11" r="8" /><path strokeLinecap="round" d="M21 21l-4.35-4.35" />
               </svg>
-              <input maxLength={INPUT_LIMITS.search}
+              <input aria-label="Search items" maxLength={INPUT_LIMITS.search}
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -1031,7 +1038,7 @@ function InventoryContent() {
                 className="h-8 w-full rounded-lg border border-slate-200 pl-8 pr-7 text-xs text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none"
               />
               {search && (
-                <button type="button" onClick={() => setSearch('')} aria-label="Clear search" className="absolute right-1.5 rounded p-0.5 text-slate-400 hover:text-slate-600">
+                <button type="button" onClick={() => setSearch('')} aria-label="Clear search" className="absolute right-1.5 rounded p-0.5 text-slate-500 hover:text-slate-600">
                   <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
               )}
@@ -1069,7 +1076,7 @@ function InventoryContent() {
         <section className="overflow-hidden rounded-xl border border-slate-200/80 bg-white">
           <div className="overflow-x-auto">
             {loading ? (
-              <p className="px-5 py-10 text-center text-sm text-slate-400">Loading items…</p>
+              <p className="px-5 py-10 text-center text-sm text-slate-500">Loading items…</p>
             ) : filteredProducts.length === 0 ? (
               <div className="px-5 py-12 text-center">
                 <p className="text-sm font-medium text-slate-600">No items match your filters.</p>
@@ -1103,10 +1110,10 @@ function InventoryContent() {
                         <tr
                           onClick={() => { if (expandable) setUnitsProduct(isOpen ? null : product) }}
                           className={`${expandable ? 'cursor-pointer' : ''} ${isOpen ? 'bg-blue-50/40' : 'hover:bg-slate-50'} ${
-                            product.isVoided ? 'text-slate-400' : out ? 'shadow-[inset_3px_0_0_#ef4444]' : low ? 'shadow-[inset_3px_0_0_#f59e0b]' : ''
+                            product.isVoided ? 'text-slate-500' : out ? 'shadow-[inset_3px_0_0_#ef4444]' : low ? 'shadow-[inset_3px_0_0_#f59e0b]' : ''
                           }`}
                         >
-                          <td className="py-3 pl-4 text-slate-400">
+                          <td className="py-3 pl-4 text-slate-500">
                             {expandable && (
                               <svg aria-hidden className={`h-3.5 w-3.5 transition-transform ${isOpen ? 'rotate-90 text-blue-600' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
@@ -1124,7 +1131,7 @@ function InventoryContent() {
                               {product.barcode && <><span className="mx-1 text-slate-300">·</span><span className="tabular-nums">Code {product.barcode}</span></>}
                             </p>
                             {product.conditionNotes && (
-                              <p className="max-w-[340px] truncate text-[11px] text-slate-400" title={product.conditionNotes}>{product.conditionNotes}</p>
+                              <p className="max-w-[340px] truncate text-[11px] text-slate-500" title={product.conditionNotes}>{product.conditionNotes}</p>
                             )}
                           </td>
                           <td className="px-3 py-3">
@@ -1139,7 +1146,7 @@ function InventoryContent() {
                                 </p>
                               </div>
                             ) : product.trackingMode === 'unit' ? (
-                              counts.size === 0 ? <span className="text-[11px] text-slate-400">None on the shelf</span> : (
+                              counts.size === 0 ? <span className="text-[11px] text-slate-500">None on the shelf</span> : (
                                 // One quiet chip per condition: coloured dot, count, name.
                                 <div className="flex flex-wrap gap-1">
                                   {UNIT_GRADES.filter((g) => counts.has(g)).map((g) => (
@@ -1164,10 +1171,10 @@ function InventoryContent() {
                           <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">
                             <p className="text-[13px] font-semibold text-slate-900">{priceText(product)}</p>
                             {product.trackingMode === 'unit' && (shelf[product.id]?.grades.length ?? 0) > 0 && !shelf[product.id]!.grades.some((g) => g.grade === 'New') && (
-                              <p className="text-[11px] text-slate-400">{formatPrice(product.price)} each</p>
+                              <p className="text-[11px] text-slate-500">{formatPrice(product.price)} each</p>
                             )}
                             {product.trackingMode === 'unit' && (shelf[product.id]?.ownPriced.length ?? 0) > 0 && (
-                              <p className="text-[11px] text-slate-400">
+                              <p className="text-[11px] text-slate-500">
                                 {shelf[product.id]!.ownPriced.reduce((n, g) => n + g.count, 0)} with own price
                               </p>
                             )}
@@ -1186,13 +1193,13 @@ function InventoryContent() {
                                     <span className={`ml-1.5 rounded px-1.5 py-px text-[10px] font-semibold ${out ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-700'}`}>{out ? 'Out of stock' : 'Low stock'}</span>
                                   )}
                                 </p>
-                                <p className="text-[11px] tabular-nums text-slate-400">
+                                <p className="text-[11px] tabular-nums text-slate-500">
                                   {product.quantity} in the shop
                                   {product.reservedStock > 0 && <><span className="mx-1 text-slate-300">·</span><span className="text-blue-600">{product.reservedStock} reserved</span></>}
                                   <span className="mx-1 text-slate-300">·</span>min {product.minStock}
                                 </p>
                                 {(product.voidedUnits ?? 0) > 0 && voidTab !== 'voided' && (
-                                  <p className="text-[11px] tabular-nums text-slate-400">{product.voidedUnits} written off</p>
+                                  <p className="text-[11px] tabular-nums text-slate-500">{product.voidedUnits} written off</p>
                                 )}
                               </>
                             )}
@@ -1201,12 +1208,12 @@ function InventoryContent() {
                             {oldest !== null ? (
                               <p className={oldest > STALE_DAYS ? 'font-semibold text-amber-700' : 'text-slate-700'}>
                                 {oldest} day{oldest === 1 ? '' : 's'}
-                                <span className="font-normal text-slate-400"> oldest piece</span>
+                                <span className="font-normal text-slate-500"> oldest piece</span>
                               </p>
                             ) : (
-                              <p className="text-slate-400">{product.quantity > 0 ? 'Not tracked per piece' : 'Nothing on the shelf'}</p>
+                              <p className="text-slate-500">{product.quantity > 0 ? 'Not tracked per piece' : 'Nothing on the shelf'}</p>
                             )}
-                            {addedText(product.createdAtMs) && <p className="text-[11px] text-slate-400">Added {addedText(product.createdAtMs)}</p>}
+                            {addedText(product.createdAtMs) && <p className="text-[11px] text-slate-500">Added {addedText(product.createdAtMs)}</p>}
                           </td>
                           <td className="py-3 pl-3 pr-4 text-right" onClick={(e) => e.stopPropagation()}>
                             <span className="inline-flex items-center gap-1">
@@ -1306,10 +1313,10 @@ function InventoryContent() {
                     return acc
                   }, [])
                   .map((item, i) => item === '...' ? (
-                    <span key={`e-${i}`} className="w-5 text-center text-slate-400">…</span>
+                    <span key={`e-${i}`} className="w-5 text-center text-slate-500">…</span>
                   ) : (
                     <button key={item} onClick={() => setCurrentPage(item as number)}
-                      className={`h-7 w-7 rounded-md text-[11px] font-semibold ${currentPage === item ? 'bg-[#1a2035] text-white' : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}>
+                      className={`h-7 w-7 rounded-md text-[11px] font-semibold ${currentPage === item ? 'bg-blue-600 text-white' : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}>
                       {item}
                     </button>
                   ))}
@@ -1340,6 +1347,8 @@ function InventoryContent() {
                 isSingleItem: editingProduct.isSingleItem === true,
                 conditionNotes: editingProduct.conditionNotes ?? '',
                 trackingMode: editingProduct.trackingMode,
+                pieceConditions: gradeSummary([...(shelf[editingProduct.id]?.grades ?? []), ...(shelf[editingProduct.id]?.ownPriced ?? [])]
+                  .flatMap((g) => Array<string>(g.count).fill(g.grade))),
               }
             : undefined
         }
@@ -1423,7 +1432,7 @@ function InventoryContent() {
                 onChange={(e) => setRestoreQty(Math.min(maxRestore, Math.max(1, Math.floor(Number(e.target.value)) || 1)))}
                 className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-emerald-400 focus:outline-none"
               />
-              <p className="mt-1 text-xs text-slate-400">
+              <p className="mt-1 text-xs text-slate-500">
                 {invalid
                   ? `Enter a number between 1 and ${maxRestore}.`
                   : `Stock will become ${restoringProduct.quantity + restoreQty}` +
@@ -1451,7 +1460,7 @@ function InventoryContent() {
           </div>
         )
       })()}
-    </main>
+    </div>
   )
 }
 
@@ -1526,7 +1535,7 @@ function VoidModal({
           <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-700">
               Quantity to Void <span className="text-red-500">*</span>
-              <span className="ml-1 font-normal text-slate-400">(max: {product.quantity})</span>
+              <span className="ml-1 font-normal text-slate-500">(max: {product.quantity})</span>
             </label>
             <div className="flex items-center gap-2">
               <button
@@ -1545,7 +1554,7 @@ function VoidModal({
                   const val = parseInt(e.target.value, 10)
                   if (!isNaN(val)) setVoidQuantity(Math.min(product.quantity, Math.max(1, val)))
                 }}
-                className="w-20 rounded-lg border border-slate-200 px-3 py-2 text-center text-sm font-medium text-slate-800 focus:border-[#1e3a5f] focus:outline-none"
+                className="w-20 rounded-lg border border-slate-200 px-3 py-2 text-center text-sm font-medium text-slate-800 focus:border-blue-600 focus:outline-none"
               />
               <button
                 type="button"
@@ -1554,7 +1563,7 @@ function VoidModal({
               >
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
               </button>
-              <span className="text-xs text-slate-400">of {product.quantity} units</span>
+              <span className="text-xs text-slate-500">of {product.quantity} units</span>
             </div>
             {voidQuantity === product.quantity && (
               <p className="mt-1.5 text-xs text-amber-600 font-medium">All units selected — item will be fully voided.</p>
@@ -1570,7 +1579,7 @@ function VoidModal({
             <select
               value={reason}
               onChange={(e) => { setReason(e.target.value); setLocalError('') }}
-              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 focus:border-[#1e3a5f] focus:outline-none"
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 focus:border-blue-600 focus:outline-none"
             >
               <option value="">Select a reason…</option>
               {VOID_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
@@ -1586,7 +1595,7 @@ function VoidModal({
                 onChange={(e) => { setCustomReason(e.target.value); setLocalError('') }}
                 rows={3}
                 placeholder="Provide a specific reason for voiding this item..."
-                className="w-full resize-none rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 focus:border-[#1e3a5f] focus:outline-none"
+                className="w-full resize-none rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none"
               />
             </div>
           )}

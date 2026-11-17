@@ -80,7 +80,7 @@ export default function RestoreBackup({ onDownloadBackup }: { onDownloadBackup: 
       setBackup(parsed)
       setSelected(new Set(ORDER.filter((c) => Object.keys(parsed.collections[c] ?? {}).length > 0)))
     } catch {
-      setPhase('error'); setMessage('The file could not be read. Choose the .json file downloaded from Data Backup.')
+      setPhase('error'); setMessage('The file could not be read. Choose the .json file downloaded from Data backup.')
     }
   }
 
@@ -195,7 +195,7 @@ export default function RestoreBackup({ onDownloadBackup }: { onDownloadBackup: 
               </li>
             ))}
             {counts.users > 0 && (
-              <li className="flex items-center justify-between gap-3 px-4 py-2 text-sm text-slate-400">
+              <li className="flex items-center justify-between gap-3 px-4 py-2 text-sm text-slate-500">
                 <span>{LABELS.users} (not restored here; manage them on the Users page)</span>
                 <span className="tabular-nums text-xs">{counts.users.toLocaleString()}</span>
               </li>

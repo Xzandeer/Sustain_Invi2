@@ -33,6 +33,9 @@ export function cleanConditionNotes(value: unknown): string {
  */
 export function clampIntegerInput(raw: string, previous: string, max = MAX_STOCK): string {
   if (raw === '') return ''                      // allow clearing the field
+  // A decimal ("2.5") is refused, not stripped: dropping the dot would turn it
+  // into 25 without a word. blockDecimalKeys (lib/client) says why on screen.
+  if (/[.,]/.test(raw)) return previous
   const digits = raw.replace(/\D/g, '')
   if (!digits) return previous                   // typed a letter or symbol
   const normalized = digits.replace(/^0+(?=\d)/, '')  // "007" -> "7"

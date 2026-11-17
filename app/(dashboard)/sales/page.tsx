@@ -52,7 +52,7 @@ const BarcodeScanner = dynamic(() => import('@/components/sales/BarcodeScanner')
 
 // 11-digit contact rule and the reservation request are shared with the
 // dashboard's Reserve Item quick action.
-import { createReservation, isValidContactNumber } from '@/lib/reservations/createReservation'
+import { contactNumberProblem, createReservation, isValidContactNumber, isValidOptionalEmail } from '@/lib/reservations/createReservation'
 import { SCAN_PARAM } from '@/lib/scan/scanToSale'
 import { expireReservations } from '@/lib/reservations/reservationExpiration'
 import { GRADE_LABEL, GRADE_MEANING, GRADE_TONE, UNIT_GRADES, type UnitGrade } from '@/lib/inventory/units'
@@ -314,10 +314,18 @@ function SalesContent() {
   const RECEIPT_STORAGE_KEY = 'sustain-invi2-activeReceipt'
 
   useEffect(() => {
+    // Only today's last receipt is brought back. Opening Sales the next day
+    // starts a new sale instead of showing yesterday's receipt with every
+    // product locked until 'Next sale' is clicked.
+    const isToday = (r: ReceiptRecord) => {
+      const d = new Date(r.createdAt)
+      return !Number.isNaN(d.getTime()) && d.toDateString() === new Date().toDateString()
+    }
     const saved = window.localStorage.getItem(RECEIPT_STORAGE_KEY)
     if (saved) {
       try {
         const parsed = JSON.parse(saved) as ReceiptRecord
+        if (!isToday(parsed)) { window.localStorage.removeItem(RECEIPT_STORAGE_KEY); return }
         setActiveReceipt(parsed)
         setCompletedDocument(parsed.document)
         return
@@ -332,7 +340,7 @@ function SalesContent() {
         if (!response.ok) return
         const payload = (await response.json()) as { data?: ReceiptRecord[] }
         const [latest] = payload.data ?? []
-        if (latest) {
+        if (latest && isToday(latest)) {
           setActiveReceipt(latest)
           setCompletedDocument(latest.document)
         }
@@ -722,6 +730,12 @@ function SalesContent() {
     )
   )
   const cartTotal = Math.max(0, cartSubtotal - discount)
+  // A discount that would leave nothing to pay is refused, not quietly capped
+  // (the server refuses it too).
+  const requestedDiscount = Math.max(0, discountMode === 'percent'
+    ? (cartSubtotal * (Number(discountInput) || 0)) / 100
+    : Number(discountInput) || 0)
+  const discountTooBig = cart.length > 0 && requestedDiscount > 0 && requestedDiscount >= cartSubtotal
   const isCompletedMode = completedDocument !== null
   const completedDocumentEmail = completedDocument?.customer.email.trim() ?? ''
 
@@ -1076,6 +1090,14 @@ function SalesContent() {
     scanHandlerRef.current = handleBarcodeScan
   })
 
+  // Esc closes the Send receipt window, like every other window.
+  useEffect(() => {
+    if (!showEmailModal) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !emailSending) setShowEmailModal(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [showEmailModal, emailSending])
+
   const scanBlocked =
     showAllSalesModal ||
     showEmailModal ||
@@ -1352,6 +1374,10 @@ function SalesContent() {
       setError('Cart is empty.')
       return
     }
+    if (discountTooBig) {
+      setError('The discount must be less than the subtotal.')
+      return
+    }
 
 
 
@@ -1458,7 +1484,7 @@ function SalesContent() {
       return
     }
     if (!isValidContactNumber(customerContactNumber)) {
-      setError('Enter an 11-digit contact number for reservations.')
+      setError('Enter an 11-digit contact number starting with 09.')
       return
     }
 
@@ -1500,7 +1526,7 @@ function SalesContent() {
   // scrolling products. On a phone the panes stack, so the page must grow and
   // scroll normally - a locked height would clip the cart out of reach.
   return (
-    <main className="flex min-h-screen flex-col bg-[#F1F5FC] lg:h-screen lg:overflow-hidden">
+    <div className="flex min-h-screen flex-col bg-[#F1F5FC] lg:h-screen lg:overflow-hidden">
       <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-3 p-3 lg:h-full">
 
         {/* ── Header ── */}
@@ -1538,8 +1564,8 @@ function SalesContent() {
               {/* Search and filters */}
               <div className="shrink-0 space-y-2 border-b border-slate-100 p-3">
                 <div className="flex h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 focus-within:border-blue-500">
-                  <Search className="h-4 w-4 shrink-0 text-slate-400" />
-                  <input maxLength={INPUT_LIMITS.search}
+                  <Search className="h-4 w-4 shrink-0 text-slate-500" />
+                  <input aria-label="Search items" maxLength={INPUT_LIMITS.search}
                     type="text"
                     value={inventorySearch}
                     onChange={(e) => setInventorySearch(e.target.value)}
@@ -1560,7 +1586,7 @@ function SalesContent() {
                       type="button"
                       onClick={() => setScannerOpen(true)}
                       title="Scan with camera"
-                      className="shrink-0 rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                      className="shrink-0 rounded-md p-1 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
                     >
                       <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M3 7V5a2 2 0 012-2h2m10 0h2a2 2 0 012 2v2m0 10v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2M7 12h10" />
@@ -1627,9 +1653,9 @@ function SalesContent() {
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {loading ? (
-                      <tr><td colSpan={3} className="py-10 text-center text-sm text-slate-400">Loading items…</td></tr>
+                      <tr><td colSpan={3} className="py-10 text-center text-sm text-slate-500">Loading items…</td></tr>
                     ) : paginatedItems.length === 0 ? (
-                      <tr><td colSpan={3} className="py-10 text-center text-sm text-slate-400">No items match your filters.</td></tr>
+                      <tr><td colSpan={3} className="py-10 text-center text-sm text-slate-500">No items match your filters.</td></tr>
                     ) : (
                       paginatedItems.map((item) => {
                         const isOutOfStock = item.availableStock <= 0
@@ -1640,7 +1666,7 @@ function SalesContent() {
                         return (
                           <tr key={item.id} className={isOutOfStock ? 'bg-slate-50/60' : 'hover:bg-slate-50/70'}>
                             <td className="px-4 py-3 align-top">
-                              <p className={`text-[13px] font-semibold ${isOutOfStock ? 'text-slate-400' : 'text-slate-900'}`}>
+                              <p className={`text-[13px] font-semibold ${isOutOfStock ? 'text-slate-500' : 'text-slate-900'}`}>
                                 {item.name}
                                 {item.isSingleItem && (
                                   <span className="ml-1.5 rounded bg-blue-50 px-1.5 py-px align-middle text-[10px] font-semibold text-blue-600">One-off</span>
@@ -1651,7 +1677,7 @@ function SalesContent() {
                                 {item.barcode && <><span className="mx-1 text-slate-300">·</span><span className="tabular-nums">Code {item.barcode}</span></>}
                               </p>
                               {item.conditionNotes ? (
-                                <p className="max-w-[320px] truncate text-[11px] text-slate-400" title={item.conditionNotes}>{item.conditionNotes}</p>
+                                <p className="max-w-[320px] truncate text-[11px] text-slate-500" title={item.conditionNotes}>{item.conditionNotes}</p>
                               ) : null}
                             </td>
                             <td className="whitespace-nowrap px-3 py-3 align-top tabular-nums">
@@ -1664,7 +1690,7 @@ function SalesContent() {
                                   {isOutOfStock ? 'Out of stock' : 'Low stock'}
                                 </span>
                               )}
-                              {ownPriced > 0 && <p className="text-[11px] text-slate-400">{ownPriced} with own price</p>}
+                              {ownPriced > 0 && <p className="text-[11px] text-slate-500">{ownPriced} with own price</p>}
                             </td>
                             <td className="px-4 py-3 align-top">
                               {item.trackingMode === 'unit' && sh ? (
@@ -1686,7 +1712,7 @@ function SalesContent() {
                                     </button>
                                   ))}
                                   {grades.length === 0 && (
-                                    <span className="text-[11px] text-slate-400">{ownPriced > 0 ? 'Scan the piece label to sell' : 'None on the shelf'}</span>
+                                    <span className="text-[11px] text-slate-500">{ownPriced > 0 ? 'Scan the piece label to sell' : 'None on the shelf'}</span>
                                   )}
                                 </div>
                               ) : item.trackingMode === 'unit' ? (
@@ -1748,7 +1774,7 @@ function SalesContent() {
                       }, [])
                       .map((p, idx) =>
                         p === '...' ? (
-                          <span key={`e-${idx}`} className="w-5 text-center text-slate-400">…</span>
+                          <span key={`e-${idx}`} className="w-5 text-center text-slate-500">…</span>
                         ) : (
                           <button
                             key={p}
@@ -1783,7 +1809,7 @@ function SalesContent() {
                 )}
               </div>
               {transactions.length === 0 ? (
-                <p className="py-5 text-center text-xs text-slate-400">No sales yet.</p>
+                <p className="py-5 text-center text-xs text-slate-500">No sales yet.</p>
               ) : (
                 <ul className="divide-y divide-slate-100">
                   {transactions.slice(0, 4).map((tx) => {
@@ -1891,7 +1917,7 @@ function SalesContent() {
                 {cart.length === 0 ? (
                   <div className="py-8 text-center">
                     <ShoppingCart className="mx-auto h-6 w-6 text-slate-300" />
-                    <p className="mt-2 text-xs text-slate-400">No items yet. Pick a condition beside an item, or scan its label.</p>
+                    <p className="mt-2 text-xs text-slate-500">No items yet. Pick a condition beside an item, or scan its label.</p>
                   </div>
                 ) : (
                   cart.map((item) => {
@@ -1914,12 +1940,12 @@ function SalesContent() {
                         <div className="mt-1.5 flex items-center justify-between gap-2">
                           <div className="min-w-0 flex-1">
                             {item.units?.length ? (
-                              <p className="truncate font-mono text-[10px] text-slate-400" title={item.units.map((u) => `#${u.unitCode} ${u.grade}${u.conditionNotes ? ' - ' + u.conditionNotes : ''}`).join('\n')}>
+                              <p className="truncate font-mono text-[10px] text-slate-500" title={item.units.map((u) => `#${u.unitCode} ${u.grade}${u.conditionNotes ? ' - ' + u.conditionNotes : ''}`).join('\n')}>
                                 {item.units.map((u) => `#${u.unitCode}`).join(', ')}
                                 {item.quantity > item.units.length ? ` +${item.quantity - item.units.length} oldest` : ''}
                               </p>
                             ) : item.conditionNotes ? (
-                              <p className="truncate text-[11px] text-slate-400" title={item.conditionNotes}>{item.conditionNotes}</p>
+                              <p className="truncate text-[11px] text-slate-500" title={item.conditionNotes}>{item.conditionNotes}</p>
                             ) : null}
                           </div>
                           <div className="flex shrink-0 items-center gap-1">
@@ -1966,7 +1992,7 @@ function SalesContent() {
                       ))}
                     </span>
                     {discountMode === 'percent' && discount > 0 && (
-                      <span className="text-[11px] tabular-nums text-slate-400">= {currency(discount)}</span>
+                      <span className="text-[11px] tabular-nums text-slate-500">= {currency(discount)}</span>
                     )}
                   </span>
                   <input maxLength={INPUT_LIMITS.money}
@@ -1982,10 +2008,13 @@ function SalesContent() {
                       if (raw === '' || /^\d*\.?\d*$/.test(raw)) setDiscountInput(raw)
                     }}
                     placeholder="0"
+                    aria-label="Discount"
+                    aria-invalid={discountTooBig}
                     disabled={cart.length === 0}
                     className="h-8 w-24 rounded-lg border border-slate-200 bg-white px-2 text-right text-xs tabular-nums text-slate-800 focus:border-blue-500 focus:outline-none disabled:opacity-50"
                   />
                 </div>
+                {discountTooBig && <p role="alert" className="text-right text-[11px] font-medium text-rose-600">The discount must be less than the subtotal.</p>}
                 <div className="flex items-baseline justify-between border-t border-slate-200 pt-2">
                   <span className="text-sm font-semibold text-slate-900">Total</span>
                   <span className="text-2xl font-bold tabular-nums text-slate-900">{currency(cartTotal)}</span>
@@ -1997,7 +2026,7 @@ function SalesContent() {
                 <button
                   type="button"
                   onClick={completeSale}
-                  disabled={submitting || cart.length === 0}
+                  disabled={submitting || cart.length === 0 || discountTooBig}
                   className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-blue-600 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {submitting ? 'Processing…' : cart.length > 0 ? `Complete sale · ${currency(cartTotal)}` : 'Complete sale'}
@@ -2012,7 +2041,7 @@ function SalesContent() {
                     submitting ||
                     cart.length === 0 ||
                     (showReserveForm &&
-                      (!customerFullName.trim() || !isValidContactNumber(customerContactNumber)))
+                      (!customerFullName.trim() || !isValidContactNumber(customerContactNumber) || !isValidOptionalEmail(customerEmail)))
                   }
                   className="flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
                 >
@@ -2065,11 +2094,11 @@ function SalesContent() {
                     }`}
                   />
                   {customerContactNumber && !isValidContactNumber(customerContactNumber) && (
-                    <span className="mt-1 block text-xs text-red-500">Must be 11 digits ({customerContactNumber.length}/11)</span>
+                    <span className="mt-1 block text-xs text-red-500">{contactNumberProblem(customerContactNumber)}</span>
                   )}
                 </label>
                 <label className="block">
-                  <span className="mb-1 block text-xs font-medium text-slate-600">Email <span className="font-normal text-slate-400">(optional)</span></span>
+                  <span className="mb-1 block text-xs font-medium text-slate-600">Email <span className="font-normal text-slate-500">(optional)</span></span>
                   <input maxLength={INPUT_LIMITS.email}
                     type="email"
                     value={customerEmail}
@@ -2095,7 +2124,7 @@ function SalesContent() {
           <div className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-200 p-4">
               <div>
-                <h2 className="font-semibold text-slate-900">Transaction Detail</h2>
+                <h2 className="font-semibold text-slate-900">Transaction details</h2>
                 <p className="text-xs text-slate-500">{selectedTransaction.receiptNumber || selectedTransaction.id}</p>
               </div>
               <button type="button" onClick={() => { setSelectedTransaction(null); setShowRefundConfirm(false); setRefundReason('') }} className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50">Close</button>
@@ -2113,14 +2142,14 @@ function SalesContent() {
                 <div>
                   <p className="mb-2 font-medium text-slate-700">Items</p>
                   <table className="w-full text-xs">
-                    <thead><tr className="border-b border-slate-100 text-slate-400"><th className="pb-1 text-left">Product</th><th className="pb-1 text-right">Qty</th><th className="pb-1 text-right">Refunded</th><th className="pb-1 text-right">Price</th></tr></thead>
+                    <thead><tr className="border-b border-slate-100 text-slate-500"><th className="pb-1 text-left">Product</th><th className="pb-1 text-right">Qty</th><th className="pb-1 text-right">Refunded</th><th className="pb-1 text-right">Price</th></tr></thead>
                     <tbody>
                       {selectedTransaction.items.map((item, idx) => {
                         const ref = item.refundedQuantity ?? 0
                         const full = ref >= item.quantity && ref > 0
                         return (
                           <tr key={idx} className="border-b border-slate-50">
-                            <td className={`py-1 ${full ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{item.name}</td>
+                            <td className={`py-1 ${full ? 'text-slate-500 line-through' : 'text-slate-700'}`}>{item.name}</td>
                             <td className="py-1 text-right text-slate-600">{item.quantity}</td>
                             <td className="py-1 text-right">
                               {ref > 0 ? (
@@ -2208,7 +2237,7 @@ function SalesContent() {
                       onClick={() => setShowRefundConfirm(true)}
                       className="w-full rounded-lg bg-blue-600 py-2 text-sm font-semibold text-white hover:bg-blue-700 transition"
                     >
-                      Process Refund
+                      Process refund
                     </button>
                   ) : (
                     <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2.5">
@@ -2237,7 +2266,7 @@ function SalesContent() {
                                 </p>
                               </div>
                               {remaining === 0 ? (
-                                <span className="shrink-0 text-[10px] font-medium text-slate-400">Fully refunded</span>
+                                <span className="shrink-0 text-[10px] font-medium text-slate-500">Fully refunded</span>
                               ) : (
                                 <div className="flex shrink-0 items-center gap-1">
                                   <button
@@ -2270,7 +2299,7 @@ function SalesContent() {
                       </div>
 
                       {/* Reason category */}
-                      <select
+                      <select aria-label="Refund reason"
                         value={refundCategory}
                         onChange={(e) => setRefundCategory(e.target.value)}
                         className="w-full rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-amber-500"
@@ -2280,7 +2309,7 @@ function SalesContent() {
                         ))}
                       </select>
 
-                      <input maxLength={INPUT_LIMITS.note}
+                      <input aria-label="Refund note" maxLength={INPUT_LIMITS.note}
                         type="text"
                         value={refundReason}
                         onChange={(e) => setRefundReason(e.target.value)}
@@ -2295,7 +2324,7 @@ function SalesContent() {
                           disabled={refundLoading}
                           className="flex-1 rounded-lg bg-red-600 py-1.5 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-60 transition"
                         >
-                          {refundLoading ? 'Processing…' : 'Confirm Refund'}
+                          {refundLoading ? 'Processing…' : 'Confirm refund'}
                         </button>
                         <button
                           type="button"
@@ -2327,7 +2356,7 @@ function SalesContent() {
                     onClick={exportSalesCsv}
                     disabled={filteredTransactions.length === 0}
                     title="Download the filtered sales as a CSV file"
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#1e3a5f] px-3 py-1.5 text-sm font-medium text-white transition hover:bg-[#162d4a] disabled:cursor-not-allowed disabled:opacity-40"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
@@ -2339,8 +2368,8 @@ function SalesContent() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <div className="flex flex-1 min-w-[200px] items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5">
-                  <svg className="h-4 w-4 shrink-0 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="11" cy="11" r="8"/><path strokeLinecap="round" d="M21 21l-4.35-4.35"/></svg>
-                  <input maxLength={INPUT_LIMITS.search}
+                  <svg className="h-4 w-4 shrink-0 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="11" cy="11" r="8"/><path strokeLinecap="round" d="M21 21l-4.35-4.35"/></svg>
+                  <input aria-label="Search sales" maxLength={INPUT_LIMITS.search}
                     type="text"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
@@ -2348,7 +2377,7 @@ function SalesContent() {
                     className="w-full bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400"
                   />
                   {search && (
-                    <button type="button" onClick={() => setSearch('')} className="text-slate-400 hover:text-slate-600">
+                    <button type="button" onClick={() => setSearch('')} className="text-slate-500 hover:text-slate-600">
                       <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
                     </button>
                   )}
@@ -2382,13 +2411,13 @@ function SalesContent() {
                     onClick={() => setRangeOpen((open) => !open)}
                     className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:border-slate-400"
                   >
-                    <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <svg className="h-3.5 w-3.5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>
                     {rangePreset === 'custom'
                       ? `${shortDate(startDate)} to ${shortDate(endDate)}`
                       : DATE_RANGES.find((r) => r.key === rangePreset)?.label ?? 'All Time'}
-                    <svg className="h-3 w-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <svg className="h-3 w-3 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
                     </svg>
                   </button>
@@ -2414,18 +2443,18 @@ function SalesContent() {
                         ))}
 
                         <div className="mt-1.5 border-t border-slate-100 px-2 pb-1 pt-2">
-                          <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                          <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                             Custom range
                           </p>
                           <div className="space-y-1.5">
-                            <input
+                            <input aria-label="From date"
                               type="date"
                               value={startDate}
                               max={endDate || undefined}
                               onChange={(e) => setStartDateSafe(e.target.value)}
                               className="w-full rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 focus:outline-none"
                             />
-                            <input
+                            <input aria-label="To date"
                               type="date"
                               value={endDate}
                               min={startDate || undefined}
@@ -2472,7 +2501,7 @@ function SalesContent() {
                     <tr>
                       <td colSpan={7} className="px-4 py-12 text-center">
                         <p className="text-sm text-slate-500">No sales match these filters.</p>
-                        <p className="mt-1 text-xs text-slate-400">
+                        <p className="mt-1 text-xs text-slate-500">
                           Try a wider date range, or select All Time.
                         </p>
                       </td>
@@ -2491,7 +2520,7 @@ function SalesContent() {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-center">
-                        <button type="button" onClick={() => { setSelectedTransaction(tx); setShowAllSalesModal(false) }} className="text-slate-400 hover:text-slate-600">
+                        <button type="button" onClick={() => { setSelectedTransaction(tx); setShowAllSalesModal(false) }} className="text-slate-500 hover:text-slate-600">
                           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                         </button>
                       </td>
@@ -2523,16 +2552,17 @@ function SalesContent() {
 
       {/* Email Modal */}
       {showEmailModal ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" role="dialog" aria-modal="true" aria-labelledby="email-modal-title"
+          onMouseDown={(e) => { if (e.target === e.currentTarget && !emailSending) setShowEmailModal(false) }}>
           <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl">
             <div className="border-b border-slate-200 px-5 py-4">
-              <h2 className="font-semibold text-slate-900">Send Receipt</h2>
+              <h2 id="email-modal-title" className="font-semibold text-slate-900">Send receipt</h2>
               <p className="mt-0.5 text-xs text-slate-500">Enter the customer email to send the invoice from JMGs Japan Surplus.</p>
             </div>
             <div className="px-5 py-4 space-y-3">
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">Customer Email Address</label>
-                <input maxLength={INPUT_LIMITS.email}
+                <input aria-label="Customer email" maxLength={INPUT_LIMITS.email}
                   type="email"
                   value={emailModalInput}
                   onChange={(e) => { setEmailModalInput(e.target.value); setEmailModalError('') }}
@@ -2542,7 +2572,7 @@ function SalesContent() {
                   onKeyDown={(e) => { if (e.key === 'Enter' && emailModalInput.trim()) openGmailCompose(emailModalInput.trim()) }}
                 />
                 {emailModalError && <p className="mt-1.5 text-xs text-red-600">{emailModalError}</p>}
-                <p className="mt-1.5 text-[11px] text-slate-400">This will open Gmail with the receipt pre-filled.</p>
+                <p className="mt-1.5 text-[11px] text-slate-500">This will open Gmail with the receipt pre-filled.</p>
               </div>
             </div>
             <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-3">
@@ -2577,6 +2607,6 @@ function SalesContent() {
           onClose={() => setScannerOpen(false)}
         />
       )}
-    </main>
+    </div>
   )
 }

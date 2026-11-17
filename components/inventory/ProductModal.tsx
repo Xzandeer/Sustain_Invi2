@@ -4,7 +4,9 @@
 // Exports ProductFormValues, the shape the Inventory page saves.
 
 import { INPUT_LIMITS } from '@/lib/constants/limits'
-import { useEffect, useMemo, useState } from 'react'
+import { blockDecimalKeys } from '@/lib/client/blockDecimalKeys'
+import { useEffect, useMemo, useState, useRef } from 'react'
+import { useWindowFocus } from '@/lib/client/useWindowFocus'
 import { MAX_STOCK, MAX_PRICE, MAX_CONDITION_NOTES, clampIntegerInput, clampPriceInput } from '@/lib/constants/limits'
 import { apiFetch } from '@/lib/apiFetch'
 import { X } from 'lucide-react'
@@ -26,6 +28,8 @@ export interface ProductFormValues {
   conditionNotes?: string
   /** 'unit': every piece gets its own record and label. New items only; fixed afterwards. */
   trackingMode?: TrackingMode
+  /** Edit only, per-piece items: the conditions of the pieces on the shelf ("Good ×2, Fair"). */
+  pieceConditions?: string
   /** Grade given to the pieces being created (unit tracking). */
   unitGrade?: UnitGrade
 }
@@ -105,6 +109,17 @@ export default function ProductModal({
     setUnitGrade('New')
   }, [isOpen, initialValues, defaultCategory])
 
+  // Focus moves into the window and Tab stays inside it.
+  const panelRef = useRef<HTMLDivElement>(null)
+  useWindowFocus(panelRef, isOpen)
+  // Esc closes, like the other windows (not while saving).
+  useEffect(() => {
+    if (!(isOpen)) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !submitting) onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isOpen, submitting, onClose])
+
   if (!isOpen) return null
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -145,11 +160,11 @@ export default function ProductModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-2xl rounded-2xl bg-white p-5 shadow-sm sm:p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" role="dialog" aria-modal="true" aria-labelledby="product-modal-title">
+      <div ref={panelRef} className="w-full max-w-2xl rounded-2xl bg-white p-5 shadow-sm sm:p-6">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-2xl font-semibold text-slate-900">{initialValues ? 'Edit Item' : 'Add Inventory Item'}</h2>
-          <button onClick={onClose} className="text-slate-500 transition hover:text-slate-700" title="Close">
+          <h2 id="product-modal-title" className="text-lg font-semibold text-slate-900">{initialValues ? 'Edit item' : 'Add inventory item'}</h2>
+          <button onClick={onClose} className="text-slate-500 transition hover:text-slate-700" title="Close" aria-label="Close">
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -157,7 +172,7 @@ export default function ProductModal({
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-2">
-              <label className="text-sm font-medium text-slate-900">Item Name *</label>
+              <label className="text-sm font-medium text-slate-900">Item name *</label>
               <input maxLength={INPUT_LIMITS.name}
                 value={name}
                 onChange={(event) => setName(event.target.value)}
@@ -201,13 +216,13 @@ export default function ProductModal({
               <label className="text-sm font-medium text-slate-900">Quantity {initialValues ? '' : '*'}</label>
               {initialValues ? (
                 <div className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600">
-                  <p><span className="font-medium text-slate-900">Current Stock:</span> {initialValues.quantity}</p>
+                  <p><span className="font-medium text-slate-900">Current stock:</span> {initialValues.quantity}</p>
                   <p><span className="font-medium text-slate-900">Reserved:</span> {initialValues.reservedStock ?? 0}</p>
                   <p><span className="font-medium text-slate-900">Available:</span> {initialValues.availableStock ?? initialValues.quantity}</p>
                 </div>
               ) : isSingleItem ? (
                 <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-600">
-                  1 <span className="text-xs text-slate-400">(single item)</span>
+                  1 <span className="text-xs text-slate-500">(single item)</span>
                 </div>
               ) : (
                 <input
@@ -215,7 +230,7 @@ export default function ProductModal({
                   inputMode="numeric"
                   maxLength={String(MAX_STOCK).length}
                   value={quantity}
-                  onChange={(event) => setQuantity(clampIntegerInput(event.target.value, quantity))}
+                  onKeyDown={blockDecimalKeys} onChange={(event) => setQuantity(clampIntegerInput(event.target.value, quantity))}
                   required
                   className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
                 />
@@ -223,13 +238,13 @@ export default function ProductModal({
             </div>
             {!isSingleItem && (
             <div className="space-y-2">
-              <label className="text-sm font-medium text-slate-900">Minimum Stock *</label>
+              <label className="text-sm font-medium text-slate-900">Minimum stock *</label>
               <input
                 type="text"
                 inputMode="numeric"
                 maxLength={String(MAX_STOCK).length}
                 value={minStock}
-                onChange={(event) => setMinStock(clampIntegerInput(event.target.value, minStock))}
+                onKeyDown={blockDecimalKeys} onChange={(event) => setMinStock(clampIntegerInput(event.target.value, minStock))}
                 required
                 className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
               />
@@ -239,7 +254,11 @@ export default function ProductModal({
               <label className="text-sm font-medium text-slate-900">Condition *</label>
               {initialValues ? (
                 <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600">
-                  <p><span className="font-medium text-slate-900">Current Condition:</span> {initialValues.condition}</p>
+                  {initialValues.trackingMode === 'unit'
+                    // Per-piece items have no single condition: show the pieces' own,
+                    // not the derived New/Refurbished label.
+                    ? <p><span className="font-medium text-slate-900">On the shelf:</span> {initialValues.pieceConditions || 'No pieces on the shelf'}</p>
+                    : <p><span className="font-medium text-slate-900">Current Condition:</span> {initialValues.condition}</p>}
                 </div>
               ) : (
                 <select
@@ -335,7 +354,7 @@ export default function ProductModal({
 
             <div className="space-y-2 sm:col-span-2">
               <label className="text-sm font-medium text-slate-900">
-                Condition Notes <span className="font-normal text-slate-400">(optional)</span>
+                Condition notes <span className="font-normal text-slate-500">(optional)</span>
               </label>
               <textarea maxLength={INPUT_LIMITS.note}
                 value={conditionNotes}
@@ -344,7 +363,7 @@ export default function ProductModal({
                 placeholder="e.g. small dent on the side, works perfectly"
                 className="w-full resize-none rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
               />
-              <p className="text-right text-[11px] text-slate-400">
+              <p className="text-right text-[11px] text-slate-500">
                 {conditionNotes.length}/{MAX_CONDITION_NOTES}
               </p>
             </div>
@@ -372,9 +391,9 @@ export default function ProductModal({
             <button
               type="submit"
               disabled={submitting}
-              className="rounded-lg bg-sky-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {submitting ? 'Saving...' : initialValues ? 'Update Item' : 'Create Item'}
+              {submitting ? 'Saving...' : initialValues ? 'Save changes' : 'Create item'}
             </button>
           </div>
         </form>

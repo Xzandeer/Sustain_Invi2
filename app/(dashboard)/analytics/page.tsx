@@ -30,6 +30,7 @@ import {
   ArcElement,
   Tooltip,
   Legend,
+  Filler,
 } from 'chart.js'
 import { Line, Doughnut } from 'react-chartjs-2'
 import { collection, getDocs, orderBy, query, Timestamp, where } from 'firebase/firestore'
@@ -41,7 +42,8 @@ import UnitInsights from '@/components/analytics/UnitInsights'
 import type { InventoryRecord } from '@/lib/server/salesInventoryMetrics'
 import { GRADE_LABEL, GRADE_TONE, UNIT_GRADES, normalizeUnitGrade, parseUnitLines, type UnitGrade } from '@/lib/inventory/units'
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ArcElement, Tooltip, Legend)
+// Filler draws the shaded area under a line (the charts set fill: true).
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ArcElement, Tooltip, Legend, Filler)
 
 // ── 1. Types ──────────────────────────────────────────────────────────────────
 // The condition a piece sold in (lib/inventory/units.ts). Older lines without
@@ -1874,7 +1876,7 @@ function AnalyticsContent() {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-3 py-3 sm:px-5 sm:py-4">
+    <div className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-3 py-3 sm:px-5 sm:py-4">
       <div className="mx-auto max-w-[1400px] space-y-3 sm:space-y-4">
 
         {/* ── PAGE HEADER ──────────────────────────────────────────────────── */}
@@ -1892,7 +1894,7 @@ function AnalyticsContent() {
           </div>
           <div className="flex items-center gap-2">
             <div className="hidden items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-600 shadow-sm sm:flex">
-              <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <svg className="h-3.5 w-3.5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
               </svg>
               <span className="font-medium">{activeRange.start.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
@@ -1903,7 +1905,7 @@ function AnalyticsContent() {
               type="button"
               onClick={handleExportCsv}
               title="Download the current view as a CSV file"
-              className="inline-flex items-center gap-2 rounded-lg bg-[#1e3a5f] px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#162d4a]"
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
             >
               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
@@ -1918,8 +1920,8 @@ function AnalyticsContent() {
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div className="flex flex-wrap items-end gap-3">
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-semibold uppercase tracking-wide text-slate-400">Time Range</label>
-                <select
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Time Range</label>
+                <select aria-label="Time range"
                   value={timeRangePreset}
                   onChange={(e) => setTimeRangePreset(e.target.value as TimeRangePreset)}
                   className="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-700 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100 transition"
@@ -1933,8 +1935,8 @@ function AnalyticsContent() {
                 </select>
               </div>
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-semibold uppercase tracking-wide text-slate-400">Start Date</label>
-                <input
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Start Date</label>
+                <input aria-label="From date"
                   type="date"
                   value={timeRangePreset === 'custom' ? customStartDate : formatDateInput(activeRange.start)}
                   max={timeRangePreset === 'custom' && customEndDate ? customEndDate : undefined}
@@ -1943,8 +1945,8 @@ function AnalyticsContent() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-semibold uppercase tracking-wide text-slate-400">End Date</label>
-                <input
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">End Date</label>
+                <input aria-label="To date"
                   type="date"
                   value={timeRangePreset === 'custom' ? customEndDate : formatDateInput(activeRange.end)}
                   min={timeRangePreset === 'custom' && customStartDate ? customStartDate : undefined}
@@ -1953,8 +1955,8 @@ function AnalyticsContent() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-semibold uppercase tracking-wide text-slate-400">Category</label>
-                <select
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Category</label>
+                <select aria-label="Filter by category"
                   value={selectedCategory}
                   onChange={(e) => setSelectedCategory(e.target.value)}
                   className="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-700 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100 transition"
@@ -1966,8 +1968,8 @@ function AnalyticsContent() {
                 </select>
               </div>
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-semibold uppercase tracking-wide text-slate-400">Condition</label>
-                <select
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Condition</label>
+                <select aria-label="Filter by condition"
                   value={selectedCondition}
                   onChange={(e) => setSelectedCondition((UNIT_GRADES as readonly string[]).includes(e.target.value) ? (e.target.value as UnitGrade) : 'All Conditions')}
                   className="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-700 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100 transition"
@@ -1983,14 +1985,16 @@ function AnalyticsContent() {
               )}
               {/* Changing the range refetches, so say when figures are still moving. */}
               {salesLoading && !dataError && (
-                <p className="text-xs text-slate-400">Loading sales…</p>
+                <p className="text-xs text-slate-500">Loading sales…</p>
               )}
               <button
                 type="button"
                 onClick={() => { setTimeRangePreset('this-month'); setCustomStartDate(''); setCustomEndDate(''); setSelectedCategory('All Categories'); setSelectedCondition('All Conditions') }}
-                className="h-9 rounded-lg border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 hover:bg-slate-50 transition"
+                // Only clickable when a filter differs from the defaults.
+                disabled={timeRangePreset === 'this-month' && !customStartDate && !customEndDate && selectedCategory === 'All Categories' && selectedCondition === 'All Conditions'}
+                className="h-9 rounded-lg border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 hover:bg-slate-50 transition disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white"
               >
-                Reset Filters
+                Reset filters
               </button>
             </div>
           </div>
@@ -2025,7 +2029,7 @@ function AnalyticsContent() {
                 <span className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] font-semibold ${(comparisonMetrics.totalSales[0].change ?? 0) >= 0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
                   {(comparisonMetrics.totalSales[0].change ?? 0) >= 0 ? '↑' : '↓'} {percentFormatter.format(Math.abs(comparisonMetrics.totalSales[0].change ?? 0))}%
                 </span>
-                <span className="text-[11px] text-slate-400">vs last period</span>
+                <span className="text-[11px] text-slate-500">vs last period</span>
               </div>
             )}
           </div>
@@ -2048,7 +2052,7 @@ function AnalyticsContent() {
                 <span className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] font-semibold ${(comparisonMetrics.itemsSold[0].change ?? 0) >= 0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
                   {(comparisonMetrics.itemsSold[0].change ?? 0) >= 0 ? '↑' : '↓'} {percentFormatter.format(Math.abs(comparisonMetrics.itemsSold[0].change ?? 0))}%
                 </span>
-                <span className="text-[11px] text-slate-400">vs last period</span>
+                <span className="text-[11px] text-slate-500">vs last period</span>
               </div>
             )}
           </div>
@@ -2068,7 +2072,7 @@ function AnalyticsContent() {
                 </svg>
               </div>
             </div>
-            <p className="mt-2 text-[11px] text-slate-400">per item sold</p>
+            <p className="mt-2 text-[11px] text-slate-500">per item sold</p>
           </div>
 
           {/* Transactions */}
@@ -2084,7 +2088,7 @@ function AnalyticsContent() {
                 </svg>
               </div>
             </div>
-            <p className="mt-2 text-[11px] text-slate-400">completed sales</p>
+            <p className="mt-2 text-[11px] text-slate-500">completed sales</p>
           </div>
 
           {/* Projected Demand */}
@@ -2102,7 +2106,7 @@ function AnalyticsContent() {
             </div>
             <div className="mt-2">
               <span className="inline-flex items-center rounded-full bg-indigo-50 px-1.5 py-0.5 text-[11px] font-semibold text-indigo-700">High</span>
-              <span className="ml-1.5 text-[11px] text-slate-400">demand</span>
+              <span className="ml-1.5 text-[11px] text-slate-500">demand</span>
             </div>
           </div>
 
@@ -2145,7 +2149,7 @@ function AnalyticsContent() {
                 </div>
                 <div>
                   <h2 className="text-sm font-semibold text-slate-900">Sales Trend &amp; AI Forecast</h2>
-                  <p className="text-[11px] text-slate-400">
+                  <p className="text-[11px] text-slate-500">
                     {trendSeries.granularity === 'day' ? 'Daily' : 'Monthly'} ·{' '}
                     {activeRange.start.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })} –{' '}
                     {activeRange.end.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}
@@ -2344,7 +2348,7 @@ function AnalyticsContent() {
                 <svg className="h-3 w-3 shrink-0 text-violet-400" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd"/>
                 </svg>
-                <p className="text-[11px] text-slate-400">
+                <p className="text-[11px] text-slate-500">
                   Forecast calculated from this store&apos;s own sales history.
                   {mergedChartData.hasAI && aiForecast?.fromCache && (
                     <span className="ml-1 text-violet-400">· Cached</span>
@@ -2497,7 +2501,7 @@ function AnalyticsContent() {
                     type="button"
                     onClick={() => setEventsTab(key)}
                     className={`-mb-px border-b-2 px-3 pb-2 text-xs font-semibold transition ${
-                      eventsTab === key ? 'border-violet-600 text-violet-700' : 'border-transparent text-slate-400 hover:text-slate-600'
+                      eventsTab === key ? 'border-violet-600 text-violet-700' : 'border-transparent text-slate-500 hover:text-slate-600'
                     }`}
                   >
                     {label}
@@ -2512,7 +2516,7 @@ function AnalyticsContent() {
                     <p className="text-sm font-medium text-slate-600">
                       {eventsTab === 'upcoming' ? 'No upcoming notes' : 'No past notes yet'}
                     </p>
-                    <p className="mt-1 text-xs text-slate-400">
+                    <p className="mt-1 text-xs text-slate-500">
                       {eventsTab === 'upcoming'
                         ? 'Add a delivery, sale or closure above and the forecast will take it into account.'
                         : 'Notes move here once their date has passed.'}
@@ -2528,7 +2532,7 @@ function AnalyticsContent() {
                         <div className="flex items-start gap-3">
                           <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${meta.dot}`} aria-hidden="true" />
                           <div className="min-w-0 flex-1">
-                            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                               {new Date(`${ev.date}T00:00:00`).toLocaleDateString('en-PH', { weekday: 'short', month: 'short', day: 'numeric' })}
                               {' · '}{meta.label}
                             </p>
@@ -2537,7 +2541,7 @@ function AnalyticsContent() {
                               <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700">
                                 {target.byAI ? 'AI: ' : ''}{target.label}
                               </span>
-                              {ev.createdByName && <span className="text-[11px] text-slate-400">by {ev.createdByName}</span>}
+                              {ev.createdByName && <span className="text-[11px] text-slate-500">by {ev.createdByName}</span>}
                             </div>
                             {target.byAI && ev.aiReason && (
                               <p className="mt-1 text-[11px] italic text-slate-500">“{ev.aiReason}”</p>
@@ -2604,7 +2608,7 @@ function AnalyticsContent() {
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z"/>
                   </svg>
-                  <p className="text-xs text-slate-400">Running AI analysis…</p>
+                  <p className="text-xs text-slate-500">Running AI analysis…</p>
                 </div>
               )}
 
@@ -2612,7 +2616,7 @@ function AnalyticsContent() {
                 <div className="flex flex-1 flex-col items-center justify-center gap-3 py-10 text-center">
                   <div>
                     <p className="text-sm font-semibold text-slate-700">No forecast yet</p>
-                    <p className="mt-1 text-xs leading-relaxed text-slate-400">Click Generate to get an AI-powered 7-day demand prediction.</p>
+                    <p className="mt-1 text-xs leading-relaxed text-slate-500">Click Generate to get an AI-powered 7-day demand prediction.</p>
                   </div>
                 </div>
               )}
@@ -2652,7 +2656,7 @@ function AnalyticsContent() {
                   {/* Confidence Score bar */}
                   <div className="rounded-xl border border-slate-100 bg-slate-50 p-2.5">
                     <div className="mb-2 flex items-center justify-between">
-                      <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-400">Confidence</p>
+                      <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">Confidence</p>
                       <span className="text-sm font-semibold text-slate-900">{aiConfidenceNum !== null ? `${aiConfidenceNum}%` : '—'}</span>
                     </div>
                     <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
@@ -2661,7 +2665,7 @@ function AnalyticsContent() {
                         style={{ width: `${aiConfidenceNum ?? 0}%` }}
                       />
                     </div>
-                    <p className="mt-1.5 text-[11px] font-semibold text-slate-400">{aiForecast.aiForecast.confidence} Confidence · AI Predictive Engine</p>
+                    <p className="mt-1.5 text-[11px] font-semibold text-slate-500">{aiForecast.aiForecast.confidence} Confidence · AI Predictive Engine</p>
                   </div>
 
                   {/* Top seller. Named for what it measures - revenue over the
@@ -2670,9 +2674,9 @@ function AnalyticsContent() {
                       category because it reads a different window. */}
                   {aiForecast.summary && (
                     <div className="rounded-xl border border-slate-100 bg-slate-50 p-2.5">
-                      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-slate-400">Top seller · last 14 days</p>
+                      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-slate-500">Top seller · last 14 days</p>
                       <p className="text-sm font-semibold text-slate-900">{aiForecast.summary.topCategories[0]?.name ?? '—'}</p>
-                      <p className="mt-0.5 text-xs text-slate-400">{currency(aiForecast.summary.topCategories[0]?.revenue ?? 0)} revenue</p>
+                      <p className="mt-0.5 text-xs text-slate-500">{currency(aiForecast.summary.topCategories[0]?.revenue ?? 0)} revenue</p>
                     </div>
                   )}
 
@@ -2680,11 +2684,11 @@ function AnalyticsContent() {
                   {aiForecast.summary && (
                     <div className="grid grid-cols-2 gap-2">
                       <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-                        <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-400">Last 7d</p>
+                        <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">Last 7d</p>
                         <p className="mt-1 text-xs font-semibold tabular-nums text-slate-900">{currency(aiForecast.summary.last7Revenue)}</p>
                       </div>
                       <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-                        <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-400">WoW</p>
+                        <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">WoW</p>
                         <p className={`mt-1 text-sm font-semibold tabular-nums ${aiForecast.summary.wowChange >= 0 ? 'text-green-600' : 'text-red-500'}`}>
                           {aiForecast.summary.wowChange >= 0 ? '+' : ''}{aiForecast.summary.wowChange.toFixed(1)}%
                         </p>
@@ -2695,7 +2699,7 @@ function AnalyticsContent() {
                   {/* Recommended restock from top categories */}
                   {aiForecast.summary && aiForecast.summary.topCategories.length > 1 && (
                     <div className="rounded-xl border border-slate-100 bg-slate-50 p-2.5">
-                      <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-slate-400">Top Categories</p>
+                      <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-slate-500">Top Categories</p>
                       <div className="space-y-1.5">
                         {aiForecast.summary.topCategories.slice(0, 3).map((cat, i) => (
                           <div key={cat.name} className="flex items-center justify-between gap-2">
@@ -2724,7 +2728,7 @@ function AnalyticsContent() {
 
             {/* Panel footer */}
             <div className="border-t border-slate-50 px-3 py-1">
-              <p className="text-[11px] text-slate-400">
+              <p className="text-[11px] text-slate-500">
                 {eventsOpen
                   ? 'Notes for the next 30 days are used in the forecast'
                   : `Predictive AI Engine · ${trendSeries.granularity === 'day' ? '7-day' : '1-period'} window`}
@@ -2739,14 +2743,14 @@ function AnalyticsContent() {
           {/* Category Distribution */}
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <h3 className="text-sm font-semibold text-slate-900">Category Distribution</h3>
-            <p className="mt-0.5 text-xs text-slate-400">Sales distribution by category</p>
+            <p className="mt-0.5 text-xs text-slate-500">Sales distribution by category</p>
             <ChartHelp
               what="Each slice is one product category, sized by the sales value it earned in the selected period. The six highest-earning categories are shown; anything smaller is left out."
               use="see which product lines actually carry the shop, so the next bale can be chosen around them rather than around what feels popular."
             />
             <div className="mb-3" />
             {currentSummary.categories.length === 0 ? (
-              <p className="py-8 text-center text-sm text-slate-400">No category data available.</p>
+              <p className="py-8 text-center text-sm text-slate-500">No category data available.</p>
             ) : (
               <div className="flex flex-col items-center gap-5">
                 <div className="relative h-40 w-40">
@@ -2771,7 +2775,7 @@ function AnalyticsContent() {
                     }}
                   />
                   <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                    <p className="text-xs font-medium text-slate-400">Total</p>
+                    <p className="text-xs font-medium text-slate-500">Total</p>
                     <p className="text-sm font-semibold text-slate-900">{currency(currentSummary.totalSales)}</p>
                   </div>
                 </div>
@@ -2787,7 +2791,7 @@ function AnalyticsContent() {
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
                           <span className="text-xs font-semibold text-slate-900">{currency(cat.revenue)}</span>
-                          <span className="text-xs text-slate-400">({pct.toFixed(0)}%)</span>
+                          <span className="text-xs text-slate-500">({pct.toFixed(0)}%)</span>
                         </div>
                       </div>
                     )
@@ -2800,14 +2804,14 @@ function AnalyticsContent() {
           {/* Sales by Condition */}
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <h3 className="text-sm font-semibold text-slate-900">Sales by Condition</h3>
-            <p className="mt-0.5 text-xs text-slate-400">Breakdown by item condition</p>
+            <p className="mt-0.5 text-xs text-slate-500">Breakdown by item condition</p>
             <ChartHelp
               what="How the period's sales value splits across the conditions the pieces sold in, from New / Unissued to For parts."
               use="see which conditions earn the most, and whether lower-grade stock is worth buying in."
             />
             <div className="mb-3" />
             {salesByCondition.total === 0 ? (
-              <p className="py-8 text-center text-sm text-slate-400">No condition data available.</p>
+              <p className="py-8 text-center text-sm text-slate-500">No condition data available.</p>
             ) : (
               <div className="flex flex-col items-center gap-5">
                 <div className="relative h-40 w-40">
@@ -2832,7 +2836,7 @@ function AnalyticsContent() {
                     }}
                   />
                   <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                    <p className="text-xs font-medium text-slate-400">{salesByCondition.top && salesByCondition.total > 0 ? `${Math.round((salesByCondition.top.value / salesByCondition.total) * 100)}%` : '0%'}</p>
+                    <p className="text-xs font-medium text-slate-500">{salesByCondition.top && salesByCondition.total > 0 ? `${Math.round((salesByCondition.top.value / salesByCondition.total) * 100)}%` : '0%'}</p>
                     <p className="text-xs font-semibold text-slate-900">{salesByCondition.top ? salesByCondition.top.grade : ''}</p>
                   </div>
                 </div>
@@ -2864,7 +2868,7 @@ function AnalyticsContent() {
             <div className="mb-3 flex items-start justify-between">
               <div>
                 <h3 className="text-sm font-semibold text-slate-900">Reservation Activity</h3>
-                <p className="mt-0.5 text-xs text-slate-400">{getRangeLabel(timeRangePreset)}</p>
+                <p className="mt-0.5 text-xs text-slate-500">{getRangeLabel(timeRangePreset)}</p>
                 <ChartHelp
                   what="Every reservation made in the period, counted by how it ended: still active, paid and awaiting collection, completed, cancelled, or expired without being claimed."
                   use="see how many holds turn into sales and how many tie up stock and then lapse."
@@ -2873,7 +2877,7 @@ function AnalyticsContent() {
               <span className="text-xl font-bold text-slate-900">{reservationActivity.total}</span>
             </div>
             {reservationActivity.total === 0 ? (
-              <p className="py-6 text-center text-sm text-slate-400">No reservations for this period.</p>
+              <p className="py-6 text-center text-sm text-slate-500">No reservations for this period.</p>
             ) : (
               <div className="space-y-4">
                 <div className="mx-auto h-32 w-32">
@@ -2920,7 +2924,7 @@ function AnalyticsContent() {
                         </div>
                         <div className="flex items-baseline gap-1.5">
                           <span className="text-xs font-semibold text-slate-900">{count}</span>
-                          <span className="text-xs text-slate-400">{pct}%</span>
+                          <span className="text-xs text-slate-500">{pct}%</span>
                         </div>
                       </div>
                     )
@@ -2939,7 +2943,7 @@ function AnalyticsContent() {
             <div className="mb-3 flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-semibold text-slate-900">Top Categories</h3>
-                <p className="mt-0.5 text-xs text-slate-400">Ranked by sales amount</p>
+                <p className="mt-0.5 text-xs text-slate-500">Ranked by sales amount</p>
               </div>
               <button
                 type="button"
@@ -2950,21 +2954,21 @@ function AnalyticsContent() {
               </button>
             </div>
             {currentSummary.categories.length === 0 ? (
-              <p className="py-6 text-center text-sm text-slate-400">No category sales found.</p>
+              <p className="py-6 text-center text-sm text-slate-500">No category sales found.</p>
             ) : (
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-slate-100">
-                    <th className="pb-2 text-left text-xs font-semibold text-slate-400">#</th>
-                    <th className="pb-2 text-left text-xs font-semibold text-slate-400">Category</th>
-                    <th className="pb-2 text-right text-xs font-semibold text-slate-400">Qty Sold</th>
-                    <th className="pb-2 text-right text-xs font-semibold text-slate-400">Sales Amount</th>
+                    <th className="pb-2 text-left text-xs font-semibold text-slate-500">#</th>
+                    <th className="pb-2 text-left text-xs font-semibold text-slate-500">Category</th>
+                    <th className="pb-2 text-right text-xs font-semibold text-slate-500">Qty Sold</th>
+                    <th className="pb-2 text-right text-xs font-semibold text-slate-500">Sales Amount</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
                   {currentSummary.categories.slice(0, 6).map((row, i) => (
                     <tr key={row.categoryId} className="hover:bg-slate-50 transition-colors">
-                      <td className="py-2.5 text-xs text-slate-400">{i + 1}</td>
+                      <td className="py-2.5 text-xs text-slate-500">{i + 1}</td>
                       <td className="py-2.5 text-sm font-medium text-slate-900">{row.categoryName}</td>
                       <td className="py-2.5 text-right text-sm text-slate-600">{compactNumber.format(row.itemsSold)}</td>
                       <td className="py-2.5 text-right text-sm font-semibold text-slate-900">{currency(row.revenue)}</td>
@@ -2979,10 +2983,10 @@ function AnalyticsContent() {
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3">
               <h3 className="text-sm font-semibold text-slate-900">Top Products</h3>
-              <p className="mt-0.5 text-xs text-slate-400">Best performing products</p>
+              <p className="mt-0.5 text-xs text-slate-500">Best performing products</p>
             </div>
             {topProducts.length === 0 ? (
-              <p className="py-6 text-center text-sm text-slate-400">No product data found.</p>
+              <p className="py-6 text-center text-sm text-slate-500">No product data found.</p>
             ) : (
               <div className="space-y-2">
                 {topProducts.map((product, i) => (
@@ -2990,7 +2994,7 @@ function AnalyticsContent() {
                     <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-xs font-semibold text-slate-500 shadow-sm">{i + 1}</span>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-xs font-semibold text-slate-900">{product.name}</p>
-                      <p className="text-xs text-slate-400">{compactNumber.format(product.qty)} sold</p>
+                      <p className="text-xs text-slate-500">{compactNumber.format(product.qty)} sold</p>
                     </div>
                     <span className="shrink-0 text-xs font-semibold text-slate-900">{currency(product.revenue)}</span>
                   </div>
@@ -3004,19 +3008,19 @@ function AnalyticsContent() {
             <div className="mb-3 flex items-start justify-between gap-2">
               <div>
                 <h3 className="text-sm font-semibold text-slate-900">Inventory by Category</h3>
-                <p className="mt-0.5 text-xs text-slate-400">Units on the shelf right now</p>
+                <p className="mt-0.5 text-xs text-slate-500">Units on the shelf right now</p>
               </div>
               {inventorySummary.length > 0 && (
                 <div className="text-right">
                   <p className="text-lg font-semibold leading-none text-slate-900">
                     {compactNumber.format(inventorySummary.reduce((sum, r) => sum + r.stock, 0))}
                   </p>
-                  <p className="mt-0.5 text-[11px] text-slate-400">total units</p>
+                  <p className="mt-0.5 text-[11px] text-slate-500">total units</p>
                 </div>
               )}
             </div>
             {inventorySummary.length === 0 ? (
-              <p className="py-6 text-center text-sm text-slate-400">No inventory data found.</p>
+              <p className="py-6 text-center text-sm text-slate-500">No inventory data found.</p>
             ) : (
               (() => {
                 // Bars are scaled to the largest category, so the eye compares
@@ -3033,7 +3037,7 @@ function AnalyticsContent() {
                           <span className="truncate text-xs font-medium text-slate-700">{row.categoryName}</span>
                           <span className="shrink-0 text-xs font-semibold tabular-nums text-slate-900">
                             {compactNumber.format(row.stock)}
-                            <span className="ml-1 font-normal text-slate-400">units</span>
+                            <span className="ml-1 font-normal text-slate-500">units</span>
                           </span>
                         </div>
                         <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
@@ -3045,7 +3049,7 @@ function AnalyticsContent() {
                       </div>
                     ))}
                     {rest.length > 0 && (
-                      <p className="pt-1 text-[11px] text-slate-400">
+                      <p className="pt-1 text-[11px] text-slate-500">
                         + {rest.length} more {rest.length === 1 ? 'category' : 'categories'} ·{' '}
                         {compactNumber.format(restUnits)} units
                       </p>
@@ -3071,7 +3075,7 @@ function AnalyticsContent() {
             <div className="mb-3 flex items-start justify-between gap-2">
               <div>
                 <h3 className="text-sm font-semibold text-slate-900">Category Forecast</h3>
-                <p className="mt-0.5 text-xs text-slate-400">
+                <p className="mt-0.5 text-xs text-slate-500">
                   Projected from the last {predictiveSummary.windowDays}{' '}
                   {trendSeries.granularity === 'day' ? 'days' : 'periods'} of {getRangeLabel(timeRangePreset).toLowerCase()}
                 </p>
@@ -3084,7 +3088,7 @@ function AnalyticsContent() {
             {!predictiveSummary.hasCategory ? (
               <div className="rounded-xl bg-slate-50 px-4 py-6 text-center">
                 <p className="text-sm font-semibold text-slate-700">{predictiveSummary.emptyReason}</p>
-                <p className="mt-1 text-xs text-slate-400">
+                <p className="mt-1 text-xs text-slate-500">
                   Choose a range that ends closer to today to see a projection.
                 </p>
               </div>
@@ -3137,7 +3141,7 @@ function AnalyticsContent() {
               </>
             )}
 
-            <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
+            <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
               A calculation from recent sales only, with no AI involved. Because it looks at the most
               recent days, it can name a different category from Top Categories, which covers the whole period.
             </p>
@@ -3147,7 +3151,7 @@ function AnalyticsContent() {
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-4">
               <h3 className="text-sm font-semibold text-slate-900">Executive Summary</h3>
-              <p className="mt-0.5 text-xs text-slate-400">Key insights for {getRangeLabel(timeRangePreset).toLowerCase()}</p>
+              <p className="mt-0.5 text-xs text-slate-500">Key insights for {getRangeLabel(timeRangePreset).toLowerCase()}</p>
             </div>
             <div className="space-y-2.5">
               <div className="flex items-start gap-3 rounded-xl bg-slate-50 px-4 py-3">
@@ -3243,6 +3247,6 @@ function AnalyticsContent() {
           </div>
         </div>
       ) : null}
-    </main>
+    </div>
   )
 }

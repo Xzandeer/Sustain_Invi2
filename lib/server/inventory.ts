@@ -1,5 +1,6 @@
 // Server-side inventory operations - creates items, logs stock changes, retrieves user info
 import { FieldValue, type DocumentReference } from 'firebase-admin/firestore'
+import { gradeSummary } from '@/lib/inventory/units'
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { createItemBarcode } from '@/lib/server/barcodes'
 import { normalizeStockLogActionForStorage, ResolvedStockLogAction } from '@/lib/inventory/stockLogActions'
@@ -55,7 +56,7 @@ export interface StockLogEntryInput {
   previousValue?: string
   newValue?: string
   /** Unit-tracked items: the exact pieces this movement involved. */
-  units?: Array<{ id: string; unitCode: string }>
+  units?: Array<{ id: string; unitCode: string; grade?: string }>
 }
 
 // Helper: Normalize item name for comparison (trim, lowercase, single spaces)
@@ -66,7 +67,7 @@ const buildValueSummary = (input: {
   stock: number
   reserved: number
   quantity: number
-  condition: InventoryCondition
+  condition: string
 }) => {
   const available = Math.max(0, input.stock - input.reserved)
   return `Stock: ${input.stock} | Reserved: ${input.reserved} | Available: ${available} | Qty: ${input.quantity} | Condition: ${input.condition}`
@@ -157,6 +158,10 @@ export const createStockLog = async (entry: StockLogEntryInput) => {
   const reservedBefore = entry.reservedBefore ?? 0
   const reservedAfter = entry.reservedAfter ?? 0
   const actionType = normalizeStockLogActionForStorage(entry.actionType)
+  // Per-piece items: the condition of the pieces that moved ("Good ×2, Fair"),
+  // not the item's derived New/Refurbished label.
+  const unitGrades = (entry.units ?? []).map((u) => u.grade ?? '').filter(Boolean)
+  const condition = unitGrades.length > 0 ? gradeSummary(unitGrades) : entry.condition
 
   // Validate action type
   if (!actionType) {
@@ -169,7 +174,7 @@ export const createStockLog = async (entry: StockLogEntryInput) => {
     actionType,
     itemId: entry.itemId,
     itemName: entry.itemName,
-    condition: entry.condition,
+    condition,
     quantityBefore: entry.quantityBefore,
     quantityChanged: entry.quantityChanged,
     quantityAfter: entry.quantityAfter,
@@ -184,7 +189,7 @@ export const createStockLog = async (entry: StockLogEntryInput) => {
         stock: stockBefore,
         reserved: reservedBefore,
         quantity: entry.quantityBefore,
-        condition: entry.condition,
+        condition,
       }),
     newValue:
       entry.newValue ??
@@ -192,7 +197,7 @@ export const createStockLog = async (entry: StockLogEntryInput) => {
         stock: stockAfter,
         reserved: reservedAfter,
         quantity: entry.quantityAfter,
-        condition: entry.condition,
+        condition,
       }),
     userName: entry.user.name,
     userEmail: entry.user.email ?? '',
@@ -201,7 +206,7 @@ export const createStockLog = async (entry: StockLogEntryInput) => {
     relatedId: entry.relatedId ?? '', // Links to sale/reservation if applicable
     // Lets one unit's history be read back with array-contains on unitIds.
     ...(entry.units && entry.units.length > 0
-      ? { unitIds: entry.units.map((u) => u.id), unitCodes: entry.units.map((u) => u.unitCode) }
+      ? { unitIds: entry.units.map((u) => u.id), unitCodes: entry.units.map((u) => u.unitCode), ...(unitGrades.length ? { unitGrades } : {}) }
       : {}),
   })
 }

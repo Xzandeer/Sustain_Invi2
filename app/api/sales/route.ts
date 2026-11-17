@@ -321,6 +321,11 @@ export async function POST(req: NextRequest) {
         })
       }
 
+      // A discount must leave something to pay. Checked here, against today's
+      // prices, before any write is applied (throwing undoes the transaction).
+      const linesTotal = round2(saleLines.reduce((sum, l) => sum + l.quantity * l.price, 0))
+      if (requestedDiscount > 0 && requestedDiscount >= linesTotal) throw new Error('DISCOUNT_TOO_LARGE')
+
       // Apply all inventory updates atomically
       for (const update of pendingUpdates) {
         transaction.update(update.ref, {
@@ -332,8 +337,8 @@ export async function POST(req: NextRequest) {
       }
     })
 
-    // Step 10: Totals. The discount was already checked against the subtotal
-    // before any stock moved (see Step 5b).
+    // Step 10: Totals. The discount was checked against the subtotal inside
+    // the transaction, before any stock moved.
     const subtotal = round2(saleLines.reduce((sum, item) => sum + item.quantity * item.price, 0))
     const discount = Math.min(requestedDiscount, subtotal)
     const totalAmount = round2(subtotal - discount)
@@ -409,7 +414,7 @@ export async function POST(req: NextRequest) {
             reservedAfter: item.reservedAfter,
             user: processedBy,
             relatedId: saleRef.id,
-            units: item.units.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+            units: item.units.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })),
             remarks: `Sale ${numberResult.value} completed.` + describeUnits(item.units),
           })
         ),
@@ -426,7 +431,8 @@ export async function POST(req: NextRequest) {
       // A unit-tracked line prints each piece's grade and notes, which is what
       // a later refund about its condition turns on.
       ...(item.unitLines
-        ? { conditionNotes: item.unitLines.map((u) => `#${u.unitCode} ${u.grade}${u.conditionNotes ? ' - ' + u.conditionNotes : ''}`).join('; ') }
+        // The line already says its condition; a piece repeats it only when it differs.
+        ? { conditionNotes: item.unitLines.map((u) => `#${u.unitCode}${u.grade !== item.condition ? ' ' + u.grade : ''}${u.conditionNotes ? ' - ' + u.conditionNotes : ''}`).join('; ') }
         : item.conditionNotes ? { conditionNotes: item.conditionNotes } : {}),
       subtotal: item.quantity * item.price,
     }))
@@ -489,6 +495,9 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Cannot sell more than available stock.' }, { status: 400 })
       }
 
+      if (error.message === 'DISCOUNT_TOO_LARGE') {
+        return NextResponse.json({ error: 'The discount must be less than the subtotal.' }, { status: 400 })
+      }
       if (error.message === 'ITEM_VOIDED') {
         return NextResponse.json({ error: 'One or more items have been voided and cannot be sold.' }, { status: 400 })
       }

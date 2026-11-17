@@ -13,7 +13,19 @@ import type { CompletedTransactionDocument, ReceiptRecord } from '@/lib/transact
 // A Philippine mobile number is 11 digits (09 followed by nine more).
 // Reservations require one so the customer can be contacted when their hold is
 // about to expire - a reservation nobody can be reached about just freezes stock.
-export const isValidContactNumber = (value: string) => /^\d{11}$/.test(value.trim())
+/** A Philippine mobile number: 11 digits starting with 09. */
+export const isValidContactNumber = (value: string) => /^09\d{9}$/.test(value.trim())
+
+/** Why a contact number is not accepted yet, or '' when it is fine (or empty). */
+export const contactNumberProblem = (value: string): string => {
+  const v = value.trim()
+  if (!v || isValidContactNumber(v)) return ''
+  if (!v.startsWith('09')) return 'Must start with 09'
+  return `Must be 11 digits (${v.length}/11)`
+}
+
+/** Email is optional; when given it must look like an address. */
+export const isValidOptionalEmail = (value: string) => !value.trim() || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())
 
 export interface ReservationLine {
   id: string
@@ -47,8 +59,9 @@ export async function createReservation(
   if (lines.length === 0) throw new Error('Cart is empty.')
   if (!customer.fullName.trim()) throw new Error('Customer name is required for reservations.')
   if (!isValidContactNumber(customer.contactNumber)) {
-    throw new Error('Enter an 11-digit contact number for reservations.')
+    throw new Error('Enter an 11-digit contact number starting with 09.')
   }
+  if (!isValidOptionalEmail(customer.email ?? '')) throw new Error('Enter a valid email address, or leave it empty.')
 
   const invalid = lines.find(
     (item) =>

@@ -38,6 +38,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
+import { useConfirm } from '@/components/shared/ConfirmDialog'
 import { CancellationReasonModal } from '@/components/reservations/CancellationReasonModal'
 import { auth, db } from '@/lib/firebase'
 import { toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
@@ -74,6 +75,8 @@ interface Reservation {
   cancellationReasonType?: 'manual' | 'system'
   cancelledBy?: string
   cancelledAt?: Date | null
+  /** Who made the reservation (stored when it was created). */
+  processedByName?: string
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -182,8 +185,8 @@ function Pagination({
         <span className="font-semibold text-slate-700">{total}</span> reservations
       </span>
       <div className="flex items-center gap-1.5">
-        <span className="mr-1 text-xs text-slate-400">Rows per page</span>
-        <select
+        <span className="mr-1 text-xs text-slate-500">Rows per page</span>
+        <select aria-label="Rows per page"
           value={perPage}
           onChange={(e) => { onPerPage(Number(e.target.value)); onPage(1) }}
           className="rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
@@ -201,15 +204,15 @@ function Pagination({
         </button>
         {nums.map((n, i) =>
           n === '...' ? (
-            <span key={'e' + i} className="px-1 text-xs text-slate-400">…</span>
+            <span key={'e' + i} className="px-1 text-xs text-slate-500">…</span>
           ) : (
             <button
               key={n}
               onClick={() => onPage(n as number)}
               className={
-                'rounded border px-2.5 py-1 text-xs ' +
+                'rounded-md border px-2.5 py-1 text-xs ' +
                 (page === n
-                  ? 'border-blue-500 bg-blue-500 text-white'
+                  ? 'border-blue-600 bg-blue-600 font-semibold text-white'
                   : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50')
               }
             >
@@ -266,6 +269,23 @@ function ReservationsContent() {
   // irreversible act on a roll of thermal paper - the shop should see what it
   // is about to spend paper on first.
   const [ticketRes, setTicketRes] = useState<Reservation | null>(null)
+  // The app's own confirm window (not the browser's grey window.confirm box).
+  const { confirm, confirmDialog } = useConfirm()
+
+  // Refresh button: release any hold that has expired since the page opened.
+  const [checkingExpiry, setCheckingExpiry] = useState(false)
+  const checkExpiry = async () => {
+    setCheckingExpiry(true)
+    setNow(new Date())
+    try {
+      const released = await expireReservations()
+      toast.success(released > 0
+        ? `${released} expired reservation${released === 1 ? '' : 's'} released.`
+        : 'Up to date. No reservations have expired.')
+    } finally {
+      setCheckingExpiry(false)
+    }
+  }
 
   // Live clock (updates every 30s)
   useEffect(() => {
@@ -340,6 +360,7 @@ function ReservationsContent() {
                 : undefined,
             cancelledBy: typeof data.cancelledByName === 'string' ? data.cancelledByName : undefined,
             cancelledAt: toDate(data.cancelledAt),
+            processedByName: typeof data.processedByName === 'string' && data.processedByName.trim() ? data.processedByName.trim() : undefined,
           } satisfies Reservation
         })
         setReservations(records)
@@ -470,7 +491,12 @@ function ReservationsContent() {
     const question = collected
       ? 'Customer paid and is taking the items now?'
       : 'Record payment and keep the items here for collection?'
-    if (!window.confirm(question + '\n\n' + reservation.customer)) return
+    if (!(await confirm({
+      title: collected ? 'Claim this reservation?' : 'Record payment only?',
+      message: <>{question}<br /><span className="font-medium text-slate-800">{reservation.customer}</span> · {reservation.reservationNumber}</>,
+      confirmLabel: collected ? 'Claim' : 'Record payment',
+      tone: 'success',
+    }))) return
     setActionId(reservation.id)
     try {
       const res = await apiFetch('/api/reservations/' + reservation.id, {
@@ -537,7 +563,8 @@ function ReservationsContent() {
         subtotal: item.price * item.quantity,
       })),
       reservationDate: (reservation.createdAt ?? new Date()).toISOString(),
-      processedBy: auth.currentUser?.displayName ?? auth.currentUser?.email ?? 'Staff',
+      // The staff member who made the reservation, not whoever reprints it.
+      processedBy: reservation.processedByName ?? 'Staff',
       // Derived from this reservation's own dates, not the current store
       // setting: if the owner has since changed the hold period, a reprint must
       // still say what this customer was told.
@@ -556,7 +583,7 @@ function ReservationsContent() {
   // moves - it was deducted at payment - this only closes the handover.
   const handleCollectReservation = async (reservation: Reservation) => {
     if (reservation.status !== 'AwaitingCollection') return
-    if (!window.confirm('Hand the items to ' + reservation.customer + '?')) return
+    if (!(await confirm({ title: 'Hand over the items?', message: <>The customer is taking the items now.<br /><span className="font-medium text-slate-800">{reservation.customer}</span> · {reservation.reservationNumber}</>, confirmLabel: 'Hand over', tone: 'success' }))) return
     setActionId(reservation.id)
     try {
       const res = await apiFetch('/api/reservations/' + reservation.id, {
@@ -585,7 +612,7 @@ function ReservationsContent() {
 
   const handleExtendReservation = async (reservation: Reservation) => {
     if (reservation.status !== 'Active') return
-    if (!window.confirm('Extend the hold for ' + reservation.customer + '?')) return
+    if (!(await confirm({ title: 'Extend the hold?', message: <>Give <span className="font-medium text-slate-800">{reservation.customer}</span> more time to collect ({reservation.reservationNumber}).</>, confirmLabel: 'Extend' }))) return
     setActionId(reservation.id)
     try {
       const res = await apiFetch('/api/reservations/' + reservation.id, {
@@ -616,7 +643,7 @@ function ReservationsContent() {
   // shelf the hold is revived; if it has since sold, the server says so.
   const handleReinstateReservation = async (reservation: Reservation) => {
     if (reservation.status !== 'Expired' && reservation.status !== 'Cancelled') return
-    if (!window.confirm('Reinstate this reservation for ' + reservation.customer + '? The items must still be in stock.')) return
+    if (!(await confirm({ title: 'Reinstate this reservation?', message: <>For <span className="font-medium text-slate-800">{reservation.customer}</span> ({reservation.reservationNumber}). The items must still be in stock.</>, confirmLabel: 'Reinstate' }))) return
     setActionId(reservation.id)
     try {
       const res = await apiFetch('/api/reservations/' + reservation.id, {
@@ -700,7 +727,8 @@ function ReservationsContent() {
   const hasFilters = search || statusFilter !== 'all' || categoryFilter !== 'all' || startDate || endDate
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-3 py-4">
+    <div className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-3 py-4">
+      {confirmDialog}
       <div className="mx-auto max-w-[1680px] space-y-4">
 
         {/* ── HEADER ── */}
@@ -713,19 +741,23 @@ function ReservationsContent() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-500 shadow-sm">
-              <Clock className="h-3.5 w-3.5 text-slate-400" />
+              <Clock className="h-3.5 w-3.5 text-slate-500" />
               <span>
                 {now.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}
                 {' · '}
                 {now.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' })}
               </span>
             </div>
+            {/* The list is live already; this re-checks expiry now instead of
+                waiting for the next visit, and says what it found. */}
             <button
-              onClick={() => setNow(new Date())}
-              title="Refresh"
-              className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 shadow-sm transition-colors hover:bg-slate-50"
+              onClick={checkExpiry}
+              disabled={checkingExpiry}
+              title="Check for expired holds"
+              aria-label="Check for expired holds"
+              className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 shadow-sm transition-colors hover:bg-slate-50 disabled:opacity-60"
             >
-              <RefreshCw className="h-3.5 w-3.5" />
+              <RefreshCw className={"h-3.5 w-3.5" + (checkingExpiry ? " animate-spin" : "")} />
             </button>
             {/* Same blue as the Active status badge, so the header count and
                 the rows it counts read as the same thing. */}
@@ -746,7 +778,7 @@ function ReservationsContent() {
               Icon: Calendar,
               iconBg: 'bg-amber-100',
               iconColor: 'text-amber-600',
-              subColor: 'text-amber-500',
+              subColor: 'text-amber-700',
             },
             {
               label: 'COMPLETED RESERVATIONS',
@@ -755,7 +787,7 @@ function ReservationsContent() {
               Icon: CheckCircle2,
               iconBg: 'bg-emerald-100',
               iconColor: 'text-emerald-600',
-              subColor: 'text-emerald-500',
+              subColor: 'text-emerald-700',
             },
             {
               label: 'EXPIRED RESERVATIONS',
@@ -764,7 +796,7 @@ function ReservationsContent() {
               Icon: Clock,
               iconBg: 'bg-slate-100',
               iconColor: 'text-slate-500',
-              subColor: 'text-slate-400',
+              subColor: 'text-slate-500',
             },
             {
               label: 'CANCELLED RESERVATIONS',
@@ -773,7 +805,7 @@ function ReservationsContent() {
               Icon: XCircle,
               iconBg: 'bg-rose-100',
               iconColor: 'text-rose-500',
-              subColor: 'text-rose-500',
+              subColor: 'text-rose-600',
             },
           ] as const).map(({ label, value, sub, Icon, iconBg, iconColor, subColor }) => (
             <div
@@ -784,7 +816,7 @@ function ReservationsContent() {
                 <Icon className={'h-5 w-5 ' + iconColor} />
               </div>
               <div className="min-w-0">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
                 <p className="text-2xl font-bold leading-tight text-slate-900">{value}</p>
                 <p className={'text-xs ' + subColor}>{sub}</p>
               </div>
@@ -803,13 +835,13 @@ function ReservationsContent() {
               {/* Search */}
               <div className="relative min-w-[200px] flex-1">
                 <svg
-                  className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
+                  className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500"
                   fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
                 >
                   <circle cx="11" cy="11" r="8" />
                   <path d="m21 21-4.35-4.35" />
                 </svg>
-                <input maxLength={INPUT_LIMITS.search}
+                <input aria-label="Search reservations" maxLength={INPUT_LIMITS.search}
                   type="text"
                   value={search}
                   onChange={(e) => { setSearch(e.target.value); setPage(1) }}
@@ -819,7 +851,7 @@ function ReservationsContent() {
               </div>
 
               {/* Status */}
-              <select
+              <select aria-label="Filter by status"
                 value={statusFilter}
                 onChange={(e) => { setStatusFilter(e.target.value as 'all' | ReservationStatus); setPage(1) }}
                 className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-blue-400"
@@ -833,7 +865,7 @@ function ReservationsContent() {
               </select>
 
               {/* Category */}
-              <select
+              <select aria-label="Filter by category"
                 value={categoryFilter}
                 onChange={(e) => { setCategoryFilter(e.target.value); setPage(1) }}
                 className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-blue-400"
@@ -846,7 +878,7 @@ function ReservationsContent() {
 
               {/* Date range */}
               <div className="flex items-center gap-1.5">
-                <input
+                <input aria-label="From date"
                   type="date"
                   value={startDate}
                   max={endDate || undefined}
@@ -854,7 +886,7 @@ function ReservationsContent() {
                   className="rounded-lg border border-slate-200 px-2 py-2 text-xs text-slate-700 outline-none focus:border-blue-400"
                 />
                 <span className="text-xs text-slate-300">–</span>
-                <input
+                <input aria-label="To date"
                   type="date"
                   value={endDate}
                   min={startDate || undefined}
@@ -876,7 +908,7 @@ function ReservationsContent() {
                   }}
                   className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 transition-colors hover:bg-slate-100"
                 >
-                  <RefreshCw className="h-3 w-3" /> Reset Filters
+                  <RefreshCw className="h-3 w-3" /> Reset filters
                 </button>
               ) : null}
             </div>
@@ -947,13 +979,13 @@ function ReservationsContent() {
                 <tbody className="divide-y divide-slate-50">
                   {loading ? (
                     <tr>
-                      <td colSpan={9} className="py-12 text-center text-sm text-slate-400">
+                      <td colSpan={9} className="py-12 text-center text-sm text-slate-500">
                         Loading reservations…
                       </td>
                     </tr>
                   ) : paginatedReservations.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="py-12 text-center text-sm text-slate-400">
+                      <td colSpan={9} className="py-12 text-center text-sm text-slate-500">
                         No reservations found.
                       </td>
                     </tr>
@@ -997,7 +1029,7 @@ function ReservationsContent() {
                                           <span className="text-[11px] tabular-nums text-slate-500">₱{item.price.toLocaleString('en-PH')}</span>
                                         </div>
                                         {item.unitCodes.length > 0 && (
-                                          <p className="text-[10px] text-slate-400">{item.unitCodes.map((c) => `#${c}`).join(', ')}</p>
+                                          <p className="text-[10px] text-slate-500">{item.unitCodes.map((c) => `#${c}`).join(', ')}</p>
                                         )}
                                       </div>
                                     </div>
@@ -1035,7 +1067,7 @@ function ReservationsContent() {
                                 </div>
                               )
                             ) : (
-                              <span className="text-xs text-slate-400">No items</span>
+                              <span className="text-xs text-slate-500">No items</span>
                             )}
                           </td>
 
@@ -1058,7 +1090,7 @@ function ReservationsContent() {
                           {/* Reservation Date */}
                           <td className="whitespace-nowrap px-4 py-3">
                             <p className="text-xs font-medium text-slate-700">{fmtDate(r.createdAt)}</p>
-                            <p className="text-[11px] text-slate-400">{fmtTime(r.createdAt)}</p>
+                            <p className="text-[11px] text-slate-500">{fmtTime(r.createdAt)}</p>
                           </td>
 
                           {/* Expiration */}
@@ -1134,7 +1166,7 @@ function ReservationsContent() {
                                   disabled={actionId === r.id}
                                   onClick={() => handleCompleteReservation(r)}
                                   title="Customer paid - turn this hold into a sale"
-                                  className="flex h-8 items-center gap-1.5 rounded-lg bg-emerald-500 px-2.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-emerald-600 disabled:opacity-50"
+                                  className="flex h-8 items-center gap-1.5 rounded-lg bg-emerald-600 px-2.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:opacity-50"
                                 >
                                   <CheckCircle2 className="h-4 w-4 shrink-0" />
                                   Claim
@@ -1166,7 +1198,7 @@ function ReservationsContent() {
                                   disabled={actionId === r.id}
                                   onClick={() => handleCancelReservation(r)}
                                   title="Release the stock back to the shelf"
-                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-400 transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-50"
+                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-50"
                                 >
                                   <XCircle className="h-4 w-4" />
                                 </button>
@@ -1185,7 +1217,7 @@ function ReservationsContent() {
                                 <button
                                   onClick={() => setTicketRes(r)}
                                   title="View this reservation's ticket"
-                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-400 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-600"
+                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-600"
                                 >
                                   <ReceiptText className="h-4 w-4" />
                                 </button>
@@ -1205,7 +1237,7 @@ function ReservationsContent() {
                                   disabled={actionId === r.id}
                                   onClick={() => handleReinstateReservation(r)}
                                   title="Reinstate - the customer came back and the stock is still here"
-                                  className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#1e3a5f] text-white shadow-sm transition-colors hover:bg-[#162d4a] disabled:opacity-50"
+                                  className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-50"
                                 >
                                   <RotateCcw className="h-4 w-4" />
                                 </button>
@@ -1223,14 +1255,14 @@ function ReservationsContent() {
                                   disabled={actionId === r.id}
                                   onClick={() => handleReinstateReservation(r)}
                                   title="Reinstate this reservation"
-                                  className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#1e3a5f] text-white shadow-sm transition-colors hover:bg-[#162d4a] disabled:opacity-50"
+                                  className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-50"
                                 >
                                   <RotateCcw className="h-4 w-4" />
                                 </button>
                                 <button
                                   onClick={() => setViewReasonRes(r)}
                                   title="View Reason"
-                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-400 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-600"
+                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-600"
                                 >
                                   <AlertCircle className="h-4 w-4" />
                                 </button>
@@ -1265,7 +1297,7 @@ function ReservationsContent() {
                 <h3 className="text-xs font-semibold text-slate-800">Upcoming Expirations</h3>
               </div>
               {upcomingExpirations.length === 0 ? (
-                <p className="text-xs text-slate-400">No upcoming expirations.</p>
+                <p className="text-xs text-slate-500">No upcoming expirations.</p>
               ) : (
                 <div className="space-y-2.5">
                   {upcomingExpirations.map((r) => {
@@ -1285,7 +1317,7 @@ function ReservationsContent() {
                           <p className="truncate text-[11px] font-semibold text-slate-700">
                             {r.items[0]?.name ?? 'Item'}
                           </p>
-                          <p className="font-mono text-[10px] text-slate-400">{r.reservationNumber}</p>
+                          <p className="font-mono text-[10px] text-slate-500">{r.reservationNumber}</p>
                           <p className={'text-[10px] font-medium ' + (urgent ? 'text-rose-500' : 'text-amber-500')}>
                             {fmtCountdown(ms)}
                           </p>
@@ -1310,7 +1342,7 @@ function ReservationsContent() {
                 <h3 className="text-xs font-semibold text-slate-800">Recently Completed</h3>
               </div>
               {recentlyCompleted.length === 0 ? (
-                <p className="text-xs text-slate-400">No completed reservations yet.</p>
+                <p className="text-xs text-slate-500">No completed reservations yet.</p>
               ) : (
                 <div className="space-y-2.5">
                   {recentlyCompleted.map((r) => (
@@ -1322,8 +1354,8 @@ function ReservationsContent() {
                         <p className="truncate text-[11px] font-semibold text-slate-700">
                           {r.items[0]?.name ?? 'Item'}
                         </p>
-                        <p className="font-mono text-[10px] text-slate-400">{r.reservationNumber}</p>
-                        <p className="text-[10px] text-slate-400">
+                        <p className="font-mono text-[10px] text-slate-500">{r.reservationNumber}</p>
+                        <p className="text-[10px] text-slate-500">
                           {fmtDate(r.createdAt)}, {fmtTime(r.createdAt)}
                         </p>
                       </div>
@@ -1366,7 +1398,7 @@ function ReservationsContent() {
                   </button>
                 </>
               ) : (
-                <p className="text-xs text-slate-400">No reservation data available yet.</p>
+                <p className="text-xs text-slate-500">No reservation data available yet.</p>
               )}
             </div>
           </div>
@@ -1406,7 +1438,7 @@ function ReservationsContent() {
               <h3 className="text-sm font-semibold text-slate-800">Reservation Ticket</h3>
               <button
                 onClick={() => setTicketRes(null)}
-                className="rounded-lg p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                className="rounded-lg p-1 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-600"
               >
                 <XCircle className="h-4 w-4" />
               </button>
@@ -1490,7 +1522,7 @@ function ReservationsContent() {
               <h3 className="text-sm font-semibold text-slate-800">Cancellation Reason</h3>
               <button
                 onClick={() => setViewReasonRes(null)}
-                className="rounded-lg p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                className="rounded-lg p-1 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-600"
               >
                 <XCircle className="h-4 w-4" />
               </button>
@@ -1530,6 +1562,6 @@ function ReservationsContent() {
           </div>
         </div>
       ) : null}
-    </main>
+    </div>
   )
 }

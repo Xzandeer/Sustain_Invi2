@@ -148,7 +148,7 @@ export default function UnitsPanel({ product, canEdit, onClose, inline = false }
               <h2 className="truncate text-base font-semibold text-slate-900">{product.name}</h2>
               <p className="text-xs text-slate-500">{product.category} · {peso(product.price)}</p>
             </div>
-            <button type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+            <button type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-700">
               <X className="h-5 w-5" />
             </button>
           </div>
@@ -159,7 +159,7 @@ export default function UnitsPanel({ product, canEdit, onClose, inline = false }
             {TABS.map((t) => (
               <button key={t.id} type="button" onClick={() => { setTab(t.id); setSelected(new Set()) }}
                 className={`rounded-md px-2.5 py-1 ${tab === t.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
-                {t.label} <span className="tabular-nums text-slate-400">{counts[t.id] ?? 0}</span>
+                {t.label} <span className="tabular-nums text-slate-500">{counts[t.id] ?? 0}</span>
               </button>
             ))}
           </div>
@@ -176,9 +176,9 @@ export default function UnitsPanel({ product, canEdit, onClose, inline = false }
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           {loading ? (
-            <div className="flex items-center justify-center gap-2 py-16 text-sm text-slate-400"><Loader2 className="h-4 w-4 animate-spin" /> Loading pieces…</div>
+            <div className="flex items-center justify-center gap-2 py-16 text-sm text-slate-500"><Loader2 className="h-4 w-4 animate-spin" /> Loading pieces…</div>
           ) : shown.length === 0 ? (
-            <p className="py-16 text-center text-sm text-slate-400">No pieces here.</p>
+            <p className="py-16 text-center text-sm text-slate-500">No pieces here.</p>
           ) : (
             <table className="w-full text-xs">
               <thead className="sticky top-0 bg-slate-50 text-[10px] font-semibold uppercase tracking-wide text-slate-500">

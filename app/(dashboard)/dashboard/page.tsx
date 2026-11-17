@@ -36,6 +36,7 @@ import { CalendarPlus, ChevronRight, Loader2, Package, PackagePlus, ShoppingCart
 import { toast } from 'sonner'
 import { auth, db } from '@/lib/firebase'
 import { apiFetch } from '@/lib/apiFetch'
+import { useConfirm } from '@/components/shared/ConfirmDialog'
 import { cachedRead, loadSalesBetween } from '@/lib/client/readCache'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { useUserRole } from '@/hooks/useUserRole'
@@ -272,6 +273,8 @@ function DashboardContent() {
   // Inventory status: the figure that filters the list under it.
   const [statusFilter, setStatusFilter] = useState<'restock' | 'low' | 'out' | 'reserved'>('restock')
   const [reservationBusy, setReservationBusy] = useState<string | null>(null)
+  // The app's own confirm window (not the browser's grey window.confirm box).
+  const { confirm, confirmDialog } = useConfirm()
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), [])
 
@@ -612,10 +615,14 @@ function DashboardContent() {
 
   const reservationAction = async (r: ActiveReservation, action: 'complete' | 'extend') => {
     if (reservationBusy) return
-    const question = action === 'complete'
-      ? 'Customer paid and is taking the items now?'
-      : 'Extend the hold for ' + r.customer + '?'
-    if (!window.confirm(action === 'complete' ? question + '\n\n' + r.customer : question)) return
+    if (!(await confirm({
+      title: action === 'complete' ? 'Claim this reservation?' : 'Extend the hold?',
+      message: action === 'complete'
+        ? <>Customer paid and is taking the items now?<br /><span className="font-medium text-slate-800">{r.customer}</span></>
+        : <>Give <span className="font-medium text-slate-800">{r.customer}</span> more time to collect.</>,
+      confirmLabel: action === 'complete' ? 'Claim' : 'Extend',
+      tone: action === 'complete' ? 'success' : 'primary',
+    }))) return
     setReservationBusy(r.id)
     try {
       const res = await apiFetch('/api/reservations/' + r.id, {
@@ -688,7 +695,12 @@ function DashboardContent() {
   return (
     <div className="flex min-h-full flex-col bg-[#F1F5FC] xl:h-screen xl:overflow-hidden">
       <div className="flex flex-col gap-2 p-3 xl:min-h-0 xl:flex-1">
-        <h1 className="sr-only">Dashboard</h1>
+        {/* Same page title as every other page. */}
+        <div className="shrink-0">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Dashboard</h1>
+          <p className="text-xs text-slate-500">Today at a glance: sales, stock and reservations.</p>
+        </div>
+        {confirmDialog}
 
         {loadError && (
           <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-700">
@@ -744,10 +756,10 @@ function DashboardContent() {
                         className={`ml-2 rounded text-xs font-medium text-blue-600 hover:text-blue-700 ${FOCUS}`}>Show all</button>
                     )}
                   </h3>
-                  <span className="text-xs tabular-nums text-slate-400">{statusRows.length} item{statusRows.length === 1 ? '' : 's'}</span>
+                  <span className="text-xs tabular-nums text-slate-500">{statusRows.length} item{statusRows.length === 1 ? '' : 's'}</span>
                 </div>
                 {statusRows.length === 0 ? (
-                  <p className="px-4 py-5 text-center text-[13px] text-slate-400">{STATUS_EMPTY[statusFilter]}</p>
+                  <p className="px-4 py-5 text-center text-[13px] text-slate-500">{STATUS_EMPTY[statusFilter]}</p>
                 ) : (
                   <ul ref={restockRef} className="min-h-0 flex-1 overflow-hidden px-4">
                     {statusRows.slice((restockPageSafe - 1) * restockRows, restockPageSafe * restockRows).map((r) => (
@@ -773,9 +785,9 @@ function DashboardContent() {
           {canReserve && (
             <Panel className="xl:flex-1" title="Reservations" href="/reservations" linkLabel="Open reservations">
               {loading ? <div className="m-5 h-48 animate-pulse rounded-lg bg-slate-50" /> : !activeReservations ? (
-                <p className="px-4 py-8 text-center text-[13px] text-slate-400">Reservations could not be loaded.</p>
+                <p className="px-4 py-8 text-center text-[13px] text-slate-500">Reservations could not be loaded.</p>
               ) : activeReservations.length === 0 ? (
-                <p className="px-4 py-8 text-center text-[13px] text-slate-400">
+                <p className="px-4 py-8 text-center text-[13px] text-slate-500">
                   No active reservations. Use Reserve item below to hold stock for a customer.
                 </p>
               ) : (
@@ -788,7 +800,7 @@ function DashboardContent() {
                       const dueToday = activeReservations.filter((r) => r.expiresAt && r.expiresAt < daysBefore(today, -1)).length
                       return dueToday > 0
                         ? <span className="text-xs font-medium text-red-600">{dueToday} expire today</span>
-                        : <span className="text-xs text-slate-400">None expire today</span>
+                        : <span className="text-xs text-slate-500">None expire today</span>
                     })()}
                   </div>
                   <ul ref={reservationRef} className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-1">
@@ -801,7 +813,7 @@ function DashboardContent() {
                             <p className="truncate text-xs font-semibold text-slate-800" title={r.customer}>{r.customer}</p>
                             <p className="truncate text-xs text-slate-500" title={conditionSummary(r.held)}>
                               {productOf(r.items)}, {pcs(qty)}
-                              {r.held.length > 0 && <span className="text-slate-400"> · {conditionSummary(r.held)}</span>}
+                              {r.held.length > 0 && <span className="text-slate-500"> · {conditionSummary(r.held)}</span>}
                             </p>
                           </div>
                           <span
@@ -849,7 +861,7 @@ function DashboardContent() {
             linkLabel={canOpenLogs ? 'View stock logs' : 'View sales'}
           >
             {loading ? <div className="m-5 h-48 animate-pulse rounded-lg bg-slate-50" /> : activity.length === 0 ? (
-              <p className="px-4 py-8 text-center text-[13px] text-slate-400">
+              <p className="px-4 py-8 text-center text-[13px] text-slate-500">
                 No activity yet. Sales, reservations and stock changes will show up here.
               </p>
             ) : (
@@ -865,7 +877,7 @@ function DashboardContent() {
                     <time
                       dateTime={row.date.toISOString()}
                       title={row.date.toLocaleString('en-US')}
-                      className="w-20 shrink-0 whitespace-nowrap text-right text-[13px] tabular-nums text-slate-400"
+                      className="w-20 shrink-0 whitespace-nowrap text-right text-[13px] tabular-nums text-slate-500"
                     >
                       {timeAgo(row.date, now)}
                     </time>
@@ -1000,9 +1012,9 @@ function Pager({ page, pages, onPage, label = 'Restock list pages' }: { page: nu
         className={`${btn} border border-slate-200 text-slate-600 hover:bg-slate-50`}>‹</button>
       {nums.map((p, i) => (
         <span key={p} className="flex items-center gap-1">
-          {i > 0 && p - nums[i - 1] > 1 && <span className="w-4 text-center text-xs text-slate-400">…</span>}
+          {i > 0 && p - nums[i - 1] > 1 && <span className="w-4 text-center text-xs text-slate-500">…</span>}
           <button type="button" onClick={() => onPage(p)} aria-current={p === page ? 'page' : undefined}
-            className={`${btn} ${p === page ? 'bg-[#1a2035] font-semibold text-white' : 'border border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+            className={`${btn} ${p === page ? 'bg-blue-600 font-semibold text-white' : 'border border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
             {p}
           </button>
         </span>
@@ -1022,9 +1034,9 @@ function StatusTile({ href, onClick, active, label, count, unit, tone, labelTone
       <span className={`block text-[10px] font-semibold uppercase tracking-wide ${active ? 'text-blue-600' : labelTone}`}>{label}</span>
       <span className={`mt-0.5 block text-2xl font-bold leading-tight tabular-nums ${tone}`}>
         {count.toLocaleString('en-PH')}
-        {unit && <span className="ml-1 text-xs font-medium text-slate-400">{unit}</span>}
+        {unit && <span className="ml-1 text-xs font-medium text-slate-500">{unit}</span>}
       </span>
-      {hint && <span className="block truncate text-[11px] text-slate-400">{hint}</span>}
+      {hint && <span className="block truncate text-[11px] text-slate-500">{hint}</span>}
       {active && <span aria-hidden className="absolute inset-x-0 bottom-0 h-[3px] bg-blue-600" />}
     </>
   )
@@ -1051,7 +1063,7 @@ const QUICK_TONE = {
     tile: 'border border-slate-200 bg-white text-slate-900 shadow-[0_1px_2px_rgba(15,23,42,0.05),0_10px_22px_-14px_rgba(15,23,42,0.25)] hover:border-slate-300 hover:bg-slate-50',
     icon: 'bg-blue-50 text-blue-600 ring-1 ring-inset ring-blue-100',
     desc: 'text-slate-500',
-    arrow: 'text-slate-400',
+    arrow: 'text-slate-500',
   },
 } as const
 

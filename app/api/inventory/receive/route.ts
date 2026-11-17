@@ -192,7 +192,7 @@ export async function POST(req: NextRequest) {
       reservedBefore: before.reserved,
       reservedAfter: before.reserved,
       user: processedBy,
-      units: created.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+      units: created.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })),
       remarks: `Received ${quantity}: ${tally}.${source ? ` From ${source}.` : ''}` + describeUnits(created),
     })
 

@@ -11,7 +11,9 @@
 // can name the exact pieces, otherwise the oldest on the shelf go first.
 
 import { INPUT_LIMITS } from '@/lib/constants/limits'
-import { useEffect, useState } from 'react'
+import { blockDecimalKeys } from '@/lib/client/blockDecimalKeys'
+import { useEffect, useState, useRef } from 'react'
+import { useWindowFocus } from '@/lib/client/useWindowFocus'
 import { MAX_STOCK, MAX_CONDITION_NOTES, clampIntegerInput, clampPriceInput } from '@/lib/constants/limits'
 import { X } from 'lucide-react'
 import { apiFetch } from '@/lib/apiFetch'
@@ -101,6 +103,17 @@ export default function StockAdjustmentModal({
     return () => { cancelled = true }
   }, [isOpen, product, action, pickable])
 
+  // Focus moves into the window and Tab stays inside it.
+  const panelRef = useRef<HTMLDivElement>(null)
+  useWindowFocus(panelRef, isOpen && !!product)
+  // Esc closes, like the other windows (not while saving).
+  useEffect(() => {
+    if (!(isOpen && !!product)) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !submitting) onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isOpen, product, submitting, onClose])
+
   if (!isOpen || !product) return null
 
   const alternateCondition = product.condition === 'New' ? 'Refurbished' : 'New'
@@ -128,23 +141,23 @@ export default function StockAdjustmentModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-2xl rounded-xl bg-white p-6 shadow-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" role="dialog" aria-modal="true" aria-labelledby="adjust-modal-title">
+      <div ref={panelRef} className="w-full max-w-2xl rounded-xl bg-white p-6 shadow-sm">
         <div className="mb-5 flex items-center justify-between">
           <div>
-            <h2 className="text-2xl font-semibold text-slate-900">Adjust Stock</h2>
+            <h2 id="adjust-modal-title" className="text-lg font-semibold text-slate-900">Adjust stock</h2>
             <p className="text-sm text-slate-500">
               {product.name} ({product.condition} variant)
             </p>
           </div>
-          <button onClick={onClose} className="text-slate-500 transition hover:text-slate-700" title="Close">
+          <button onClick={onClose} className="text-slate-500 transition hover:text-slate-700" title="Close" aria-label="Close">
             <X className="h-5 w-5" />
           </button>
         </div>
 
         <div className="mb-5 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700 sm:grid-cols-3">
           <div>
-            <p className="text-slate-500">Current Stock</p>
+            <p className="text-slate-500">Current stock</p>
             <p className="font-semibold text-slate-900">{product.quantity}</p>
           </div>
           <div>
@@ -166,7 +179,7 @@ export default function StockAdjustmentModal({
                 onChange={(event) => setAction(event.target.value as StockAction)}
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
               >
-                {!product.isSingleItem && !unitTracked && <option value="add">Add Stock</option>}
+                {!product.isSingleItem && !unitTracked && <option value="add">Add stock</option>}
                 <option value="deduct">Deduct Stock</option>
                 {!product.isSingleItem && !unitTracked && <option value="transfer">Transfer to Another Condition</option>}
               </select>
@@ -193,7 +206,7 @@ export default function StockAdjustmentModal({
                 inputMode="numeric"
                 maxLength={String(MAX_STOCK).length}
                 value={quantity}
-                onChange={(event) => setQuantity(clampIntegerInput(event.target.value, quantity))}
+                onKeyDown={blockDecimalKeys} onChange={(event) => setQuantity(clampIntegerInput(event.target.value, quantity))}
                 className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500"
                 required
               />
@@ -212,13 +225,13 @@ export default function StockAdjustmentModal({
                 </select>
               </div>
               <div className="space-y-2 sm:col-span-2">
-                <label className="text-sm font-medium text-slate-900">Condition of these pieces <span className="font-normal text-slate-400">(optional)</span></label>
+                <label className="text-sm font-medium text-slate-900">Condition of these pieces <span className="font-normal text-slate-500">(optional)</span></label>
                 <input value={unitNotes} maxLength={MAX_CONDITION_NOTES} onChange={(e) => setUnitNotes(e.target.value)}
                   placeholder="e.g. complete with box"
                   className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500" />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-900">Own price <span className="font-normal text-slate-400">(optional)</span></label>
+                <label className="text-sm font-medium text-slate-900">Own price <span className="font-normal text-slate-500">(optional)</span></label>
                 <input maxLength={INPUT_LIMITS.money} value={unitPrice} inputMode="decimal" placeholder="Item price"
                   onChange={(e) => setUnitPrice(clampPriceInput(e.target.value, unitPrice))}
                   className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500" />
@@ -233,13 +246,13 @@ export default function StockAdjustmentModal({
           {unitTracked && action !== 'add' && (
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-900">
-                Which pieces <span className="font-normal text-slate-400">(optional - oldest first if none chosen)</span>
+                Which pieces <span className="font-normal text-slate-500">(optional - oldest first if none chosen)</span>
               </label>
               <div className="max-h-44 overflow-y-auto rounded-lg border border-slate-200">
                 {pickable === null ? (
-                  <p className="px-3 py-3 text-xs text-slate-400">Loading pieces…</p>
+                  <p className="px-3 py-3 text-xs text-slate-500">Loading pieces…</p>
                 ) : pickable.length === 0 ? (
-                  <p className="px-3 py-3 text-xs text-slate-400">No pieces on the shelf.</p>
+                  <p className="px-3 py-3 text-xs text-slate-500">No pieces on the shelf.</p>
                 ) : pickable.map((u) => (
                   <label key={u.id} className="flex cursor-pointer items-center gap-2.5 border-b border-slate-100 px-3 py-1.5 text-xs last:border-0 hover:bg-slate-50">
                     <input type="checkbox" checked={picked.has(u.id)} className="h-3.5 w-3.5 accent-sky-900"
@@ -285,9 +298,9 @@ export default function StockAdjustmentModal({
             <button
               type="submit"
               disabled={submitting}
-              className="rounded-lg bg-sky-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {submitting ? 'Saving...' : 'Apply Adjustment'}
+              {submitting ? 'Saving...' : 'Apply adjustment'}
             </button>
             <button
               type="button"

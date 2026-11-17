@@ -90,7 +90,7 @@ export async function PATCH(req: Request, context: RouteContext) {
       reservedBefore: reserved,
       reservedAfter: reserved,
       user: processedBy,
-      units: [{ id: unitId, unitCode: String(unit.unitCode ?? '') }],
+      units: [{ id: unitId, unitCode: String(unit.unitCode ?? ''), grade: String(patch.grade ?? unit.grade ?? '') }],
       remarks: `Unit #${unit.unitCode} edited. ${changes.join('. ')}.`,
     })
 

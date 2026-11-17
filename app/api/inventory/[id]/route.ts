@@ -497,7 +497,7 @@ export async function PATCH(req: Request, context: RouteContext) {
           reservedBefore: currentReservedStock,
           reservedAfter: currentReservedStock,
           user: processedBy,
-          units: movedUnits.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+          units: movedUnits.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })),
           remarks: `Item fully voided (${voidQuantity} unit${voidQuantity !== 1 ? 's' : ''}). Reason: ${voidReason}` + describeUnits(movedUnits),
         })
       } else {
@@ -533,7 +533,7 @@ export async function PATCH(req: Request, context: RouteContext) {
           reservedBefore: currentReservedStock,
           reservedAfter: currentReservedStock,
           user: processedBy,
-          units: movedUnits.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+          units: movedUnits.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })),
           remarks: `Partial void: ${voidQuantity} of ${currentStock} unit${currentStock !== 1 ? 's' : ''} removed. Reason: ${voidReason}` + describeUnits(movedUnits),
         })
       }
@@ -614,7 +614,7 @@ export async function PATCH(req: Request, context: RouteContext) {
         reservedBefore: currentReservedStock,
         reservedAfter: currentReservedStock,
         user: processedBy,
-        units: movedUnits.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+        units: movedUnits.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })),
         remarks: restoreQuantity > 0
           ? `Restored ${restoreQuantity} of ${maxRestorable} voided unit${maxRestorable !== 1 ? 's' : ''}.` +
             (remainingVoidedUnits > 0

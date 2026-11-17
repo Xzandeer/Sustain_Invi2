@@ -19,6 +19,8 @@
 
 import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useWindowFocus } from '@/lib/client/useWindowFocus'
+import { useConfirm } from '@/components/shared/ConfirmDialog'
 import Link from 'next/link'
 import { toast } from 'sonner'
 import { Plus, X } from 'lucide-react'
@@ -26,8 +28,10 @@ import { apiFetch } from '@/lib/apiFetch'
 import { useFitRows } from '@/lib/client/useFitRows'
 import { GRADE_LABEL, GRADE_TONE, UNIT_GRADES, type UnitGrade } from '@/lib/inventory/units'
 import {
+  contactNumberProblem,
   createReservation,
   isValidContactNumber,
+  isValidOptionalEmail,
 } from '@/lib/reservations/createReservation'
 
 export interface ReservableItem {
@@ -136,13 +140,26 @@ export default function ReserveItemModal({
     loadShelf()
   }, [isOpen, loadShelf])
 
+  // Closing with unsaved work (Esc or ✕) asks first, in the app's own window.
+  const { confirm: askConfirm, confirmDialog } = useConfirm()
+  const requestClose = async () => {
+    if (submitting) return
+    if ((cart.length > 0 || fullName.trim() !== '' || contactNumber !== '') && !reservationCode) {
+      const ok = await askConfirm({ title: 'Discard this reservation?', message: 'The items and customer details you entered will be cleared.', confirmLabel: 'Discard', cancelLabel: 'Keep editing', tone: 'danger' })
+      if (!ok) return
+    }
+    onClose()
+  }
+  const requestCloseRef = useRef(requestClose)
+  requestCloseRef.current = requestClose
+
   // Escape closes, except while the request is in flight.
   useEffect(() => {
     if (!isOpen) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !submitting) onClose() }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !submitting) void requestCloseRef.current() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [isOpen, submitting, onClose])
+  }, [isOpen, submitting])
 
   // If live stock drops below what is in the cart (another counter sold it),
   // clamp the line rather than let the API refuse the whole reservation.
@@ -180,7 +197,19 @@ export default function ReserveItemModal({
   const subtotal = cart.reduce((s, l) => s + l.price * l.quantity, 0)
   const units = cart.reduce((s, l) => s + l.quantity, 0)
   const contactInvalid = contactNumber.length > 0 && !isValidContactNumber(contactNumber)
-  const canConfirm = cart.length > 0 && fullName.trim().length > 0 && isValidContactNumber(contactNumber) && !submitting
+  const emailInvalid = !isValidOptionalEmail(email)
+  const canConfirm = cart.length > 0 && fullName.trim().length > 0 && isValidContactNumber(contactNumber) && !emailInvalid && !submitting
+  // Shown under a greyed-out Confirm, so it is clear what is still needed.
+  const missing = [
+    cart.length === 0 && 'an item',
+    !fullName.trim() && "the customer's name",
+    !isValidContactNumber(contactNumber) && 'a valid phone number',
+    emailInvalid && 'a valid email (or none)',
+  ].filter(Boolean) as string[]
+
+  // Focus moves into the window and Tab stays inside it.
+  const panelRef = useRef<HTMLDivElement>(null)
+  useWindowFocus(panelRef, isOpen)
 
   if (!isOpen) return null
 
@@ -256,14 +285,15 @@ export default function ReserveItemModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 md:pl-[calc(13rem+1rem)]" role="dialog" aria-modal="true" aria-labelledby="reserve-item-title">
-      <div className={`flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ${reservationCode !== null ? '' : 'lg:h-[calc(100vh-2rem)]'}`}>
+      {confirmDialog}
+      <div ref={panelRef} className={`flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ${reservationCode !== null ? '' : 'lg:h-[calc(100vh-2rem)]'}`}>
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
           <div>
-            <h2 id="reserve-item-title" className="text-lg font-semibold text-slate-900">Reserve Item</h2>
+            <h2 id="reserve-item-title" className="text-lg font-semibold text-slate-900">Reserve item</h2>
             <p className="text-xs text-slate-500">Hold items for a customer. Stock is set aside until the reservation is collected or expires.</p>
           </div>
-          <button type="button" onClick={onClose} disabled={submitting} className="rounded-lg p-1 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40" title="Close">
+          <button type="button" onClick={() => void requestClose()} disabled={submitting} className="rounded-lg p-1 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40" title="Close" aria-label="Close">
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -310,9 +340,9 @@ export default function ReserveItemModal({
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {loading ? (
-                      <tr><td colSpan={3} className="py-8 text-center text-sm text-slate-400">Loading products...</td></tr>
+                      <tr><td colSpan={3} className="py-8 text-center text-sm text-slate-500">Loading products...</td></tr>
                     ) : visible.length === 0 ? (
-                      <tr><td colSpan={3} className="py-8 text-center text-sm text-slate-400">{items.length === 0 ? 'No products in inventory.' : 'No products match your search.'}</td></tr>
+                      <tr><td colSpan={3} className="py-8 text-center text-sm text-slate-500">{items.length === 0 ? 'No products in inventory.' : 'No products match your search.'}</td></tr>
                     ) : visible.map((item) => {
                       const out = item.availableStock <= 0
                       const perPiece = item.trackingMode === 'unit'
@@ -385,7 +415,7 @@ export default function ReserveItemModal({
                                     </button>
                                   )
                                 })}
-                                {grades.length === 0 && ownCount === 0 && <span className="text-xs text-slate-400">None on the shelf</span>}
+                                {grades.length === 0 && ownCount === 0 && <span className="text-xs text-slate-500">None on the shelf</span>}
                               </>) : (
                                 <button
                                   type="button"
@@ -420,11 +450,11 @@ export default function ReserveItemModal({
             {/* Cart + customer */}
             <div className="flex min-h-0 flex-col lg:overflow-y-auto">
               <div className="border-b border-slate-100 px-4 py-3">
-                <p className="text-sm font-semibold text-slate-900">Items to reserve <span className="font-normal text-slate-400">({units})</span></p>
+                <p className="text-sm font-semibold text-slate-900">Items to reserve <span className="font-normal text-slate-500">({units})</span></p>
               </div>
               <div className="max-h-56 divide-y divide-slate-50 overflow-y-auto px-4 lg:max-h-none lg:min-h-0 lg:flex-1">
                 {cart.length === 0 ? (
-                  <p className="py-5 text-center text-xs text-slate-400">No items yet. Pick a condition from the list.</p>
+                  <p className="py-5 text-center text-xs text-slate-500">No items yet. Pick a condition from the list.</p>
                 ) : cart.map((l) => {
                   const grade = (l.grade ?? l.label.split(' · ')[0]) as UnitGrade
                   return (
@@ -455,7 +485,7 @@ export default function ReserveItemModal({
               </div>
 
               <div className="space-y-2.5 border-t border-slate-100 px-4 py-3">
-                <p className="text-sm font-semibold text-slate-900">Reservation Details</p>
+                <p className="text-sm font-semibold text-slate-900">Reservation details</p>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-slate-600">Name <span className="font-semibold text-rose-500">*</span></label>
                   <input maxLength={INPUT_LIMITS.name} type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Customer name" disabled={submitting}
@@ -467,23 +497,27 @@ export default function ReserveItemModal({
                     onChange={(e) => setContactNumber(e.target.value.replace(/\D/g, '').slice(0, 11))}
                     placeholder="09XXXXXXXXX" disabled={submitting}
                     className={`w-full rounded-lg border px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none disabled:opacity-60 ${contactInvalid ? 'border-rose-300 focus:border-rose-400' : 'border-slate-200 focus:border-blue-400'}`} />
-                  {contactInvalid && <p className="mt-1 text-xs text-rose-500">Must be 11 digits ({contactNumber.length}/11)</p>}
+                  {contactInvalid && <p className="mt-1 text-xs text-rose-500">{contactNumberProblem(contactNumber)}</p>}
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-600">Email <span className="font-normal text-slate-400">(Optional)</span></label>
-                  <input maxLength={INPUT_LIMITS.email} type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email address" disabled={submitting}
-                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none disabled:opacity-60" />
+                  <label className="mb-1 block text-xs font-medium text-slate-600">Email <span className="font-normal text-slate-500">(Optional)</span></label>
+                  <input maxLength={INPUT_LIMITS.email} type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email address" disabled={submitting} aria-invalid={emailInvalid}
+                    className={`w-full rounded-lg border px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none disabled:opacity-60 ${emailInvalid ? 'border-rose-300 focus:border-rose-400' : 'border-slate-200 focus:border-blue-400'}`} />
+                  {emailInvalid && <p className="mt-1 text-xs text-rose-500">Enter a valid email address, or leave it empty</p>}
                 </div>
               </div>
 
               {error && <p className="mx-4 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
 
+              {!submitting && missing.length > 0 && (
+                <p className="mx-4 text-xs text-slate-500">To confirm, add {missing.length > 1 ? missing.slice(0, -1).join(', ') + ' and ' + missing[missing.length - 1] : missing[0]}.</p>
+              )}
               <div className="mt-auto flex gap-2 border-t border-slate-100 px-4 py-3">
-                <button type="button" onClick={onClose} disabled={submitting} className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-40">
+                <button type="button" onClick={() => void requestClose()} disabled={submitting} className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-40">
                   Cancel
                 </button>
                 <button type="button" onClick={confirm} disabled={!canConfirm} className="flex-1 rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40">
-                  {submitting ? 'Reserving…' : 'Confirm Reservation'}
+                  {submitting ? 'Reserving…' : 'Confirm reservation'}
                 </button>
               </div>
             </div>

@@ -33,7 +33,7 @@ import { FieldValue } from 'firebase-admin/firestore'
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { getWarrantyDays } from '@/lib/server/storeSettings'
 import { checkPermission, verifiedUid } from '@/lib/server/authorize'
-import { parseUnitLines, type UnitLineRef } from '@/lib/inventory/units'
+import { gradeSummary, parseUnitLines, type UnitLineRef } from '@/lib/inventory/units'
 import { setUnitsStatus, unitsCollection, parseUnit } from '@/lib/server/units'
 import { getProcessedByInfo } from '@/lib/server/inventory'
 import { forget } from '@/lib/server/readCache'
@@ -259,7 +259,8 @@ export async function POST(req: NextRequest) {
           actionType: 'sale_refund',
           itemId: line.itemId,
           itemName: line.name,
-          condition: line.condition ?? cur.condition ?? 'New',
+          // The returned pieces' own conditions when known ("Good ×2").
+          condition: lineUnits.length ? gradeSummary(lineUnits.map((u) => u.grade)) : (line.condition ?? cur.condition ?? 'New'),
           quantityBefore: stockBefore,
           quantityChanged: line.quantity,
           quantityAfter: stockAfter,
@@ -272,7 +273,7 @@ export async function POST(req: NextRequest) {
           userId: actor.uid ?? '',
           remarks: `Refund – ${receiptNumber}: ${reasonText}` +
             (lineUnits.length ? ` Units back on the shelf: ${lineUnits.map((u) => '#' + u.unitCode).join(', ')}.` : ''),
-          ...(lineUnits.length ? { unitIds: lineUnits.map((u) => u.id), unitCodes: lineUnits.map((u) => u.unitCode) } : {}),
+          ...(lineUnits.length ? { unitIds: lineUnits.map((u) => u.id), unitCodes: lineUnits.map((u) => u.unitCode), unitGrades: lineUnits.map((u) => u.grade) } : {}),
           refundReasonCategory: reasonCategory,
           referenceId: receiptNumber,
           referenceType: 'refund',

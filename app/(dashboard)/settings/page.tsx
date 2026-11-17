@@ -10,6 +10,7 @@
 // the customer was actually promised.
 
 import { INPUT_LIMITS, clampIntegerInput } from '@/lib/constants/limits'
+import { blockDecimalKeys } from '@/lib/client/blockDecimalKeys'
 import { useState, useEffect } from 'react'
 import { checkPassword, PASSWORD_RULE_HINT } from '@/lib/auth/passwordPolicy'
 import { apiFetch } from '@/lib/apiFetch'
@@ -209,7 +210,7 @@ function SettingsContent() {
     },
     {
       key: 'password',
-      label: 'Change Password',
+      label: 'Change password',
       icon: (
         <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
@@ -218,7 +219,7 @@ function SettingsContent() {
     },
     {
       key: 'policy',
-      label: 'Store Policy',
+      label: 'Store policy',
       icon: (
         <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
@@ -227,7 +228,7 @@ function SettingsContent() {
     },
     {
       key: 'backup',
-      label: 'Data Backup',
+      label: 'Data backup',
       icon: (
         <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
@@ -268,7 +269,7 @@ function SettingsContent() {
   }
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-4 py-8 sm:px-6 lg:px-8">
+    <div className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-4 py-8 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-[1700px] space-y-6">
 
         {/* Page header */}
@@ -291,7 +292,7 @@ function SettingsContent() {
           {/* Left nav */}
           <aside className="w-52 shrink-0 rounded-xl border bg-white shadow-sm overflow-hidden">
             <div className="px-3 py-3">
-              <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-400">Account</p>
+              <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-500">Account</p>
               {navItems.map((item) => (
                 <button
                   key={item.key}
@@ -332,8 +333,8 @@ function SettingsContent() {
                   )}
                   <form onSubmit={handleUpdateProfile} className="max-w-md space-y-4">
                     <div>
-                      <label className="mb-1.5 block text-xs font-semibold text-slate-600">Full Name</label>
-                      <input maxLength={INPUT_LIMITS.name}
+                      <label className="mb-1.5 block text-xs font-semibold text-slate-600">Full name</label>
+                      <input aria-label="Full name" maxLength={INPUT_LIMITS.name}
                         type="text"
                         value={name}
                         onChange={e => setName(e.target.value)}
@@ -342,14 +343,14 @@ function SettingsContent() {
                       />
                     </div>
                     <div>
-                      <label className="mb-1.5 block text-xs font-semibold text-slate-600">Email Address</label>
-                      <input maxLength={INPUT_LIMITS.email}
+                      <label className="mb-1.5 block text-xs font-semibold text-slate-600">Email address</label>
+                      <input aria-label="Email address" maxLength={INPUT_LIMITS.email}
                         type="email"
                         value={email}
                         disabled
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-400 outline-none cursor-not-allowed"
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-500 outline-none cursor-not-allowed"
                       />
-                      <p className="mt-1 text-xs text-slate-400">Email cannot be changed here.</p>
+                      <p className="mt-1 text-xs text-slate-500">Email cannot be changed here.</p>
                     </div>
                     <div className="pt-1">
                       <button
@@ -357,7 +358,7 @@ function SettingsContent() {
                         disabled={profileLoading}
                         className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60 transition"
                       >
-                        {profileLoading ? 'Saving…' : 'Save Changes'}
+                        {profileLoading ? 'Saving…' : 'Save changes'}
                       </button>
                     </div>
                   </form>
@@ -365,11 +366,11 @@ function SettingsContent() {
               </section>
             )}
 
-            {/* Change Password Section */}
+            {/* Change password Section */}
             {activeSection === 'password' && (
               <section className="rounded-xl border bg-white shadow-sm">
                 <div className="border-b border-slate-100 px-6 py-4">
-                  <h2 className="text-base font-semibold text-slate-900">Change Password</h2>
+                  <h2 className="text-base font-semibold text-slate-900">Change password</h2>
                   <p className="mt-0.5 text-sm text-slate-500">Enter your current password to set a new one.</p>
                 </div>
                 <div className="px-6 py-6">
@@ -429,11 +430,11 @@ function SettingsContent() {
               </section>
             )}
 
-            {/* Store Policy Section */}
+            {/* Store policy Section */}
             {activeSection === 'policy' && isAdmin && (
               <section className="rounded-xl border bg-white shadow-sm">
                 <div className="border-b border-slate-100 px-6 py-4">
-                  <h2 className="text-base font-semibold text-slate-900">Store Policy</h2>
+                  <h2 className="text-base font-semibold text-slate-900">Store policy</h2>
                   <p className="mt-0.5 text-sm text-slate-500">
                     Set the store-wide rules applied to every transaction.
                   </p>
@@ -460,7 +461,7 @@ function SettingsContent() {
                           min={0}
                           max={365}
                           value={warrantyDays}
-                          onChange={(e) => setWarrantyDays(clampIntegerInput(e.target.value, String(warrantyDays), 365))}
+                          onKeyDown={blockDecimalKeys} onChange={(e) => setWarrantyDays(clampIntegerInput(e.target.value, String(warrantyDays), 365))}
                           required
                           className="w-32 rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                         />
@@ -482,7 +483,7 @@ function SettingsContent() {
                           min={1}
                           max={90}
                           value={reservationDays}
-                          onChange={(e) => setReservationDays(clampIntegerInput(e.target.value, String(reservationDays), 90))}
+                          onKeyDown={blockDecimalKeys} onChange={(e) => setReservationDays(clampIntegerInput(e.target.value, String(reservationDays), 90))}
                           required
                           className="w-32 rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                         />
@@ -548,11 +549,11 @@ function SettingsContent() {
             )}
 
 
-            {/* Data Backup Section */}
+            {/* Data backup Section */}
             {activeSection === 'backup' && isAdmin && (
               <section className="rounded-xl border bg-white shadow-sm">
                 <div className="border-b border-slate-100 px-6 py-4">
-                  <h2 className="text-base font-semibold text-slate-900">Data Backup</h2>
+                  <h2 className="text-base font-semibold text-slate-900">Data backup</h2>
                   <p className="mt-0.5 text-sm text-slate-500">
                     Download a complete copy of the store&apos;s records, or restore one.
                   </p>
@@ -588,7 +589,7 @@ function SettingsContent() {
                   >
                     {backupLoading ? 'Preparing backup...' : 'Download backup'}
                   </button>
-                  <p className="text-xs text-slate-400">Recommended at least once a week.</p>
+                  <p className="text-xs text-slate-500">Recommended at least once a week.</p>
 
                   <RestoreBackup onDownloadBackup={handleDownloadBackup} />
                 </div>
@@ -597,6 +598,6 @@ function SettingsContent() {
           </div>
         </div>
       </div>
-    </main>
+    </div>
   )
 }

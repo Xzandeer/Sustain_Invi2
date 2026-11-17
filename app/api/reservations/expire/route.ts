@@ -212,7 +212,7 @@ export async function POST(req: NextRequest) {
               reservedAfter: log.nextReservedStock,
               user: SYSTEM_USER,
               relatedId: reservationId,
-              units: log.units.map((u) => ({ id: u.id, unitCode: u.unitCode })),
+              units: log.units.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })),
               remarks: `Reservation expired - ${SYSTEM_CANCELLATION_REASON}` + describeUnits(log.units),
             })
           )

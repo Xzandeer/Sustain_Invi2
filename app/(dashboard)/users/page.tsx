@@ -254,6 +254,10 @@ function UsersContent() {
       setFormError('All fields are required.')
       return
     }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) {
+      setFormError('Enter a valid email address.')
+      return
+    }
     const pwCheck = checkPassword(form.password)
     if (!pwCheck.ok) {
       setFormError(pwCheck.reason)
@@ -281,7 +285,7 @@ function UsersContent() {
   if (!isAdmin) return null
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-4 py-8 sm:px-6 lg:px-8">
+    <div className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-4 py-8 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-[1700px] space-y-6">
         <header className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -302,7 +306,7 @@ function UsersContent() {
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
             </svg>
-            Add Account
+            Add account
           </button>
         </header>
 
@@ -334,7 +338,7 @@ function UsersContent() {
               <tbody className="divide-y divide-slate-200 bg-white">
                 {users.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-400">No users found.</td>
+                    <td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-500">No users found.</td>
                   </tr>
                 )}
                 {users.map((user) => {
@@ -342,7 +346,7 @@ function UsersContent() {
                   return (
                   <tr key={user.id} className={isSelf ? 'bg-blue-50/40' : undefined}>
                     <td className="px-4 py-3 text-sm">
-                      <span className={user.isDisabled ? 'text-slate-400 line-through' : 'text-slate-900'}>{user.name}</span>
+                      <span className={user.isDisabled ? 'text-slate-500 line-through' : 'text-slate-900'}>{user.name}</span>
                       {isSelf && (
                         <span className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700">You</span>
                       )}
@@ -352,7 +356,7 @@ function UsersContent() {
                     </td>
                     <td className="px-4 py-3 text-sm text-slate-700">{user.email}</td>
                     <td className="px-4 py-3 text-sm">
-                      <select
+                      <select aria-label={"Role for " + user.name}
                         value={user.role}
                         onChange={(e) => updateRole(user.id, e.target.value as UserRole)}
                         disabled={updatingUserId === user.id || isSelf}
@@ -380,7 +384,7 @@ function UsersContent() {
                     </td>
                     <td className="px-4 py-3 text-sm">
                       {user.role === 'admin' ? (
-                        <span className="text-xs font-medium text-slate-400">Full access</span>
+                        <span className="text-xs font-medium text-slate-500">Full access</span>
                       ) : (
                         <button
                           onClick={() => setPermissionTarget(user)}
@@ -406,7 +410,7 @@ function UsersContent() {
                     </td>
                     <td className="px-4 py-3 text-sm">
                       {isSelf ? (
-                        <span className="text-xs text-slate-400">—</span>
+                        <span className="text-xs text-slate-500">—</span>
                       ) : (
                         <button
                           onClick={() => { setDeleteTarget(user); setDeleteConfirmText(''); setDeleteError('') }}
@@ -444,7 +448,7 @@ function UsersContent() {
               </div>
               <button
                 onClick={() => { setDeleteTarget(null); setDeleteConfirmText(''); setDeleteError('') }}
-                className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                className="rounded-lg p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-600"
               >
                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -456,7 +460,7 @@ function UsersContent() {
               <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
                 <p className="text-sm font-semibold text-slate-900">{deleteTarget.name}</p>
                 <p className="text-xs text-slate-500">{deleteTarget.email}</p>
-                <p className="mt-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">{deleteTarget.role}</p>
+                <p className="mt-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">{deleteTarget.role}</p>
               </div>
 
               <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
@@ -520,7 +524,7 @@ function UsersContent() {
               </div>
               <button
                 onClick={() => setPermissionTarget(null)}
-                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition"
+                className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-600 transition"
               >
                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -574,7 +578,7 @@ function UsersContent() {
               <h2 className="text-base font-semibold text-slate-900">Confirm Your Identity</h2>
               <button
                 onClick={() => { setResetTarget(null); setAdminPassword(''); setResetError('') }}
-                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition"
+                className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-600 transition"
               >
                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -637,14 +641,14 @@ function UsersContent() {
               <h2 className="text-base font-semibold text-slate-900">Add New Account</h2>
               <button
                 onClick={() => setShowModal(false)}
-                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition"
+                className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-600 transition"
               >
                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
             </div>
-            <form onSubmit={handleCreateUser} className="space-y-4 px-6 py-5">
+            <form onSubmit={handleCreateUser} noValidate className="space-y-4 px-6 py-5">
               {formError && (
                 <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
                   {formError}
@@ -655,7 +659,7 @@ function UsersContent() {
                 <input maxLength={INPUT_LIMITS.name}
                   type="text"
                   value={form.name}
-                  onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                  onChange={e => { setFormError(''); setForm(f => ({ ...f, name: e.target.value })) }}
                   placeholder="e.g. Juan dela Cruz"
                   className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                 />
@@ -665,7 +669,7 @@ function UsersContent() {
                 <input maxLength={INPUT_LIMITS.email}
                   type="email"
                   value={form.email}
-                  onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+                  onChange={e => { setFormError(''); setForm(f => ({ ...f, email: e.target.value })) }}
                   placeholder="e.g. juan@email.com"
                   className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                 />
@@ -675,7 +679,7 @@ function UsersContent() {
                 <input maxLength={INPUT_LIMITS.password}
                   type="password"
                   value={form.password}
-                  onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+                  onChange={e => { setFormError(''); setForm(f => ({ ...f, password: e.target.value })) }}
                   placeholder="Choose a password"
                   className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                 />
@@ -705,13 +709,13 @@ function UsersContent() {
                   disabled={creating}
                   className="flex-1 rounded-xl bg-blue-600 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60 transition"
                 >
-                  {creating ? 'Creating…' : 'Create Account'}
+                  {creating ? 'Creating…' : 'Create account'}
                 </button>
               </div>
             </form>
           </div>
         </div>
       )}
-    </main>
+    </div>
   )
 }
