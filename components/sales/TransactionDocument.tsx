@@ -4,6 +4,7 @@
 // Also captured as an image for the email attachment.
 
 import { forwardRef } from 'react'
+import { pieceCondition } from '@/lib/inventory/units'
 import {
   CompletedTransactionDocument,
   formatCurrency,
@@ -126,9 +127,10 @@ const TransactionDocument = forwardRef<HTMLDivElement, TransactionDocumentProps>
               <tr key={`${item.itemId}-${item.condition}`}>
                 <td className="px-3 py-2 text-[13px] text-slate-700">
                   <p className="font-medium leading-snug text-slate-900">{item.name}</p>
-                  <p className="text-[11px] text-slate-500">{item.condition}</p>
-                  {item.conditionNotes ? (
-                    <p className="text-[11px] italic text-slate-500">{item.conditionNotes}</p>
+                  {/* The pieces' own condition, not the item's derived label. */}
+                  <p className="text-[11px] text-slate-500">{pieceCondition(item.condition, item.conditionNotes ?? '').condition}</p>
+                  {pieceCondition(item.condition, item.conditionNotes ?? '').notes ? (
+                    <p className="text-[11px] italic text-slate-500">{pieceCondition(item.condition, item.conditionNotes ?? '').notes}</p>
                   ) : null}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-right text-[13px] text-slate-700">{item.quantity}</td>

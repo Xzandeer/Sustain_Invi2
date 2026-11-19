@@ -14,7 +14,7 @@ import {
   describeUnits, isUnitTracked, linesByPrice, parseItemRequests, pickUnitsForParts, readItemUnits, setUnitsStatus, unitPrice,
   type StoredUnit,
 } from '@/lib/server/units'
-import type { UnitLineRef } from '@/lib/inventory/units'
+import { pieceCondition, type UnitLineRef } from '@/lib/inventory/units'
 import { getStoreSettings } from '@/lib/server/storeSettings'
 import { parseDateRange, toDate, toNumber } from '@/lib/server/salesInventoryMetrics'
 import {
@@ -421,21 +421,25 @@ export async function POST(req: NextRequest) {
       ]
     )
 
-    const receiptItems: TransactionLineItem[] = saleLines.map((item) => ({
-      itemId: item.itemId,
-      name: item.name,
-      quantity: item.quantity,
-      price: item.price,
-      categoryName: item.categoryName,
-      condition: item.condition,
+    const receiptItems: TransactionLineItem[] = saleLines.map((item) => {
       // A unit-tracked line prints each piece's grade and notes, which is what
-      // a later refund about its condition turns on.
-      ...(item.unitLines
-        // The line already says its condition; a piece repeats it only when it differs.
-        ? { conditionNotes: item.unitLines.map((u) => `#${u.unitCode}${u.grade !== item.condition ? ' ' + u.grade : ''}${u.conditionNotes ? ' - ' + u.conditionNotes : ''}`).join('; ') }
-        : item.conditionNotes ? { conditionNotes: item.conditionNotes } : {}),
-      subtotal: item.quantity * item.price,
-    }))
+      // a later refund about its condition turns on. The receipt shows the
+      // pieces' own condition ("Good"), not the item's derived "Refurbished".
+      const notes = item.unitLines
+        ? item.unitLines.map((u) => `#${u.unitCode} ${u.grade}${u.conditionNotes ? ' - ' + u.conditionNotes : ''}`).join('; ')
+        : item.conditionNotes
+      const shown = pieceCondition(item.condition, notes)
+      return {
+        itemId: item.itemId,
+        name: item.name,
+        quantity: item.quantity,
+        price: item.price,
+        categoryName: item.categoryName,
+        condition: shown.condition,
+        ...(shown.notes ? { conditionNotes: shown.notes } : {}),
+        subtotal: item.quantity * item.price,
+      }
+    })
 
     const receiptDocument: SaleReceiptDocument = {
       type: 'sale',

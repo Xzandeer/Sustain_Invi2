@@ -59,6 +59,23 @@ export function gradeSummary(grades: readonly string[]): string {
     .map(([g, n]) => (n > 1 ? `${g} ×${n}` : g))
     .join(', ')
 }
+
+// "#00000549 Good" in a receipt line's notes: the piece's code and condition.
+const PIECE_IN_NOTES = /#(\w+) (New|Excellent|Very Good|Good|Fair|For parts)(?=;|$| -)/g
+
+/**
+ * The condition a receipt line should show. A sale line keeps the item's
+ * derived New/Refurbished label for older reports, but its notes name each
+ * piece's real condition ("#00000549 Good"). Show that instead - "Good", not
+ * "Refurbished" - and drop it from the notes when every piece shares it.
+ * Lines that already carry a real condition are left as they are.
+ */
+export function pieceCondition(condition: string, notes = ''): { condition: string; notes: string } {
+  const grades = Array.from(notes.matchAll(PIECE_IN_NOTES), (m) => m[2])
+  if (grades.length === 0 || (condition !== 'New' && condition !== 'Refurbished')) return { condition, notes }
+  const single = new Set(grades).size === 1
+  return { condition: gradeSummary(grades), notes: single ? notes.replace(PIECE_IN_NOTES, '#$1') : notes }
+}
 export const DEFAULT_UNIT_GRADE: UnitGrade = 'Good'
 
 /** What staff see. "Used /" makes new-versus-used plain at a glance. */

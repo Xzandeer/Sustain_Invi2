@@ -5,6 +5,7 @@
 // shop, so the choice is stored per browser in localStorage rather than in the
 // shared store settings - two terminals may well have different printers.
 import { CompletedTransactionDocument, formatCurrency, formatTransactionDateTime } from '@/lib/transactions/transactionDocuments'
+import { pieceCondition } from '@/lib/inventory/units'
 
 export type ReceiptPaperWidth = 58 | 80
 
@@ -32,14 +33,6 @@ export const setReceiptPaperWidth = (width: ReceiptPaperWidth) => {
 // names, the seller's address - is escaped before it goes into the receipt
 // HTML. Unescaped, a note like "lid <cracked> & taped" breaks the printed
 // layout, and markup in a customer name would run in the print window.
-// Older receipts stored "#00000226 New" under a line already marked New, so
-// the condition printed twice. Drop a piece's condition when it matches its line.
-const withoutRepeatedCondition = (notes: string, condition: string): string => {
-  if (!condition) return notes
-  const c = condition.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return notes.replace(new RegExp(`(#\\w+) ${c}(?=;|$| -)`, 'g'), '$1')
-}
-
 const esc = (value: unknown): string =>
   String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -415,7 +408,7 @@ export const openReceiptPrintWindow = (
             <tr>
               <td class="item-col-name">
                 <div class="item-name">${esc(item.name)}</div>
-                <div class="item-condition">${esc(item.condition)}${item.conditionNotes ? ` &middot; ${esc(withoutRepeatedCondition(item.conditionNotes, item.condition))}` : ''}</div>
+                ${(() => { const c = pieceCondition(item.condition, item.conditionNotes ?? ''); return `<div class="item-condition">${esc(c.condition)}${c.notes ? ` &middot; ${esc(c.notes)}` : ''}</div>` })()}
               </td>
               <td class="item-col-qty">${item.quantity}</td>
               ${isSale ? `<td class="item-col-price">${formatCurrency(item.price)}</td>` : ''}
