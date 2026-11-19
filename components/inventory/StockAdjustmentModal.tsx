@@ -255,7 +255,7 @@ export default function StockAdjustmentModal({
                   <p className="px-3 py-3 text-xs text-slate-500">No pieces on the shelf.</p>
                 ) : pickable.map((u) => (
                   <label key={u.id} className="flex cursor-pointer items-center gap-2.5 border-b border-slate-100 px-3 py-1.5 text-xs last:border-0 hover:bg-slate-50">
-                    <input type="checkbox" checked={picked.has(u.id)} className="h-3.5 w-3.5 accent-sky-900"
+                    <input type="checkbox" checked={picked.has(u.id)} className="h-3.5 w-3.5 accent-blue-600"
                       onChange={() => setPicked((s) => { const n = new Set(s); n.has(u.id) ? n.delete(u.id) : n.add(u.id); return n })} />
                     <span className="font-mono text-slate-600">{u.unitCode}</span>
                     <span className="font-semibold text-slate-800">{u.grade}</span>

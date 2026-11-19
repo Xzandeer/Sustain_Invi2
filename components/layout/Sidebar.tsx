@@ -7,7 +7,8 @@
 // real check happens in ProtectedRoute and again on the server.
 //
 // Compact icon + label links on the dark navy column, grouped under MAIN,
-// RECORDS, ADMINISTRATION and ACCOUNT. The current page is the solid blue pill.
+// RECORDS, ADMINISTRATION and ACCOUNT. The current page is the solid white pill
+// (the sidebar keeps its own darker navy, #1a2035, apart from the app's blue).
 // One link is marked current at a time (longest matching route), every link
 // has a visible keyboard focus ring, and on a phone the same column opens as a
 // drawer with its own close button (see app/(dashboard)/layout.tsx).
@@ -108,7 +109,7 @@ const currentHref = (pathname: string) =>
 
 // Shared focus treatment: visible on keyboard focus only, offset from the navy.
 const FOCUS_RING =
-  'outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1a2035]'
+  'outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1a2035]'
 
 interface Profile { name: string; role: string; initials: string }
 
@@ -172,12 +173,12 @@ export default function Sidebar({ onClose }: { /** Set when shown as the phone d
       {/* Brand. Doubles as the way home, as users expect of a logo. */}
       <div className="flex items-center justify-between gap-2 border-b border-white/[0.07] px-3.5 py-3">
         <Link href="/dashboard" className={`flex min-w-0 items-center gap-2.5 rounded-lg ${FOCUS_RING}`}>
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white text-[#1a2035]">
             <Box aria-hidden className="h-4 w-4" />
           </span>
           <span className="min-w-0">
             <span className="block truncate text-[13px] font-bold leading-tight tracking-tight text-white">JMGs JAPAN</span>
-            <span className="block text-[10px] font-medium leading-tight tracking-[0.2em] text-blue-400">SURPLUS</span>
+            <span className="block text-[10px] font-medium leading-tight tracking-[0.2em] text-slate-400">SURPLUS</span>
           </span>
         </Link>
         {onClose && (
@@ -217,11 +218,11 @@ export default function Sidebar({ onClose }: { /** Set when shown as the phone d
                         aria-current={isCurrent ? 'page' : undefined}
                         className={`flex items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-[13px] leading-5 transition-colors duration-150 ${FOCUS_RING} ${
                           isCurrent
-                            ? 'bg-blue-600 font-semibold text-white'
+                            ? 'bg-white font-semibold text-[#1a2035]'
                             : 'font-medium text-slate-300 hover:bg-white/[0.06] hover:text-white active:bg-white/10'
                         }`}
                       >
-                        <Icon aria-hidden className={`h-4 w-4 shrink-0 ${isCurrent ? 'text-white' : 'text-slate-400'}`} />
+                        <Icon aria-hidden className={`h-4 w-4 shrink-0 ${isCurrent ? 'text-[#1a2035]' : 'text-slate-400'}`} />
                         <span className="truncate">{item.name}</span>
                       </Link>
                     </li>
@@ -239,7 +240,7 @@ export default function Sidebar({ onClose }: { /** Set when shown as the phone d
         <div className="flex items-center gap-2.5 px-1.5 py-1">
           {profile ? (
             <>
-              <span aria-hidden className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 text-[11px] font-medium text-white">
+              <span aria-hidden className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/15 text-[11px] font-medium text-white">
                 {profile.initials}
               </span>
               <div className="min-w-0 flex-1 leading-tight">

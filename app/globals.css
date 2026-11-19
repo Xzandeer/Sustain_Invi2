@@ -3,6 +3,28 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* One blue for the whole app: the slate navy of the Analytics sales line
+   (#4b5a85). Every blue-* class (buttons, links, the current page, selected
+   tabs, focus borders, light tints) draws from this scale, so a new screen
+   picks it up without anyone choosing a colour. 600 is the main colour;
+   lighter steps are tints for backgrounds and borders, darker steps for hover.
+   The sidebar keeps its own darker navy (#1a2035, set in Sidebar.tsx), and
+   950 is that navy. Sky stays sky: it is the "Excellent" condition colour
+   and must stay distinct from New. */
+@theme {
+  --color-blue-50: #f3f5f9;
+  --color-blue-100: #e6e9f1;
+  --color-blue-200: #ccd2e2;
+  --color-blue-300: #a6afc9;
+  --color-blue-400: #7a86a8;
+  --color-blue-500: #5c6993;
+  --color-blue-600: #4b5a85;
+  --color-blue-700: #3d4a70;
+  --color-blue-800: #323d5c;
+  --color-blue-900: #262f47;
+  --color-blue-950: #1a2035;
+}
+
 :root {
   --background: #F1F5FC;
   --foreground: oklch(0.245 0.026 262);
@@ -10,7 +32,7 @@
   --card-foreground: oklch(0.245 0.026 262);
   --popover: oklch(0.995 0.002 255);
   --popover-foreground: oklch(0.245 0.026 262);
-  --primary: oklch(0.39 0.08 262);
+  --primary: #4b5a85; /* the app's blue, as the blue scale below */
   --primary-foreground: oklch(0.985 0.003 95);
   --secondary: oklch(0.957 0.005 250);
   --secondary-foreground: oklch(0.32 0.022 262);
@@ -31,7 +53,7 @@
   --radius: 0.625rem;
   --sidebar: oklch(0.985 0.003 255);
   --sidebar-foreground: oklch(0.245 0.026 262);
-  --sidebar-primary: oklch(0.39 0.08 262);
+  --sidebar-primary: #1a2035;
   --sidebar-primary-foreground: oklch(0.985 0.003 95);
   --sidebar-accent: oklch(0.955 0.009 248);
   --sidebar-accent-foreground: oklch(0.32 0.022 262);

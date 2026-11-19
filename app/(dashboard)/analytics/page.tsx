@@ -51,7 +51,7 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ArcEleme
 type SaleItemCondition = UnitGrade
 // Doughnut colours, one per condition, in UNIT_GRADES order.
 const GRADE_HEX: Record<UnitGrade, string> = {
-  'New': '#3b82f6', 'Excellent': '#38bdf8', 'Very Good': '#14b8a6', 'Good': '#10b981', 'Fair': '#f59e0b', 'For parts': '#f87171',
+  'New': '#4b5a85', 'Excellent': '#38bdf8', 'Very Good': '#14b8a6', 'Good': '#10b981', 'Fair': '#f59e0b', 'For parts': '#f87171',
 }
 type AnalyticsModalType = 'top' | null
 type TimeRangePreset = 'this-week' | 'this-month' | 'last-month' | 'last-6-months' | 'this-year' | 'custom'
@@ -186,7 +186,7 @@ interface ReservationRecord {
 
 // Color map for each reservation status used in the donut chart and legend
 const RESERVATION_STATUS_COLORS: Record<ReservationRecord['status'], string> = {
-  Active: '#3b82f6',
+  Active: '#4b5a85',
   AwaitingCollection: '#f59e0b',
   Completed: '#22c55e',
   Cancelled: '#ef4444',
@@ -2169,7 +2169,7 @@ function AnalyticsContent() {
                 </span>
                 {/* Legend */}
                 <span className="flex items-center gap-1 text-[11px] text-slate-500">
-                  <span className="inline-block h-0.5 w-4 rounded-full bg-blue-600"/>Actual
+                  <span className="inline-block h-0.5 w-4 rounded-full bg-[#4b5a85]"/>Actual
                 </span>
                 {/* Statistical baseline is always drawn. When AI refinement is
                     active it sits beside the AI line, so the ±15% bound between
@@ -2236,8 +2236,8 @@ function AnalyticsContent() {
                       label: 'Actual Sales',
                       data: forecastSeries.actualValues,
                       fill: true,
-                      borderColor: '#2563eb',
-                      backgroundColor: 'rgba(37,99,235,0.06)',
+                      borderColor: '#4b5a85', // the app's blue (globals.css blue-600)
+                      backgroundColor: 'rgba(75,90,133,0.07)',
                       borderWidth: 2.5,
                       pointRadius: trendSeries.hasSinglePoint ? 6 : 3,
                       pointHoverRadius: 5,
@@ -2759,7 +2759,7 @@ function AnalyticsContent() {
                       labels: currentSummary.categories.slice(0, 6).map((c) => c.categoryName),
                       datasets: [{
                         data: currentSummary.categories.slice(0, 6).map((c) => c.revenue),
-                        backgroundColor: ['#2563eb', '#7c3aed', '#16a34a', '#ea580c', '#db2777', '#0891b2'],
+                        backgroundColor: ['#4b5a85', '#7c3aed', '#16a34a', '#ea580c', '#db2777', '#0891b2'],
                         borderWidth: 0,
                         hoverOffset: 6,
                       }],

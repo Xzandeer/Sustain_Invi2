@@ -671,9 +671,9 @@ function InventoryLogsContent() {
                                           <span className="font-semibold text-slate-900">{Math.max(0, log.stockBefore - log.reservedBefore)}</span>
                                         </span>
                                         {log.condition && (
-                                          <span className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-sm">
-                                            <span className="text-xs text-sky-500">Condition</span>
-                                            <span className="font-semibold text-sky-800">{log.condition}</span>
+                                          <span className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm">
+                                            <span className="text-xs text-blue-500">Condition</span>
+                                            <span className="font-semibold text-blue-700">{log.condition}</span>
                                           </span>
                                         )}
                                       </div>
@@ -701,9 +701,9 @@ function InventoryLogsContent() {
                                           <span className="font-semibold text-slate-900">{Math.max(0, log.stockAfter - log.reservedAfter)}</span>
                                         </span>
                                         {log.condition && (
-                                          <span className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-sm">
-                                            <span className="text-xs text-sky-500">Condition</span>
-                                            <span className="font-semibold text-sky-800">{log.condition}</span>
+                                          <span className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm">
+                                            <span className="text-xs text-blue-500">Condition</span>
+                                            <span className="font-semibold text-blue-700">{log.condition}</span>
                                           </span>
                                         )}
                                       </div>

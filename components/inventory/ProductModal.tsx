@@ -296,7 +296,7 @@ export default function ProductModal({
                     type="checkbox"
                     checked={isSingleItem}
                     onChange={(event) => setIsSingleItem(event.target.checked)}
-                    className="mt-0.5 h-4 w-4 accent-sky-900"
+                    className="mt-0.5 h-4 w-4 accent-blue-600"
                   />
                   <span>
                     <span className="block text-sm font-medium text-slate-900">Single item</span>
@@ -325,7 +325,7 @@ export default function ProductModal({
                     type="checkbox"
                     checked={trackPieces}
                     onChange={(event) => setTrackPieces(event.target.checked)}
-                    className="mt-0.5 h-4 w-4 accent-sky-900"
+                    className="mt-0.5 h-4 w-4 accent-blue-600"
                   />
                   <span>
                     <span className="block text-sm font-medium text-slate-900">Track each piece separately</span>
