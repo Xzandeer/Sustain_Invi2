@@ -48,8 +48,12 @@ service cloud.firestore {
     function canViewAnalytics() {
       return isAdmin() || (isActive() && userDoc().get('canViewAnalytics', false) == true);
     }
+    // Requires an ACTIVE account: a disabled staff member keeps a valid sign-in
+    // token until it expires, so without the isActive() check a disabled account
+    // that still held View Stock Logs could read the audit trail. get(...,false)
+    // also avoids an error when the field is absent on an older staff record.
     function canViewStockLogs() {
-      return isAdmin() || (isSignedIn() && userDoc().canViewStockLogs == true);
+      return isAdmin() || (isActive() && userDoc().get('canViewStockLogs', false) == true);
     }
 
     // Mirrors resolvePermissions() in lib/auth/permissions.ts, including its
@@ -111,9 +115,14 @@ service cloud.firestore {
     // Imported notebook history (daily totals only). Written by
     // scripts/import-sales-history.js with the Admin SDK.
     match /salesHistory/{docId}         { allow read: if canViewAnalytics(); allow write: if false; }
-    match /receipts/{docId}             { allow read: if isActive(); allow write: if false; }
-    match /storeSettings/{docId}        { allow read: if isActive(); allow write: if false; }
-    match /transactionCounters/{docId}  { allow read: if isActive(); allow write: if false; }
+    // Server-only. The browser reaches receipts, store settings and the
+    // transaction counters only through API routes (Admin SDK, which bypasses
+    // these rules), never with the client SDK. Denying direct reads keeps
+    // invoice contents, the seller's TIN/address and the issued-number
+    // sequences out of reach of a signed-in account poking at the database.
+    match /receipts/{docId}             { allow read, write: if false; }
+    match /storeSettings/{docId}        { allow read, write: if false; }
+    match /transactionCounters/{docId}  { allow read, write: if false; }
 
     // Server-only collections. The browser has no reason to see either: the
     // forecast cache is served through /api/forecast, and nothing reads
