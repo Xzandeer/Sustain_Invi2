@@ -179,7 +179,7 @@ function Pagination({
     nums.push(pages)
   }
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-4 py-3 text-sm">
+    <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-b-xl border-t border-slate-100 bg-white px-4 py-3 text-sm">
       <span className="text-slate-500 text-xs">
         Showing {from}–{to} of{' '}
         <span className="font-semibold text-slate-700">{total}</span> reservations
@@ -727,9 +727,9 @@ function ReservationsContent() {
   const hasFilters = search || statusFilter !== 'all' || categoryFilter !== 'all' || startDate || endDate
 
   return (
-    <div className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-3 py-4">
+    <div className="flex min-h-[calc(100vh-64px)] flex-col bg-[#F1F5FC] px-3 py-4 md:min-h-screen">
       {confirmDialog}
-      <div className="mx-auto max-w-[1680px] space-y-4">
+      <div className="mx-auto flex min-h-0 w-full max-w-[1680px] flex-1 flex-col gap-4">
 
         {/* ── HEADER ── */}
         <header className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -825,10 +825,10 @@ function ReservationsContent() {
         </div>
 
         {/* ── MAIN + SIDEBAR ── */}
-        <div className="flex gap-4">
+        <div className="flex min-h-0 flex-1 gap-4">
 
           {/* ── MAIN PANEL ── */}
-          <div className="flex min-w-0 flex-1 flex-col gap-0 rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-0 rounded-xl border border-slate-200 bg-white shadow-sm">
 
             {/* Filter bar */}
             <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-3">
@@ -949,7 +949,7 @@ function ReservationsContent() {
             ) : null}
 
             {/* Table */}
-            <div className="overflow-x-auto">
+            <div className="min-h-0 flex-1 overflow-auto">
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-slate-100 bg-slate-50/70 text-left">

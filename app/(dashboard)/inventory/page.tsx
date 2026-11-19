@@ -936,8 +936,8 @@ function InventoryContent() {
     `h-8 rounded-lg border bg-white px-2 text-xs focus:outline-none ${active ? 'border-blue-300 text-blue-700' : 'border-slate-200 text-slate-700'}`
 
   return (
-    <div className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] p-3">
-      <div className="mx-auto flex max-w-[1500px] flex-col gap-2">
+    <div className="flex min-h-[calc(100vh-64px)] flex-col bg-[#F1F5FC] p-3 md:min-h-screen">
+      <div className="mx-auto flex min-h-0 w-full max-w-[1500px] flex-1 flex-col gap-2">
 
         {/* ── Header: the page, its one main action, and the rest under More ── */}
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1073,8 +1073,8 @@ function InventoryContent() {
         </section>
 
         {/* ── The list ── */}
-        <section className="overflow-hidden rounded-xl border border-slate-200/80 bg-white">
-          <div className="overflow-x-auto">
+        <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white">
+          <div className="min-h-0 flex-1 overflow-auto">
             {loading ? (
               <p className="px-5 py-10 text-center text-sm text-slate-500">Loading items…</p>
             ) : filteredProducts.length === 0 ? (
@@ -1290,7 +1290,7 @@ function InventoryContent() {
 
           {/* ── Pagination ── */}
           {filteredProducts.length > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-4 py-2 text-[11px] text-slate-500">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-100 bg-white px-4 py-2 text-[11px] text-slate-500">
               <span className="flex items-center gap-2">
                 Showing {(currentPage - 1) * itemsPerPage + 1}–{Math.min(currentPage * itemsPerPage, filteredProducts.length)} of {filteredProducts.length} items
                 <select

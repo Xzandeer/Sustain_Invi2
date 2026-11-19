@@ -127,7 +127,7 @@ function Pagination({ total, page, perPage, onPage, onPerPage }: { total: number
     nums.push(pages)
   }
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-4 py-3 text-sm">
+    <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-100 bg-white px-4 py-3 text-sm">
       <span className="text-slate-500">Showing {from}–{to} of <span className="font-semibold text-slate-700">{total}</span> items</span>
       <div className="flex items-center gap-1.5">
         <select aria-label="Rows per page" value={perPage} onChange={e => { onPerPage(Number(e.target.value)); onPage(1) }}
@@ -296,8 +296,8 @@ function InventoryTrashContent() {
   const resetFilters = () => { setSearch(''); setCategoryFilter('all'); setConditionFilter('all'); setReasonFilter('all'); setStockFilter('all'); setStartDate(''); setEndDate(''); setCurrentPage(1) }
 
   return (
-    <div className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-3 py-3 sm:px-5 sm:py-4">
-      <div className="mx-auto max-w-[1400px] space-y-3">
+    <div className="flex min-h-[calc(100vh-64px)] flex-col bg-[#F1F5FC] px-3 py-3 sm:px-5 sm:py-4 md:min-h-screen">
+      <div className="mx-auto flex min-h-0 w-full max-w-[1400px] flex-1 flex-col gap-3">
 
         {/* ── Header ── */}
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -413,8 +413,14 @@ function InventoryTrashContent() {
           )}
         </div>
 
+        {/* ── Info note (above the list, so the pagination sits at the bottom) ── */}
+        <div className="flex items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3">
+          <svg className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          <p className="text-xs text-blue-700">Items in trash are not permanently deleted. Restoring will return them to inventory. Logs and history remain intact.</p>
+        </div>
+
         {/* ── Main Table Card ── */}
-        <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           {error && <p className="px-4 py-3 text-sm text-red-600">{error}</p>}
 
           {loading ? (
@@ -434,7 +440,7 @@ function InventoryTrashContent() {
             </div>
           ) : (
             <>
-              <div className="overflow-x-auto">
+              <div className="min-h-0 flex-1 overflow-auto">
                 <table className="w-full min-w-[860px] text-sm">
                   <thead>
                     <tr className="border-b border-slate-100 bg-slate-50 text-left">
@@ -510,12 +516,6 @@ function InventoryTrashContent() {
               />
             </>
           )}
-        </div>
-
-        {/* ── Info Footer ── */}
-        <div className="flex items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3">
-          <svg className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-          <p className="text-xs text-blue-700">Items in trash are not permanently deleted. Restoring will return them to inventory. Logs and history remain intact.</p>
         </div>
 
       </div>

@@ -157,7 +157,7 @@ function Pagination({ total, page, perPage, onPage, onPerPage }: { total: number
   }
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-4 py-3 text-sm">
+    <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-100 bg-white px-4 py-3 text-sm">
       <span className="text-slate-500">Showing {from} to {to} of <span className="font-semibold text-slate-700">{total}</span> logs</span>
       <div className="flex items-center gap-1.5">
         <select aria-label="Rows per page" value={perPage} onChange={e => { onPerPage(Number(e.target.value)); onPage(1) }}
@@ -391,8 +391,8 @@ function InventoryLogsContent() {
   const headerTime = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 
   return (
-    <div className="min-h-[calc(100vh-64px)] bg-[#F1F5FC] px-3 py-3 sm:px-5 sm:py-4">
-      <div className="mx-auto max-w-[1400px] space-y-3">
+    <div className="flex min-h-[calc(100vh-64px)] flex-col bg-[#F1F5FC] px-3 py-3 sm:px-5 sm:py-4 md:min-h-screen">
+      <div className="mx-auto flex min-h-0 w-full max-w-[1400px] flex-1 flex-col gap-3">
 
         {/* ── Header ── */}
         <div className="flex flex-wrap items-start justify-between gap-2">
@@ -536,7 +536,7 @@ function InventoryLogsContent() {
         </div>
 
         {/* ── Table Card ── */}
-        <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
 
           {/* Tabs */}
           <div className="flex overflow-x-auto border-b border-slate-100 px-4">
@@ -557,7 +557,7 @@ function InventoryLogsContent() {
           ) : (
             <>
               {/* Table */}
-              <div className="overflow-x-auto">
+              <div className="min-h-0 flex-1 overflow-auto">
                 <table className="w-full min-w-[800px] text-sm">
                   <thead>
                     <tr className="border-b border-slate-100 bg-slate-50 text-left">
