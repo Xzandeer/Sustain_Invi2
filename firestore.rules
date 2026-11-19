@@ -37,13 +37,17 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
-    function isAdmin() {
-      return isSignedIn() && userDoc().role == 'admin';
-    }
-
     // Signed in and not switched off on the Users page.
     function isActive() {
       return isSignedIn() && userDoc().get('isDisabled', false) != true;
+    }
+
+    // An administrator who is still active. Requiring active here means a
+    // disabled administrator is refused by every rule that admits admins, the
+    // same as a disabled staff member, so a disabled account of either role can
+    // read nothing but its own user record (the self branch below).
+    function isAdmin() {
+      return isActive() && userDoc().role == 'admin';
     }
     function canViewAnalytics() {
       return isAdmin() || (isActive() && userDoc().get('canViewAnalytics', false) == true);
