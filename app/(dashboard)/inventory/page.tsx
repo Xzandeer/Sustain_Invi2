@@ -1055,7 +1055,6 @@ function InventoryContent() {
               <option value="all">All types</option>
               <option value="unit">Tracked per piece</option>
               <option value="qty">Counted only</option>
-              <option value="single">One-off pieces</option>
               <option value="reserved">With reservations</option>
             </select>
             <select value={sortBy} onChange={(e) => { setSortBy(e.target.value as SortOption); setCurrentPage(1) }} aria-label="Sort by" className={selectCls(false)}>
