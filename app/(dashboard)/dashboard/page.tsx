@@ -195,8 +195,10 @@ const expiryLabel = (expiresAt: Date | null, now: Date, today: Date): { text: st
 
 // Rows per page in each dashboard list; the rest are on numbered pages.
 const RESTOCK_ROWS = 5
+// When Reservations is hidden, Inventory status has the whole column to itself.
+const RESTOCK_ROWS_ALONE = 12
 const RESERVATION_ROWS = 7
-const ACTIVITY_ROWS = 10
+const ACTIVITY_ROWS = 12
 
 /**
  * How many rows of a list fit its box, up to max. On the one-screen layout
@@ -543,7 +545,7 @@ function DashboardContent() {
   const STATUS_TITLE = { restock: 'Items to restock', low: 'Low stock', out: 'Out of stock', reserved: 'Reserved pieces' } as const
   const STATUS_EMPTY = { restock: 'Every product is above its minimum stock.', low: 'Nothing is running low.', out: 'Nothing is out of stock.', reserved: 'Nothing is on hold right now.' } as const
   const pickStatus = (next: 'low' | 'out' | 'reserved') => { setStatusFilter((cur) => (cur === next ? 'restock' : next)); setRestockPage(1) }
-  const [restockRef, restockRows] = useFitRows(RESTOCK_ROWS, `${loading}-${statusRows.length}-${statusFilter}`)
+  const [restockRef, restockRows] = useFitRows(canReserve ? RESTOCK_ROWS : RESTOCK_ROWS_ALONE, `${loading}-${statusRows.length}-${statusFilter}`)
   const restockPages = Math.max(1, Math.ceil(statusRows.length / restockRows))
   const restockPageSafe = Math.min(restockPage, restockPages)
 
@@ -692,6 +694,13 @@ function DashboardContent() {
 
   const salesTodayChange = canSeeMoney ? pctChange(revenueToday, revenueYesterday) : pctChange(salesToday, salesYesterday)
 
+  // Only the actions this account may take; New sale is always there.
+  const quickActions = [
+    <QuickAction key="sale" onClick={() => setSaleOpen(true)} icon={ShoppingCart} title="New sale" desc="Ring up a sale" hint="or scan any item" tone="primary" />,
+    ...(canAddItem ? [<QuickAction key="add" onClick={openAddItem} busy={loadingCategories} icon={PackagePlus} title="Add stock" desc="Put new pieces on the shelf" />] : []),
+    ...(canReserve ? [<QuickAction key="reserve" onClick={() => setReserveOpen(true)} icon={CalendarPlus} title="Reserve item" desc="Hold stock for a customer" />] : []),
+  ]
+
   return (
     <div className="flex min-h-full flex-col bg-[#F1F5FC] xl:h-screen xl:overflow-hidden">
       <div className="flex flex-col gap-2 p-3 xl:min-h-0 xl:flex-1">
@@ -709,8 +718,10 @@ function DashboardContent() {
           </div>
         )}
 
-        {/* KPI row - every card has the same three lines: label, figure, comparison. */}
-        <div className={`grid shrink-0 grid-cols-1 gap-2 sm:grid-cols-2 ${canSeeMoney ? 'xl:grid-cols-4' : ''}`}>
+        {/* KPI row - every card has the same three lines: label, figure, comparison.
+            Without money access there is only one figure, so the quick actions
+            move up beside it and the row stays full instead of half empty. */}
+        <div className={`grid shrink-0 grid-cols-1 gap-2 sm:grid-cols-2 ${canSeeMoney ? 'xl:grid-cols-4' : TOP_ROW_COLS[quickActions.length + 1]}`}>
           {/* Pesos for whoever may see money; otherwise the number of sales. */}
           <KpiCard title="Sales today" value={canSeeMoney ? peso(revenueToday) : String(salesToday)} loading={loading}
             caption={<><ChangeBadge v={salesTodayChange} /><span>
@@ -730,6 +741,7 @@ function DashboardContent() {
             <KpiCard title="Inventory value" value={peso(stock.value)} loading={loading}
               caption={<span>{pcs(stock.pieces)} across {stock.lines} product lines</span>} />
           )}
+          {!canSeeMoney && quickActions}
         </div>
 
         <div className="grid grid-cols-1 gap-2 xl:min-h-0 xl:flex-1 xl:grid-cols-12">
@@ -808,7 +820,7 @@ function DashboardContent() {
                       const qty = r.items.reduce((n, i) => n + i.quantity, 0)
                       const exp = expiryLabel(r.expiresAt, now, today)
                       return (
-                        <li key={r.id} className="flex items-center gap-3 border-b border-slate-100 py-1.5 last:border-0 xl:min-h-0 xl:flex-1">
+                        <li key={r.id} className="flex items-center gap-3 border-b border-slate-100 py-1.5 last:border-0 xl:max-h-[60px] xl:min-h-0 xl:flex-1">
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-xs font-semibold text-slate-800" title={r.customer}>{r.customer}</p>
                             <p className="truncate text-xs text-slate-500" title={conditionSummary(r.held)}>
@@ -865,9 +877,12 @@ function DashboardContent() {
                 No activity yet. Sales, reservations and stock changes will show up here.
               </p>
             ) : (
+              // Rows share the panel's height but stop at a set maximum (here
+              // and in Reservations), so two or three entries sit at the top
+              // instead of being spread over the whole panel.
               <ul ref={activityRef} className="flex h-full flex-col overflow-hidden px-4 pb-1">
                 {activity.slice(0, activityRows).map((row) => (
-                  <li key={row.key} className="flex items-center gap-3 border-b border-slate-100 py-2 last:border-0 xl:min-h-0 xl:flex-1">
+                  <li key={row.key} className="flex items-center gap-3 border-b border-slate-100 py-2 last:border-0 xl:max-h-[68px] xl:min-h-0 xl:flex-1">
                     <KindIcon kind={row.kind} />
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-semibold text-slate-800">{row.title}</p>
@@ -887,15 +902,16 @@ function DashboardContent() {
             )}
           </Panel>
 
-          {/* Quick actions - the three things done from here on the spot.
-              Page links live in the sidebar, not here. */}
-          <section aria-label="Quick actions" className={`shrink-0 p-2.5 ${CARD}`}>
-            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-              <QuickAction onClick={() => setSaleOpen(true)} icon={ShoppingCart} title="New sale" desc="Ring up a sale" hint="or scan any item" tone="primary" />
-              {canAddItem && <QuickAction onClick={openAddItem} busy={loadingCategories} icon={PackagePlus} title="Add stock" desc="Put new pieces on the shelf" />}
-              {canReserve && <QuickAction onClick={() => setReserveOpen(true)} icon={CalendarPlus} title="Reserve item" desc="Hold stock for a customer" />}
-            </div>
-          </section>
+          {/* Quick actions - the things done from here on the spot. Page links
+              live in the sidebar, not here. Without money access they sit in
+              the top row instead (see above). */}
+          {canSeeMoney && (
+            <section aria-label="Quick actions" className={`shrink-0 p-2.5 ${CARD}`}>
+              <div className={`grid grid-cols-1 gap-2.5 ${QUICK_COLS[quickActions.length]}`}>
+                {quickActions}
+              </div>
+            </section>
+          )}
           </div>
         </div>
       </div>
@@ -932,6 +948,11 @@ function DashboardContent() {
 }
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
+
+// Static class names (Tailwind only ships classes it can see in the source).
+// Top row without money access: Sales today plus one tile per quick action.
+const TOP_ROW_COLS: Record<number, string> = { 2: 'xl:grid-cols-2', 3: 'xl:grid-cols-3', 4: 'xl:grid-cols-4' }
+const QUICK_COLS: Record<number, string> = { 1: '', 2: 'sm:grid-cols-2', 3: 'sm:grid-cols-3' }
 
 const FOCUS = 'outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2'
 const CARD = 'rounded-xl border border-slate-200/70 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.10)]'
@@ -1071,7 +1092,7 @@ function QuickAction({ title, desc, hint, icon: Icon, href, onClick, busy, tone 
   title: string; desc: string; hint?: string; icon: LucideIcon; href?: string; onClick?: () => void; busy?: boolean; tone?: keyof typeof QUICK_TONE
 }) {
   const t = QUICK_TONE[tone]
-  const cls = `group flex h-[68px] w-full items-center gap-3 rounded-xl px-3.5 text-left transition-all duration-150 hover:-translate-y-px active:translate-y-0 disabled:cursor-wait disabled:opacity-70 ${FOCUS} ${t.tile}`
+  const cls = `group flex h-full min-h-[68px] w-full items-center gap-3 rounded-xl px-3.5 text-left transition-all duration-150 hover:-translate-y-px active:translate-y-0 disabled:cursor-wait disabled:opacity-70 ${FOCUS} ${t.tile}`
   const body = (
     <>
       <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${t.icon}`}>
