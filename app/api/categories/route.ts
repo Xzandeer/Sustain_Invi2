@@ -52,12 +52,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Category name is required.' }, { status: 400 })
     }
 
-    const duplicateSnapshot = await getAdminDb()
-      .collection('categories')
-      .where('name', '==', name)
-      .limit(1)
-      .get()
-    if (!duplicateSnapshot.empty) {
+    // Compared without regard to case or spacing: "Kitchenware" and
+    // "kitchenware " are the same category to the shop, and an exact-match
+    // query let both be created. The collection is a handful of documents,
+    // so reading it whole costs nothing.
+    const key = name.toLowerCase().replace(/\s+/g, ' ')
+    const existing = await getAdminDb().collection('categories').select('name').get()
+    const isDuplicate = existing.docs.some(
+      (d) => String(d.get('name') ?? '').trim().toLowerCase().replace(/\s+/g, ' ') === key
+    )
+    if (isDuplicate) {
       return NextResponse.json({ error: 'Category already exists.' }, { status: 409 })
     }
 
