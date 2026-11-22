@@ -27,7 +27,7 @@ import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { apiFetch } from '@/lib/apiFetch'
 import { forgetReads } from '@/lib/client/readCache'
-import { collection, onSnapshot, orderBy, query, Timestamp, where } from 'firebase/firestore'
+import { collection, doc, onSnapshot, orderBy, query, Timestamp, where } from 'firebase/firestore'
 import { toPng } from 'html-to-image'
 import { Download, Mail, Minus, Plus, Printer, Search, ShoppingCart, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -357,6 +357,34 @@ function SalesContent() {
       window.localStorage.removeItem(RECEIPT_STORAGE_KEY)
     }
   }, [activeReceipt])
+
+  // The panel keeps the last ticket or receipt up for reprinting, but the
+  // receipt record itself never changes after it is written. Watch the
+  // transaction behind it instead: once a reservation is no longer held
+  // (cancelled, expired, or claimed and collected) or a sale is fully
+  // refunded, that paper would be wrong, so it comes off the panel rather
+  // than staying printable. An account that cannot read the transaction
+  // (staff without the reservations permission) is not shown it either.
+  const receiptTxType = activeReceipt?.transactionType
+  const receiptTxId = activeReceipt?.transactionId
+  useEffect(() => {
+    if (!receiptTxType || !receiptTxId) return
+    const clear = () => { setActiveReceipt(null); setCompletedDocument(null) }
+    const collectionName = receiptTxType === 'reservation' ? 'reservations' : 'sales'
+    return onSnapshot(
+      doc(db, collectionName, receiptTxId),
+      (snapshot) => {
+        const status = String(snapshot.data()?.status ?? '').toLowerCase()
+        const stillValid = snapshot.exists() && (
+          receiptTxType === 'reservation'
+            ? status === 'active' || status === 'awaitingcollection'
+            : status !== 'refunded'
+        )
+        if (!stillValid) clear()
+      },
+      clear,
+    )
+  }, [receiptTxType, receiptTxId])
 
   useEffect(() => {
     const unsubscribeCategories = onSnapshot(

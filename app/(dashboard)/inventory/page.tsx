@@ -986,7 +986,9 @@ function InventoryContent() {
                       className="block w-full px-3 py-2 text-left hover:bg-slate-50">
                       {voidTab === 'voided' ? 'Back to items on sale' : `Written-off items (${kpiWrittenOff})`}
                     </button>
-                    <Link href="/inventory/trash" className="block px-3 py-2 hover:bg-slate-50">Trash</Link>
+                    {/* Trash is administrator-only (the sidebar hides it too); a
+                        staff member following this link was sent straight back. */}
+                    {isAdmin && <Link href="/inventory/trash" className="block px-3 py-2 hover:bg-slate-50">Trash</Link>}
                   </div>
                 </>
               )}

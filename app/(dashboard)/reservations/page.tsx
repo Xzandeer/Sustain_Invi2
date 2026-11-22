@@ -38,6 +38,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
+import { useUserRole } from '@/hooks/useUserRole'
 import { useConfirm } from '@/components/shared/ConfirmDialog'
 import { CancellationReasonModal } from '@/components/reservations/CancellationReasonModal'
 import { auth, db } from '@/lib/firebase'
@@ -243,6 +244,8 @@ export default function ReservationsPage() {
 }
 
 function ReservationsContent() {
+  const { isAdmin, can } = useUserRole()
+  const canOpenAnalytics = isAdmin || can('canViewAnalytics')
   const [reservations, setReservations] = useState<Reservation[]>([])
   const [loading, setLoading] = useState(true)
   const [actionId, setActionId] = useState<string | null>(null)
@@ -1390,12 +1393,16 @@ function ReservationsContent() {
                       graph was decoration shaped like a trend, so it is gone.
                       Analytics has the charts that are drawn from data. */}
 
-                  <button
-                    onClick={() => { window.location.href = '/analytics' }}
-                    className="mt-2 text-[11px] font-medium text-blue-500 transition-colors hover:text-blue-700"
-                  >
-                    View full analytics →
-                  </button>
+                  {/* Only for accounts that can open Analytics; for anyone else
+                      the page sends them straight back to the Dashboard. */}
+                  {canOpenAnalytics && (
+                    <button
+                      onClick={() => { window.location.href = '/analytics' }}
+                      className="mt-2 text-[11px] font-medium text-blue-500 transition-colors hover:text-blue-700"
+                    >
+                      View full analytics →
+                    </button>
+                  )}
                 </>
               ) : (
                 <p className="text-xs text-slate-500">No reservation data available yet.</p>
