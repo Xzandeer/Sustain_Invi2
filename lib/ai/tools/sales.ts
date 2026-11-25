@@ -8,6 +8,7 @@
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { aiCache } from '@/lib/ai/cache'
 import { recentSalesSnap } from '@/lib/ai/tools/salesData'
+import { getStockStatus } from '@/lib/server/salesInventoryMetrics'
 
 const db = () => getAdminDb()
 
@@ -28,7 +29,11 @@ const toDate = (v: unknown): Date | null => {
 }
 const fmt = (n: number) => `₱${n.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const getSaleDate = (s: Record<string, unknown>) => toDate(s.createdAt ?? s.date ?? s.saleDate)
-const getSaleAmount = (s: Record<string, unknown>) => toNum(s.totalAmount ?? s.amount ?? s.total)
+// What the shop kept: refunds come off, as on the Dashboard and Analytics.
+// (Counting the full amount made the assistant's figures higher than the
+// pages' after any refund.)
+const getSaleAmount = (s: Record<string, unknown>) =>
+  Math.max(0, toNum(s.totalAmount ?? s.amount ?? s.total) - toNum(s.refundedAmount))
 
 export async function getTodaySales(): Promise<string> {
   const today = new Date(); today.setHours(0, 0, 0, 0)
@@ -55,7 +60,8 @@ export async function getRecentSales(days = 30): Promise<string> {
   const cached = aiCache.get<string>(cacheKey)
   if (cached) return cached
 
-  const since = new Date(); since.setDate(since.getDate() - days); since.setHours(0, 0, 0, 0)
+  // "Last 30 days" = today and the 29 days before it, as on the Dashboard.
+  const since = new Date(); since.setDate(since.getDate() - (days - 1)); since.setHours(0, 0, 0, 0)
   // Query only records within date range — avoids loading full sales history
   const snap = await db().collection('sales')
     .where('createdAt', '>=', since)
@@ -87,8 +93,10 @@ export async function getTopCategories(): Promise<string> {
     items.forEach(item => {
       const cat = typeof item.categoryName === 'string' ? item.categoryName : 'Unknown'
       if (!catData[cat]) catData[cat] = { revenue: 0, units: 0 }
-      catData[cat].revenue += toNum(item.price) * toNum(item.quantity, 1)
-      catData[cat].units += toNum(item.quantity, 1)
+      // Refunded pieces were given back, so they are not counted as sold.
+      const kept = Math.max(0, toNum(item.quantity, 1) - toNum(item.refundedQuantity))
+      catData[cat].revenue += toNum(item.price) * kept
+      catData[cat].units += kept
     })
   })
 
@@ -211,9 +219,13 @@ export async function getDashboardSummary(): Promise<string> {
   const today = new Date(); today.setHours(0, 0, 0, 0)
   const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
 
-  const activeInv = invSnap.docs.filter(d => !(d.data() as Record<string, unknown>).isDeleted)
-  const lowStock = activeInv.filter(d => { const data = d.data() as Record<string, unknown>; return toNum(data.stock) <= toNum(data.minStock, 5) })
-  const outOfStock = activeInv.filter(d => toNum((d.data() as Record<string, unknown>).stock) === 0)
+  // Same items and rules as the Inventory page: written-off items are not on
+  // sale, reserved pieces cannot be sold, and low means at or below the item's
+  // minimum but not out.
+  const activeInv = invSnap.docs.filter(d => { const data = d.data() as Record<string, unknown>; return data.isDeleted !== true && data.isVoided !== true })
+  const statusOf = (d: (typeof activeInv)[number]) => getStockStatus(d.data() as Record<string, unknown>)
+  const lowStock = activeInv.filter(d => statusOf(d) === 'Low Stock')
+  const outOfStock = activeInv.filter(d => statusOf(d) === 'Out of Stock')
 
   const allSales = salesSnap.docs.map(d => ({ id: d.id, ...d.data() } as Record<string, unknown>))
   const todaySales = allSales.filter(s => { const d = getSaleDate(s); return d && d >= today })

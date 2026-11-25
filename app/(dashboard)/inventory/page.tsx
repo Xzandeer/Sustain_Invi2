@@ -687,7 +687,7 @@ function InventoryContent() {
   const [itemsPerPage, setItemsPerPage] = useState(10)
 
   // Reset to page 1 when filters change
-  useEffect(() => { setCurrentPage(1) }, [search, categoryFilter, conditionFilter, stockStatusFilter, typeFilter, reservedOnly, minPrice, maxPrice])
+  useEffect(() => { setCurrentPage(1) }, [search, categoryFilter, conditionFilter, stockStatusFilter, typeFilter, reservedOnly, staleOnly, voidTab, minPrice, maxPrice])
 
   const totalPages = Math.max(1, Math.ceil(filteredProducts.length / itemsPerPage))
   const paginatedProducts = useMemo(

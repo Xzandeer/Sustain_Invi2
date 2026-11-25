@@ -15,7 +15,7 @@
 import { INPUT_LIMITS } from '@/lib/constants/limits'
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { collection, getDocs, orderBy, query, limit } from 'firebase/firestore'
+import { collection, getDocs, orderBy, query, limit, where, Timestamp, type QueryDocumentSnapshot } from 'firebase/firestore'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { db } from '@/lib/firebase'
 import { getStockLogActionLabel, resolveStockLogAction, ResolvedStockLogAction, ALL_STOCK_LOG_ACTIONS } from '@/lib/inventory/stockLogActions'
@@ -67,6 +67,45 @@ function matchesTab(tab: TabId, action: ResolvedStockLogAction): boolean {
   if (tab === 'system') return !STOCK_CHANGE_ACTIONS.includes(action) && !RESERVATION_SALE_ACTIONS(action) && !ITEM_UPDATE_ACTIONS.includes(action)
   return true
 }
+
+// One Firestore stock-log document as a table row.
+function toStockLogRecord(doc: QueryDocumentSnapshot): StockLogRecord {
+  const data = doc.data() as Record<string, unknown>
+  const actionType = typeof data.actionType === 'string' ? data.actionType : ''
+  const resolvedAction = resolveStockLogAction({
+    actionType, remarks: data.remarks,
+    quantityChanged: toNumber(data.quantityChanged, 0),
+    stockBefore: toNumber(data.stockBefore, 0), stockAfter: toNumber(data.stockAfter, 0),
+    reservedBefore: toNumber(data.reservedBefore, 0), reservedAfter: toNumber(data.reservedAfter, 0),
+  })
+  return {
+    id: doc.id, actionType, resolvedAction,
+    itemId: typeof data.itemId === 'string' ? data.itemId : '',
+    itemName: typeof data.itemName === 'string' ? data.itemName : 'Unnamed Item',
+    // Per-piece logs written before pieces' conditions were stored only
+    // carry the item's derived New/Refurbished label, which says nothing
+    // about the piece that moved - show no condition rather than a wrong one.
+    condition: Array.isArray(data.unitCodes) && data.unitCodes.length > 0 && !Array.isArray(data.unitGrades)
+      ? ''
+      : typeof data.condition === 'string' ? data.condition : '',
+    previousValue: typeof data.previousValue === 'string' ? data.previousValue : '',
+    newValue: typeof data.newValue === 'string' ? data.newValue : '',
+    quantityBefore: toNumber(data.quantityBefore, 0),
+    quantityChanged: toNumber(data.quantityChanged, 0),
+    quantityAfter: toNumber(data.quantityAfter, 0),
+    stockBefore: toNumber(data.stockBefore, 0), stockAfter: toNumber(data.stockAfter, 0),
+    reservedBefore: toNumber(data.reservedBefore, 0), reservedAfter: toNumber(data.reservedAfter, 0),
+    userName: typeof data.userName === 'string' && data.userName.trim() ? data.userName : 'System User',
+    userEmail: typeof data.userEmail === 'string' ? data.userEmail.trim() : '',
+    relatedId: typeof data.relatedId === 'string' ? data.relatedId.trim() : '',
+    remarks: typeof data.remarks === 'string' ? data.remarks : '',
+    createdAt: toDate(data.createdAt),
+  } satisfies StockLogRecord
+}
+
+// Latest entries loaded on open, and the most one date range will load.
+const RECENT_LIMIT = 500
+const RANGE_LIMIT = 2000
 
 const formatDate = (value: Date | null) => {
   if (!value) return 'Pending'
@@ -196,7 +235,6 @@ export default function InventoryLogsPage() {
 }
 
 function InventoryLogsContent() {
-  const [logs, setLogs] = useState<StockLogRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
@@ -212,53 +250,64 @@ function InventoryLogsContent() {
   const deferredSearch = useDeferredValue(search)
   const now = useNow()
 
+  // The page opens on the latest RECENT_LIMIT entries: reading the whole trail
+  // each time would cost one read per log ever written. A date range that
+  // reaches further back than those entries asks the database for that range
+  // instead - before, an older range filtered the recent entries and showed
+  // nothing, as if no stock had moved.
+  const [recentLogs, setRecentLogs] = useState<StockLogRecord[]>([])
+  const [recentFull, setRecentFull] = useState(false) // true = there are older entries than loaded
+  const [rangeLogs, setRangeLogs] = useState<StockLogRecord[] | null>(null)
+  const [rangeFull, setRangeFull] = useState(false)
+  const [rangeLoading, setRangeLoading] = useState(false)
+
   useEffect(() => {
     let cancelled = false
     async function loadLogs() {
       try {
-        // Limit to 500 most recent logs to avoid reading the entire collection on every load
-        const snap = await getDocs(query(collection(db, 'stockLogs'), orderBy('createdAt', 'desc'), limit(500)))
+        const snap = await getDocs(query(collection(db, 'stockLogs'), orderBy('createdAt', 'desc'), limit(RECENT_LIMIT)))
         if (cancelled) return
-        const records = snap.docs.map((doc) => {
-          const data = doc.data() as Record<string, unknown>
-          const actionType = typeof data.actionType === 'string' ? data.actionType : ''
-          const resolvedAction = resolveStockLogAction({
-            actionType, remarks: data.remarks,
-            quantityChanged: toNumber(data.quantityChanged, 0),
-            stockBefore: toNumber(data.stockBefore, 0), stockAfter: toNumber(data.stockAfter, 0),
-            reservedBefore: toNumber(data.reservedBefore, 0), reservedAfter: toNumber(data.reservedAfter, 0),
-          })
-          return {
-            id: doc.id, actionType, resolvedAction,
-            itemId: typeof data.itemId === 'string' ? data.itemId : '',
-            itemName: typeof data.itemName === 'string' ? data.itemName : 'Unnamed Item',
-            // Per-piece logs written before pieces' conditions were stored only
-            // carry the item's derived New/Refurbished label, which says nothing
-            // about the piece that moved - show no condition rather than a wrong one.
-            condition: Array.isArray(data.unitCodes) && data.unitCodes.length > 0 && !Array.isArray(data.unitGrades)
-              ? ''
-              : typeof data.condition === 'string' ? data.condition : '',
-            previousValue: typeof data.previousValue === 'string' ? data.previousValue : '',
-            newValue: typeof data.newValue === 'string' ? data.newValue : '',
-            quantityBefore: toNumber(data.quantityBefore, 0),
-            quantityChanged: toNumber(data.quantityChanged, 0),
-            quantityAfter: toNumber(data.quantityAfter, 0),
-            stockBefore: toNumber(data.stockBefore, 0), stockAfter: toNumber(data.stockAfter, 0),
-            reservedBefore: toNumber(data.reservedBefore, 0), reservedAfter: toNumber(data.reservedAfter, 0),
-            userName: typeof data.userName === 'string' && data.userName.trim() ? data.userName : 'System User',
-            userEmail: typeof data.userEmail === 'string' ? data.userEmail.trim() : '',
-            relatedId: typeof data.relatedId === 'string' ? data.relatedId.trim() : '',
-            remarks: typeof data.remarks === 'string' ? data.remarks : '',
-            createdAt: toDate(data.createdAt),
-          } satisfies StockLogRecord
-        })
-        setLogs(records.filter(r => r.resolvedAction !== 'unmapped_action'))
+        setRecentLogs(snap.docs.map(toStockLogRecord).filter(r => r.resolvedAction !== 'unmapped_action'))
+        setRecentFull(snap.size >= RECENT_LIMIT)
         setLoading(false)
       } catch (err) { console.error(err); setError('Failed to load stock logs.'); setLoading(false) }
     }
     loadLogs()
     return () => { cancelled = true }
   }, [])
+
+  // Dates are local calendar days: "2026-11-01" means from local midnight.
+  // (new Date('2026-11-01') is UTC midnight - 8 AM in Manila - which dropped
+  // the first hours of the start day.)
+  const rangeStartMs = startDate ? new Date(`${startDate}T00:00:00`).getTime() : null
+  const rangeEndMs = endDate ? new Date(`${endDate}T23:59:59.999`).getTime() : null
+  const oldestRecentMs = recentLogs.reduce((min, l) => Math.min(min, l.createdAt?.getTime() ?? min), Infinity)
+  const needsRangeQuery =
+    recentFull && (rangeStartMs != null || rangeEndMs != null) &&
+    (rangeStartMs == null || rangeStartMs < oldestRecentMs)
+
+  useEffect(() => {
+    if (!needsRangeQuery) { setRangeLogs(null); return }
+    let cancelled = false
+    setRangeLoading(true)
+    const parts = [
+      ...(rangeStartMs != null ? [where('createdAt', '>=', Timestamp.fromMillis(rangeStartMs))] : []),
+      ...(rangeEndMs != null ? [where('createdAt', '<=', Timestamp.fromMillis(rangeEndMs))] : []),
+    ]
+    getDocs(query(collection(db, 'stockLogs'), ...parts, orderBy('createdAt', 'desc'), limit(RANGE_LIMIT)))
+      .then((snap) => {
+        if (cancelled) return
+        setRangeLogs(snap.docs.map(toStockLogRecord).filter(r => r.resolvedAction !== 'unmapped_action'))
+        setRangeFull(snap.size >= RANGE_LIMIT)
+      })
+      .catch((err) => { if (!cancelled) { console.error(err); toast.error('Could not load logs for those dates.') } })
+      .finally(() => { if (!cancelled) setRangeLoading(false) })
+    return () => { cancelled = true }
+  }, [needsRangeQuery, rangeStartMs, rangeEndMs])
+
+  const logs = rangeLogs ?? recentLogs
+  // Entries exist beyond what is on screen (shown as a note under the filters).
+  const capped = rangeLogs ? rangeFull : recentFull && !needsRangeQuery && rangeStartMs == null
 
   // Show every action type the system supports, with a count of how many logs
   // currently match.
@@ -270,8 +319,27 @@ function InventoryLogsContent() {
   //
   // Sorted by frequency: the thing that happens most is the thing most likely
   // to be looked for.
+  // Everything the date range, search and condition let through. The summary
+  // cards and the action counts are read from this, so they describe the
+  // same period the table shows - not the whole loaded trail.
+  const inScope = useMemo(() => {
+    const term = deferredSearch.trim().toLowerCase()
+    return logs.filter(log => {
+      const idx = [log.itemName, log.itemId, log.userName, log.userEmail, log.relatedId, log.previousValue, log.newValue, log.remarks, getStockLogActionLabel(log.resolvedAction)].join(' ').toLowerCase()
+      const matchesSearch = !term || idx.includes(term)
+      // A log can cover several conditions ("Good ×2, Fair").
+      const matchesCond = conditionFilter === 'all' || log.condition.split(', ').map((c) => c.replace(/ ×\d+$/, '')).includes(conditionFilter)
+      const t = log.createdAt?.getTime()
+      const matchesDate = t == null ? rangeStartMs == null && rangeEndMs == null : (rangeStartMs == null || t >= rangeStartMs) && (rangeEndMs == null || t <= rangeEndMs)
+      return matchesSearch && matchesCond && matchesDate
+    })
+  }, [logs, deferredSearch, conditionFilter, rangeStartMs, rangeEndMs])
+
+  // The action list offers only actions inside the selected tab: an action
+  // from another tab could only ever show an empty table.
+  const tabLogs = useMemo(() => inScope.filter(log => matchesTab(activeTab, log.resolvedAction)), [inScope, activeTab])
   const actionOptions = useMemo(() => {
-    const counts = logs.reduce<Record<string, number>>((acc, l) => {
+    const counts = tabLogs.reduce<Record<string, number>>((acc, l) => {
       acc[l.resolvedAction] = (acc[l.resolvedAction] ?? 0) + 1
       return acc
     }, {})
@@ -279,29 +347,24 @@ function InventoryLogsContent() {
       .map(a => ({ action: a, count: counts[a] ?? 0 }))
       .filter(o => o.count > 0)
       .sort((a, b) => b.count - a.count)
-  }, [logs])
+  }, [tabLogs])
 
   const filteredLogs = useMemo(() => {
-    const term = deferredSearch.trim().toLowerCase()
-    const startTime = startDate ? new Date(startDate).getTime() : null
-    const endTime = endDate ? new Date(new Date(endDate).setHours(23, 59, 59, 999)).getTime() : null
+    return tabLogs
+      .filter(log => actionFilter === 'all' || log.resolvedAction === actionFilter)
+      .sort((a, b) => {
+        const at = a.createdAt?.getTime() ?? 0
+        const bt = b.createdAt?.getTime() ?? 0
+        return sortDir === 'desc' ? bt - at : at - bt
+      })
+  }, [tabLogs, actionFilter, sortDir])
 
-    return logs.filter(log => {
-      const idx = [log.itemName, log.itemId, log.userName, log.userEmail, log.relatedId, log.previousValue, log.newValue, log.remarks, getStockLogActionLabel(log.resolvedAction)].join(' ').toLowerCase()
-      const matchesSearch = !term || idx.includes(term)
-      const matchesAction = actionFilter === 'all' || log.resolvedAction === actionFilter
-      // A log can cover several conditions ("Good ×2, Fair").
-      const matchesCond = conditionFilter === 'all' || log.condition.split(', ').map((c) => c.replace(/ ×d+$/, '')).includes(conditionFilter)
-      const t = log.createdAt?.getTime()
-      const matchesDate = t == null ? !startTime && !endTime : (startTime == null || t >= startTime) && (endTime == null || t <= endTime)
-      const tabMatch = matchesTab(activeTab, log.resolvedAction)
-      return matchesSearch && matchesAction && matchesCond && matchesDate && tabMatch
-    }).sort((a, b) => {
-      const at = a.createdAt?.getTime() ?? 0
-      const bt = b.createdAt?.getTime() ?? 0
-      return sortDir === 'desc' ? bt - at : at - bt
-    })
-  }, [logs, deferredSearch, actionFilter, conditionFilter, startDate, endDate, activeTab, sortDir])
+  // Switching tabs drops an action that belongs to another tab.
+  const selectTab = (tab: TabId) => {
+    setActiveTab(tab)
+    if (actionFilter !== 'all' && !matchesTab(tab, actionFilter as ResolvedStockLogAction)) setActionFilter('all')
+    setCurrentPage(1)
+  }
 
   // Quick ranges. The audit trail is usually wanted for a period - "this week",
   // "last month" - rather than two dates typed by hand.
@@ -374,12 +437,13 @@ function InventoryLogsContent() {
   }
 
 
+  // Each card counts what its tab of the same name lists.
   const summary = useMemo(() => ({
-    total: logs.filter(l => l.resolvedAction !== 'unmapped_action').length,
-    stockChanges: logs.filter(l => l.quantityChanged !== 0).length,
-    itemUpdates: logs.filter(l => ITEM_UPDATE_ACTIONS.includes(l.resolvedAction)).length,
-    reservationAndSales: logs.filter(l => RESERVATION_SALE_ACTIONS(l.resolvedAction)).length,
-  }), [logs])
+    total: inScope.length,
+    stockChanges: inScope.filter(l => matchesTab('stock_changes', l.resolvedAction)).length,
+    itemUpdates: inScope.filter(l => matchesTab('item_updates', l.resolvedAction)).length,
+    reservationAndSales: inScope.filter(l => matchesTab('reservations_sales', l.resolvedAction)).length,
+  }), [inScope])
 
   const totalPages = Math.max(1, Math.ceil(filteredLogs.length / perPage))
   const safePage = Math.min(currentPage, totalPages)
@@ -422,7 +486,7 @@ function InventoryLogsContent() {
           {/* Actions */}
           <select aria-label="Filter by action" value={actionFilter} onChange={e => { setActionFilter(e.target.value); setCurrentPage(1) }}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:outline-none">
-            <option value="all">All Actions ({logs.length})</option>
+            <option value="all">All Actions ({tabLogs.length})</option>
             {actionOptions.map(({ action, count }) => (
               <option key={action} value={action}>
                 {getStockLogActionLabel(action)} ({count})
@@ -541,7 +605,7 @@ function InventoryLogsContent() {
           {/* Tabs */}
           <div className="flex overflow-x-auto border-b border-slate-100 px-4">
             {TABS.map(tab => (
-              <button key={tab.id} onClick={() => { setActiveTab(tab.id); setCurrentPage(1) }}
+              <button key={tab.id} onClick={() => selectTab(tab.id)}
                 className={`shrink-0 border-b-2 px-3 py-3 text-sm font-medium transition ${activeTab === tab.id ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
                 {tab.label}
               </button>
@@ -550,7 +614,14 @@ function InventoryLogsContent() {
 
           {/* Error / Loading */}
           {error && <p className="px-4 py-3 text-sm text-red-600">{error}</p>}
-          {loading ? (
+          {!loading && !rangeLoading && capped && (
+            <p className="border-b border-slate-100 bg-slate-50 px-4 py-2 text-xs text-slate-500">
+              {rangeLogs
+                ? `Showing the latest ${RANGE_LIMIT.toLocaleString()} entries in these dates. Narrow the dates to see earlier ones.`
+                : `Showing the latest ${RECENT_LIMIT} entries. Choose dates to see older ones.`}
+            </p>
+          )}
+          {loading || rangeLoading ? (
             <p className="px-4 py-8 text-center text-sm text-slate-500">Loading stock logs...</p>
           ) : filteredLogs.length === 0 ? (
             <p className="px-4 py-8 text-center text-sm text-slate-500">No stock logs found.</p>

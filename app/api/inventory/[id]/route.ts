@@ -381,6 +381,8 @@ export async function PATCH(req: Request, context: RouteContext) {
       await docRef.update({
         isDeleted: false,
         deletedAt: null,
+        // Counted by the Trash page's "Restored this month" card.
+        restoredAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       })
       await createStockLog({
@@ -588,6 +590,7 @@ export async function PATCH(req: Request, context: RouteContext) {
 
       const movedUnits = await updateWithUnits({
         isVoided: false,
+        restoredAt: new Date().toISOString(),
         voidedAt: remainingVoidedUnits > 0 ? snapshotData.voidedAt ?? null : null,
         voidedBy: remainingVoidedUnits > 0 ? snapshotData.voidedBy ?? null : null,
         voidReason: remainingVoidedUnits > 0 ? snapshotData.voidReason ?? null : null,

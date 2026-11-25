@@ -29,7 +29,9 @@ const toDate = (v: unknown): Date | null => {
 }
 const fmt = (n: number) => `₱${n.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const getSaleDate = (s: Record<string, unknown>) => toDate(s.createdAt ?? s.date ?? s.saleDate)
-const getSaleAmount = (s: Record<string, unknown>) => toNum(s.totalAmount ?? s.amount ?? s.total)
+// Net of refunds, like every other revenue figure in the app.
+const getSaleAmount = (s: Record<string, unknown>) =>
+  Math.max(0, toNum(s.totalAmount ?? s.amount ?? s.total) - toNum(s.refundedAmount))
 
 export async function predictSales(): Promise<string> {
   const cacheKey = 'predict_sales'

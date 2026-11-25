@@ -166,6 +166,9 @@ export default function InventoryTrashPage() {
 function InventoryTrashContent() {
   const { isAdmin } = useUserRole()
   const [items, setItems] = useState<TrashItem[]>([])
+  // Items brought back this month. Restored items are no longer in the trash,
+  // so this is counted from every inventory document, not from `items`.
+  const [restoredThisMonth, setRestoredThisMonth] = useState(0)
   const [loading, setLoading] = useState(true)
   const [actionId, setActionId] = useState<string | null>(null)
   const [error, setError] = useState('')
@@ -187,6 +190,12 @@ function InventoryTrashContent() {
       try {
         const snap = await getDocs(collection(db, 'inventory'))
         if (cancelled) return
+        const monthStart = thisMonthStart()
+        setRestoredThisMonth(snap.docs.filter((d) => {
+          const data = d.data() as Record<string, unknown>
+          return typeof data.restoredAt === 'string' && new Date(data.restoredAt) >= monthStart
+            && data.isDeleted !== true && data.isVoided !== true
+        }).length)
         const rows: TrashItem[] = snap.docs.map((docItem) => {
           const data = docItem.data() as Record<string, unknown>
           return {
@@ -225,20 +234,18 @@ function InventoryTrashContent() {
 
   const categories = useMemo(() => Array.from(new Set(items.map(i => i.category))).sort(), [items])
 
-  const summary = useMemo(() => {
-    const monthStart = thisMonthStart()
-    return {
-      total: items.length,
-      withStock: items.filter(i => i.stock > 0).length,
-      withReservations: items.filter(i => i.reservedStock > 0).length,
-      restoredThisMonth: items.filter(i => i.restoredAt && new Date(i.restoredAt) >= monthStart).length,
-    }
-  }, [items])
+  const summary = useMemo(() => ({
+    total: items.length,
+    withStock: items.filter(i => i.stock > 0).length,
+    withReservations: items.filter(i => i.reservedStock > 0).length,
+    restoredThisMonth,
+  }), [items, restoredThisMonth])
 
   const filteredItems = useMemo(() => {
     const term = search.trim().toLowerCase()
-    const startTime = startDate ? new Date(startDate).getTime() : null
-    const endTime = endDate ? new Date(new Date(endDate).setHours(23, 59, 59, 999)).getTime() : null
+    // Local calendar days (new Date('2026-11-01') is UTC midnight, 8 AM here).
+    const startTime = startDate ? new Date(`${startDate}T00:00:00`).getTime() : null
+    const endTime = endDate ? new Date(`${endDate}T23:59:59.999`).getTime() : null
 
     return items.filter(item => {
       const dateStr = item.voidedAt ?? item.deletedAt
@@ -247,7 +254,12 @@ function InventoryTrashContent() {
       const matchSearch = !term || item.name.toLowerCase().includes(term) || item.sku.toLowerCase().includes(term) || (item.voidReason ?? '').toLowerCase().includes(term)
       const matchCat = categoryFilter === 'all' || item.category === categoryFilter
       const matchCond = conditionFilter === 'all' || item.condition === conditionFilter
-      const matchReason = reasonFilter === 'all' || item.voidReason === reasonFilter
+      // "Other" is stored as the reason typed in, so it matches any reason
+      // outside the fixed list.
+      const matchReason = reasonFilter === 'all'
+        || (reasonFilter === 'Other'
+          ? !!item.voidReason && !VOID_REASONS.slice(0, -1).includes(item.voidReason)
+          : item.voidReason === reasonFilter)
       const matchDate = t == null ? true : (startTime == null || t >= startTime) && (endTime == null || t <= endTime)
       const matchStock =
         stockFilter === 'all' ? true :
@@ -282,7 +294,11 @@ function InventoryTrashContent() {
       })
       const payload = (await response.json()) as { error?: string }
       if (!response.ok) throw new Error(payload.error || 'Action failed.')
-      toast.success('Item restored to inventory.')
+      // The list is read once on open, so take the item off it here - before,
+      // a restored item stayed in the trash until the page was reloaded.
+      setItems((prev) => prev.filter((i) => i.id !== id))
+      if (action !== 'permanent-delete') setRestoredThisMonth((n) => n + 1)
+      toast.success(action === 'permanent-delete' ? 'Item deleted permanently.' : 'Item restored to inventory.')
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Action failed.'
       setError(msg)

@@ -76,6 +76,8 @@ interface Reservation {
   cancellationReasonType?: 'manual' | 'system'
   cancelledBy?: string
   cancelledAt?: Date | null
+  /** When the goods were handed over (Completed only). */
+  completedAt?: Date | null
   /** Who made the reservation (stored when it was created). */
   processedByName?: string
 }
@@ -342,6 +344,7 @@ function ReservationsContent() {
               typeof data.customerContactNumber === 'string' ? data.customerContactNumber.trim() : '',
             createdAt: toDate(data.createdAt ?? data.reservationDate),
             expiresAt: toDate(data.expiresAt),
+            completedAt: toDate(data.completedAt),
             // Every status the system can write must be listed here. Anything
             // missing falls through to 'Active', which is worse than an
             // unknown badge: a paid reservation would read as still holding
@@ -432,8 +435,9 @@ function ReservationsContent() {
 
   const filteredReservations = useMemo(() => {
     const term = deferredSearch.trim().toLowerCase()
-    const startTime = startDate ? new Date(startDate).getTime() : null
-    const endTime = endDate ? new Date(new Date(endDate).setHours(23, 59, 59, 999)).getTime() : null
+    // Local calendar days (new Date('2026-11-01') is UTC midnight, 8 AM here).
+    const startTime = startDate ? new Date(`${startDate}T00:00:00`).getTime() : null
+    const endTime = endDate ? new Date(`${endDate}T23:59:59.999`).getTime() : null
 
     return searchableReservations
       .filter(({ reservation: r, categoryNames, searchIndex }) => {
@@ -465,14 +469,24 @@ function ReservationsContent() {
     [reservations]
   )
 
+  // Newest hand-over first. The list arrives newest-CREATED first, so a hold
+  // made weeks ago and claimed today used to sit below older claims.
+  const completedTime = (r: Reservation) => (r.completedAt ?? r.createdAt)?.getTime() ?? 0
   const recentlyCompleted = useMemo(
-    () => reservations.filter((r) => r.status === 'Completed').slice(0, 4),
+    () => reservations
+      .filter((r) => r.status === 'Completed')
+      .sort((a, b) => completedTime(b) - completedTime(a))
+      .slice(0, 4),
     [reservations]
   )
 
+  // The panel says "this month", so only holds made this month count - it was
+  // counting every reservation ever made, of any status.
   const topCategory = useMemo(() => {
+    const now = new Date()
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
     const catMap: Record<string, number> = {}
-    reservations.forEach((r) => {
+    reservations.filter((r) => (r.createdAt?.getTime() ?? 0) >= monthStart).forEach((r) => {
       // Once per product, however many conditions of it are held.
       r.items.filter((item, i, all) => all.findIndex((o) => o.id === item.id) === i).forEach((item) => {
         const cat = inventoryCategoryById[item.id] || item.categoryName || 'Uncategorized'
@@ -1359,7 +1373,7 @@ function ReservationsContent() {
                         </p>
                         <p className="font-mono text-[10px] text-slate-500">{r.reservationNumber}</p>
                         <p className="text-[10px] text-slate-500">
-                          {fmtDate(r.createdAt)}, {fmtTime(r.createdAt)}
+                          {fmtDate(r.completedAt ?? r.createdAt)}, {fmtTime(r.completedAt ?? r.createdAt)}
                         </p>
                       </div>
                     </div>

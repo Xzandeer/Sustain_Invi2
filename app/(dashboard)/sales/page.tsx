@@ -145,6 +145,8 @@ interface InventoryItem {
   stock: number
   reservedStock: number
   availableStock: number
+  /** Low stock at or below this, as on the Inventory page. */
+  minStock: number
   barcode?: string
   isDeleted?: boolean
   isVoided?: boolean
@@ -427,6 +429,7 @@ function SalesContent() {
                 0,
                 Math.max(0, toNumber(data.stock ?? data.quantity, 0)) - Math.max(0, toNumber(data.reservedStock, 0))
               ),
+              minStock: Math.max(0, toNumber(data.minStock, 0)),
               barcode: typeof data.barcode === 'string' ? data.barcode : undefined,
               isDeleted: data.isDeleted === true,
               isVoided: data.isVoided === true,
@@ -644,8 +647,9 @@ function SalesContent() {
 
   const filteredTransactions = useMemo(() => {
     const searchTerm = deferredSearch.trim().toLowerCase()
-    const startTime = startDate ? new Date(startDate).getTime() : null
-    const endTime = endDate ? new Date(new Date(endDate).setHours(23, 59, 59, 999)).getTime() : null
+    // Local calendar days (new Date('2026-11-01') is UTC midnight, 8 AM here).
+    const startTime = startDate ? new Date(`${startDate}T00:00:00`).getTime() : null
+    const endTime = endDate ? new Date(`${endDate}T23:59:59.999`).getTime() : null
 
     return searchableTransactions
       .filter(({ transaction, categoryNames, searchIndex }) => {
@@ -699,14 +703,16 @@ function SalesContent() {
       })
       .filter((item) => {
         if (inventoryStockStatusFilter === 'all') return true
+        // Same rule as the Inventory page: low = at or below the item's own
+        // minimum (a fixed 5 here made the two pages disagree).
         const stockStatus =
-          item.availableStock <= 0 ? 'Out of Stock' : item.availableStock <= 5 ? 'Low Stock' : 'Available'
+          item.availableStock <= 0 ? 'Out of Stock' : item.availableStock <= item.minStock ? 'Low Stock' : 'Available'
         return stockStatus === inventoryStockStatusFilter
       })
       .sort((a, b) => {
         const getPriority = (item: InventoryItem) => {
           if (item.availableStock <= 0) return 2
-          if (item.availableStock <= 5) return 1
+          if (item.availableStock <= item.minStock) return 1
           return 0
         }
 
@@ -1687,7 +1693,7 @@ function SalesContent() {
                     ) : (
                       paginatedItems.map((item) => {
                         const isOutOfStock = item.availableStock <= 0
-                        const isLowStock = item.availableStock > 0 && item.availableStock <= 5
+                        const isLowStock = item.availableStock > 0 && item.availableStock <= item.minStock
                         const sh = item.trackingMode === 'unit' ? shelf[item.id] : undefined
                         const grades = (sh?.grades ?? []).slice().sort((a, b) => UNIT_GRADES.indexOf(a.grade as UnitGrade) - UNIT_GRADES.indexOf(b.grade as UnitGrade))
                         const ownPriced = (sh?.ownPriced ?? []).reduce((n, g) => n + g.count, 0)
