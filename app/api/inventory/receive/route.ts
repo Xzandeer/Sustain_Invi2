@@ -94,6 +94,15 @@ export async function POST(req: NextRequest) {
         return data.isDeleted !== true && data.isSingleItem !== true &&
           normalizeName(typeof data.name === 'string' ? data.name : '') === normalizeName(name)
       })
+      // A written-off item of that name is the same item, but it is off sale:
+      // pieces added to it were hidden from Inventory and Sales and sat in the
+      // Trash. Same answer as choosing the item directly (above).
+      if (match && (match.data() as Record<string, unknown>).isVoided === true) {
+        return NextResponse.json(
+          { error: `"${name}" is written off. Restore it from the Trash first, then receive stock for it.` },
+          { status: 400 },
+        )
+      }
       itemRef = match?.ref ?? null
     }
 

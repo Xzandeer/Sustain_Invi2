@@ -15,12 +15,13 @@ import { INPUT_LIMITS } from '@/lib/constants/limits'
 import Link from 'next/link'
 import { apiFetch } from '@/lib/apiFetch'
 import { useEffect, useMemo, useState } from 'react'
-import { collection, getDocs } from 'firebase/firestore'
+import { collection, getDocs, query, where } from 'firebase/firestore'
 import { toast } from 'sonner'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
 import { auth, db } from '@/lib/firebase'
 import { normalizeInventoryCondition } from '@/lib/server/salesInventoryMetrics'
 import { useUserRole } from '@/hooks/useUserRole'
+import { UNIT_GRADES, GRADE_LABEL, normalizeUnitGrade, type UnitGrade } from '@/lib/inventory/units'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface TrashItem {
@@ -28,7 +29,8 @@ interface TrashItem {
   name: string
   sku: string
   category: string
-  condition: string
+  /** Written-off pieces per condition, e.g. [["Good", 2], ["Fair", 1]]. */
+  grades: Array<[UnitGrade, number]>
   stock: number
   reservedStock: number
   isDeleted: boolean
@@ -63,12 +65,16 @@ const thisMonthStart = () => {
 function ConditionBadge({ condition }: { condition: string }) {
   const map: Record<string, string> = {
     New: 'bg-blue-50 text-blue-700 ring-blue-200',
-    Refurbished: 'bg-slate-100 text-slate-600 ring-slate-200',
+    Excellent: 'bg-violet-50 text-violet-700 ring-violet-200',
+    'Very Good': 'bg-sky-50 text-sky-700 ring-sky-200',
     Good: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
-    'Like New': 'bg-violet-50 text-violet-700 ring-violet-200',
+    Fair: 'bg-amber-50 text-amber-700 ring-amber-200',
+    'For parts': 'bg-red-50 text-red-700 ring-red-200',
   }
+  // "Good ×2" takes the colour of Good.
+  const grade = condition.replace(/ ×\d+$/, '')
   return (
-    <span className={'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ' + (map[condition] ?? 'bg-slate-100 text-slate-600 ring-slate-200')}>
+    <span className={'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ' + (map[grade] ?? 'bg-slate-100 text-slate-600 ring-slate-200')}>
       {condition}
     </span>
   )
@@ -188,8 +194,23 @@ function InventoryTrashContent() {
     let cancelled = false
     async function loadTrash() {
       try {
-        const snap = await getDocs(collection(db, 'inventory'))
+        // Conditions are kept per piece, as on the Inventory page. The pieces
+        // written off say what condition the trashed stock was in; the item's
+        // old New/Refurbished field does not.
+        const [snap, unitSnap] = await Promise.all([
+          getDocs(collection(db, 'inventory')),
+          getDocs(query(collection(db, 'inventoryUnits'), where('status', '==', 'written_off'))),
+        ])
         if (cancelled) return
+        const gradesByItem = new Map<string, Map<UnitGrade, number>>()
+        unitSnap.docs.forEach((u) => {
+          const d = u.data() as Record<string, unknown>
+          if (typeof d.itemId !== 'string') return
+          const g = normalizeUnitGrade(d.grade)
+          const m = gradesByItem.get(d.itemId) ?? new Map<UnitGrade, number>()
+          m.set(g, (m.get(g) ?? 0) + 1)
+          gradesByItem.set(d.itemId, m)
+        })
         const monthStart = thisMonthStart()
         setRestoredThisMonth(snap.docs.filter((d) => {
           const data = d.data() as Record<string, unknown>
@@ -203,7 +224,14 @@ function InventoryTrashContent() {
             name: typeof data.name === 'string' ? data.name.trim() : '',
             sku: typeof data.sku === 'string' ? data.sku.trim() : (typeof data.id === 'string' ? data.id.slice(0, 12).toUpperCase() : docItem.id.slice(0, 12).toUpperCase()),
             category: (typeof data.categoryName === 'string' && data.categoryName.trim()) || (typeof data.category === 'string' && data.category.trim()) || 'Uncategorized',
-            condition: normalizeInventoryCondition(data.condition),
+            grades: ((): Array<[UnitGrade, number]> => {
+              const m = gradesByItem.get(docItem.id)
+              if (m) return UNIT_GRADES.filter((g) => m.has(g)).map((g) => [g, m.get(g) ?? 0] as [UnitGrade, number])
+              // Counted-only items have no pieces: one condition for the item,
+              // read the same way the Inventory page reads it.
+              if (data.trackingMode !== 'unit') return [[normalizeInventoryCondition(data.condition) === 'Refurbished' ? 'Good' : 'New', 0]]
+              return []
+            })(),
             stock: Math.max(0, toNumber(data.stock ?? data.quantity, 0)),
             reservedStock: Math.max(0, toNumber(data.reservedStock, 0)),
             isDeleted: data.isDeleted === true,
@@ -253,7 +281,7 @@ function InventoryTrashContent() {
 
       const matchSearch = !term || item.name.toLowerCase().includes(term) || item.sku.toLowerCase().includes(term) || (item.voidReason ?? '').toLowerCase().includes(term)
       const matchCat = categoryFilter === 'all' || item.category === categoryFilter
-      const matchCond = conditionFilter === 'all' || item.condition === conditionFilter
+      const matchCond = conditionFilter === 'all' || item.grades.some(([g]) => g === conditionFilter)
       // "Other" is stored as the reason typed in, so it matches any reason
       // outside the fixed list.
       const matchReason = reasonFilter === 'all'
@@ -396,8 +424,7 @@ function InventoryTrashContent() {
           <select aria-label="Filter by condition" value={conditionFilter} onChange={e => { setConditionFilter(e.target.value); setCurrentPage(1) }}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:outline-none">
             <option value="all">All Conditions</option>
-            <option value="New">New</option>
-            <option value="Refurbished">Refurbished</option>
+            {UNIT_GRADES.map((g) => <option key={g} value={g}>{GRADE_LABEL[g]}</option>)}
           </select>
           <select aria-label="Filter by reason" value={reasonFilter} onChange={e => { setReasonFilter(e.target.value); setCurrentPage(1) }}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:outline-none">
@@ -472,12 +499,12 @@ function InventoryTrashContent() {
                   </thead>
                   <tbody className="divide-y divide-slate-50">
                     {paginatedItems.map(item => {
-                      const canRestore = item.stock === 0 && item.reservedStock === 0
-                      const tooltipMsg = item.reservedStock > 0
-                        ? 'Cannot restore while reservations exist'
-                        : item.stock > 0
-                        ? 'Cannot restore while stock exists'
-                        : ''
+                      // Restoring never loses stock: written-off pieces are added to
+                      // what the item holds. Blocking it while the item had stock
+                      // left pieces received or refunded into a written-off item
+                      // stuck - hidden from sale and impossible to bring back.
+                      const canRestore = true
+                      const tooltipMsg = ''
                       return (
                         <tr key={item.id} className="transition-colors hover:bg-slate-50/70">
                           <td className="px-4 py-3 align-middle">
@@ -485,7 +512,11 @@ function InventoryTrashContent() {
                             <p className="mt-0.5 font-mono text-[11px] text-slate-500">{item.sku}</p>
                           </td>
                           <td className="px-4 py-3 align-middle text-sm text-slate-600">{item.category}</td>
-                          <td className="px-4 py-3 align-middle"><ConditionBadge condition={item.condition} /></td>
+                          <td className="px-4 py-3 align-middle">
+                            {item.grades.length === 0
+                              ? <span className="text-xs text-slate-400">—</span>
+                              : <div className="flex flex-wrap gap-1">{item.grades.map(([g, n]) => <ConditionBadge key={g} condition={n > 1 ? `${GRADE_LABEL[g]} ×${n}` : GRADE_LABEL[g]} />)}</div>}
+                          </td>
                           <td className="whitespace-nowrap px-4 py-3 align-middle text-sm text-slate-600">{formatDate(item.voidedAt ?? item.deletedAt)}</td>
                           <td className="px-4 py-3 align-middle"><ReasonBadge reason={item.voidReason} /></td>
                           <td className="whitespace-nowrap px-4 py-3 align-middle text-sm text-slate-600">{item.voidedBy ?? '—'}</td>
