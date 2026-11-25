@@ -222,6 +222,11 @@ export async function POST(req: NextRequest) {
 
       // ── 4. Read every item and piece coming back (all reads before writes) ─
       const itemIds = Array.from(new Set(toRefund.map((l) => l.itemId).filter(Boolean)))
+      // A sale paid from a reservation whose goods are still in the shop: a
+      // full refund ends that hold, or it would sit as "awaiting collection"
+      // for goods the customer has had their money back for.
+      const sourceReservationId = typeof saleData.sourceReservationId === 'string' ? saleData.sourceReservationId : ''
+      const holdSnap = sourceReservationId ? await txn.get(adminDb.collection('reservations').doc(sourceReservationId)) : null
       const itemSnaps = new Map(
         (await Promise.all(itemIds.map((id) => txn.get(adminDb.collection('inventory').doc(id))))).map((s) => [s.id, s])
       )
@@ -234,7 +239,7 @@ export async function POST(req: NextRequest) {
 
       // ── 5. Restock each item once, and log each line ─────────────────────
       const nowIso = new Date().toISOString()
-      const running = new Map<string, { stock: number; reserved: number; condition: unknown }>()
+      const running = new Map<string, { stock: number; reserved: number; condition: unknown; offSale: boolean }>()
       for (const id of itemIds) {
         const snap = itemSnaps.get(id)
         if (!snap?.exists) continue
@@ -243,6 +248,8 @@ export async function POST(req: NextRequest) {
           stock: typeof d.stock === 'number' ? d.stock : 0,
           reserved: typeof d.reservedStock === 'number' ? d.reservedStock : 0,
           condition: d.condition,
+          // Written off or in the Trash since the sale.
+          offSale: d.isVoided === true || d.isDeleted === true,
         })
       }
       for (const line of toRefund) {
@@ -272,7 +279,8 @@ export async function POST(req: NextRequest) {
           userEmail: actor.email ?? '',
           userId: actor.uid ?? '',
           remarks: `Refund – ${receiptNumber}: ${reasonText}` +
-            (lineUnits.length ? ` Units back on the shelf: ${lineUnits.map((u) => '#' + u.unitCode).join(', ')}.` : ''),
+            (lineUnits.length ? ` Units back on the shelf: ${lineUnits.map((u) => '#' + u.unitCode).join(', ')}.` : '') +
+            (cur.offSale ? ' The item had been written off or deleted; it is back on sale with the returned pieces.' : ''),
           ...(lineUnits.length ? { unitIds: lineUnits.map((u) => u.id), unitCodes: lineUnits.map((u) => u.unitCode), unitGrades: lineUnits.map((u) => u.grade) } : {}),
           refundReasonCategory: reasonCategory,
           referenceId: receiptNumber,
@@ -281,7 +289,14 @@ export async function POST(req: NextRequest) {
         })
       }
       for (const [id, cur] of running) {
-        txn.update(adminDb.collection('inventory').doc(id), { stock: cur.stock, quantity: cur.stock, updatedAt: nowIso })
+        txn.update(adminDb.collection('inventory').doc(id), {
+          stock: cur.stock, quantity: cur.stock, updatedAt: nowIso,
+          // Returned pieces are on the shelf again, so the item is back on
+          // sale. Left written off or deleted, they were counted as stock but
+          // hidden from Inventory and Sales. Earlier write-offs stay recorded
+          // (voidedUnits), as for an item that is partly written off.
+          ...(cur.offSale ? { isVoided: false, isDeleted: false, deletedAt: null, restoredAt: nowIso } : {}),
+        })
       }
 
       // ── 6. Update the sale ───────────────────────────────────────────────
@@ -312,6 +327,16 @@ export async function POST(req: NextRequest) {
         refundReasonCategory: reasonCategory,
         refundedAmount: round2(previousRefundTotal + refundAmount),
       })
+      if (fullyRefunded && holdSnap?.exists && (holdSnap.data() as Record<string, unknown>).status === 'AwaitingCollection') {
+        txn.update(holdSnap.ref, {
+          status: 'Cancelled',
+          cancellationReason: `Refunded before collection (${receiptNumber})`,
+          cancellationReasonType: 'system',
+          cancelledBy: actor.name,
+          cancelledAt: nowIso,
+          updatedAt: nowIso,
+        })
+      }
 
       return { fullyRefunded, refundAmount, lines: toRefund.map((l) => ({ name: l.name, quantity: l.quantity })) }
     })

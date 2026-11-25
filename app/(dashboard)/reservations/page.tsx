@@ -344,7 +344,8 @@ function ReservationsContent() {
               typeof data.customerContactNumber === 'string' ? data.customerContactNumber.trim() : '',
             createdAt: toDate(data.createdAt ?? data.reservationDate),
             expiresAt: toDate(data.expiresAt),
-            completedAt: toDate(data.completedAt),
+            // A hold paid earlier and collected later records collectedAt.
+            completedAt: toDate(data.collectedAt ?? data.completedAt),
             // Every status the system can write must be listed here. Anything
             // missing falls through to 'Active', which is worse than an
             // unknown badge: a paid reservation would read as still holding

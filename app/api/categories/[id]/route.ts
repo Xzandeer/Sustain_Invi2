@@ -36,11 +36,20 @@ export async function DELETE(req: Request, context: RouteContext) {
     const linkedInventorySnapshot = await getAdminDb()
       .collection('inventory')
       .where('categoryId', '==', id)
-      .limit(1)
       .get()
     if (!linkedInventorySnapshot.empty) {
+      // Name the items. Written-off and deleted items are not on the
+      // Inventory list, so "linked to inventory items" pointed at nothing the
+      // admin could see.
+      const docs = linkedInventorySnapshot.docs.map((d) => d.data() as Record<string, unknown>)
+      const inTrash = docs.filter((d) => d.isDeleted === true || d.isVoided === true)
+      const names = docs.slice(0, 3).map((d) => String(d.name ?? 'Unnamed item')).join(', ') + (docs.length > 3 ? `, and ${docs.length - 3} more` : '')
       return NextResponse.json(
-        { error: 'Cannot delete category linked to inventory items.' },
+        {
+          error: inTrash.length === docs.length
+            ? `This category still holds ${docs.length} item${docs.length === 1 ? '' : 's'} in the Trash (${names}). Items in the Trash keep their category.`
+            : `This category still has ${docs.length} item${docs.length === 1 ? '' : 's'}: ${names}. Move or remove them first.`,
+        },
         { status: 409 }
       )
     }
