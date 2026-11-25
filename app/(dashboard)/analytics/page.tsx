@@ -1420,10 +1420,26 @@ function AnalyticsContent() {
     [activeRange.end, activeRange.start, filteredSales, historyApplies, salesHistory]
   )
 
-  const forecastSeries = useMemo(
-    () => buildForecastSeries(trendSeries.rows, trendSeries.granularity),
-    [trendSeries.granularity, trendSeries.rows]
-  )
+  // The forecast always projects the seven days after TODAY (the server builds
+  // it from the last 28 days of sales). Drawn after a range that ended in the
+  // past, it was labelled with the wrong dates - a Nov 1 range showed today's
+  // Nov 26 - Dec 2 projection as "Nov 2 - Nov 8". So the forecast is drawn only
+  // when the selected range reaches today.
+  const rangeReachesToday = activeRange.end.getTime() >= startOfDay(new Date()).getTime()
+  const forecastSeries = useMemo(() => {
+    const series = buildForecastSeries(trendSeries.rows, trendSeries.granularity)
+    if (rangeReachesToday) return series
+    const actual = trendSeries.rows.length
+    return {
+      ...series,
+      labels: series.labels.slice(0, actual),
+      actualValues: series.actualValues.slice(0, actual),
+      forecastValues: [] as Array<number | null>,
+      projectedTotal: 0,
+      steps: 0,
+      note: 'The forecast projects the next seven days from today. Choose a range that ends today to see it.',
+    }
+  }, [trendSeries.granularity, trendSeries.rows, rangeReachesToday])
 
   const categoryForecast = useMemo(
     () => buildCategoryForecast(filteredSales, activeRange.start, activeRange.end, categoryNameMap, trendSeries.granularity),
@@ -1758,7 +1774,7 @@ function AnalyticsContent() {
       aiForecast.aiForecast?.forecast &&
       aiForecast.aiForecast.forecast.length >= forecastLen
     )
-    if (!hasAI || actualLen === 0) {
+    if (!hasAI || actualLen === 0 || forecastLen === 0) {
       // No AI layer (no API key, or it failed): draw the server's EWMA forecast
       // when it is available, because that is the method the validation tested.
       // The browser-side forecastSeries is only a fallback for when the server
@@ -2063,7 +2079,9 @@ function AnalyticsContent() {
               <div>
                 <p className="text-sm font-medium text-slate-500">Avg Order</p>
                 <p className="mt-2 text-2xl font-bold tracking-tight text-slate-900">
-                  {currentSummary.itemsSold > 0 ? currency(currentSummary.totalSales / currentSummary.itemsSold) : '₱0.00'}
+                  {/* Average order = sales per transaction (it divided by items sold before,
+                      which is the average price of an item, not of an order). */}
+                  {filteredSales.length > 0 ? currency(currentSummary.totalSales / filteredSales.length) : '₱0.00'}
                 </p>
               </div>
               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet-50">
@@ -2072,7 +2090,7 @@ function AnalyticsContent() {
                 </svg>
               </div>
             </div>
-            <p className="mt-2 text-[11px] text-slate-500">per item sold</p>
+            <p className="mt-2 text-[11px] text-slate-500">per sale</p>
           </div>
 
           {/* Transactions */}
@@ -2158,26 +2176,30 @@ function AnalyticsContent() {
               </div>
 
               <div className="flex shrink-0 flex-wrap items-center gap-2">
-                {/* Metadata chips */}
-                <span className="inline-flex items-center gap-1 rounded-full border border-violet-100 bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700">
-                  <span className="h-1.5 w-1.5 rounded-full bg-violet-400"/>
-                  {aiConfidenceNum !== null ? `${aiConfidenceNum}% Confidence` : 'No AI'}
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full border border-blue-100 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
-                  <span className="h-1.5 w-1.5 rounded-full bg-blue-400"/>
-                  {trendSeries.granularity === 'day' ? '7-day' : '1-period'} Forecast
-                </span>
+                {/* Metadata chips - only when a forecast is drawn (the range reaches today) */}
+                {forecastSeries.steps > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-violet-100 bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700">
+                    <span className="h-1.5 w-1.5 rounded-full bg-violet-400"/>
+                    {aiConfidenceNum !== null ? `${aiConfidenceNum}% Confidence` : 'No AI'}
+                  </span>
+                )}
+                {forecastSeries.steps > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-blue-100 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
+                    <span className="h-1.5 w-1.5 rounded-full bg-blue-400"/>
+                    {trendSeries.granularity === 'day' ? '7-day' : '1-period'} Forecast
+                  </span>
+                )}
                 {/* Legend */}
                 <span className="flex items-center gap-1 text-[11px] text-slate-500">
                   <span className="inline-block h-0.5 w-4 rounded-full bg-[#4b5a85]"/>Actual
                 </span>
-                {/* Statistical baseline is always drawn. When AI refinement is
-                    active it sits beside the AI line, so the ±15% bound between
-                    them is visible rather than merely claimed. */}
-                <span className="flex items-center gap-1 text-[11px] text-slate-500">
+                {/* Statistical baseline is always drawn when there is a forecast.
+                    When AI refinement is active it sits beside the AI line, so
+                    the ±15% bound between them is visible rather than merely claimed. */}
+                {forecastSeries.steps > 0 && <span className="flex items-center gap-1 text-[11px] text-slate-500">
                   <svg width="16" height="4" viewBox="0 0 16 4"><line x1="0" y1="2" x2="16" y2="2" stroke={mergedChartData.hasAI ? '#cbd5e1' : '#94a3b8'} strokeWidth="2" strokeDasharray="4 3"/></svg>
                   {mergedChartData.hasAI ? 'EWMA baseline' : 'Forecast'}
-                </span>
+                </span>}
                 {mergedChartData.hasAI && (
                   <span className="flex items-center gap-1 text-[11px] text-slate-500">
                     <svg width="16" height="4" viewBox="0 0 16 4"><line x1="0" y1="2" x2="16" y2="2" stroke="#7c3aed" strokeWidth="2" strokeDasharray="4 3"/></svg>AI refined
@@ -2349,7 +2371,9 @@ function AnalyticsContent() {
                   <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd"/>
                 </svg>
                 <p className="text-[11px] text-slate-500">
-                  Forecast calculated from this store&apos;s own sales history.
+                  {rangeReachesToday
+                    ? 'Forecast calculated from this store’s own sales history.'
+                    : 'The forecast projects the next seven days from today. Choose a range that ends today to see it.'}
                   {mergedChartData.hasAI && aiForecast?.fromCache && (
                     <span className="ml-1 text-violet-400">· Cached</span>
                   )}
@@ -2707,7 +2731,12 @@ function AnalyticsContent() {
                               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${i === 0 ? 'bg-violet-500' : i === 1 ? 'bg-blue-400' : 'bg-slate-400'}`}/>
                               <span className="truncate text-xs text-slate-600">{cat.name}</span>
                             </span>
-                            <span className="shrink-0 text-xs font-semibold text-slate-900">{cat.units} {cat.units === 1 ? 'unit' : 'units'}</span>
+                            {/* Ranked by revenue, so the revenue is what is shown; units alone
+                                made the order look wrong (26, 12, 24 units). */}
+                            <span className="shrink-0 text-xs font-semibold tabular-nums text-slate-900">
+                              {currency(cat.revenue)}
+                              <span className="ml-1 font-normal text-slate-500">· {cat.units} {cat.units === 1 ? 'unit' : 'units'}</span>
+                            </span>
                           </div>
                         ))}
                       </div>
