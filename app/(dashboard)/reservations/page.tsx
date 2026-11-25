@@ -108,7 +108,8 @@ const msUntil = (d: Date | null) => {
 const fmtCountdown = (ms: number) => {
   if (ms <= 0) return 'Expired'
   const h = Math.floor(ms / 3_600_000)
-  const d = Math.floor(h / 24)
+  // Nearest whole day: a hold extended a minute ago reads "7 days", not "6".
+  const d = h >= 24 ? Math.round(ms / 86_400_000) : 0
   if (d > 0) return 'Expires in ' + d + ' day' + (d === 1 ? '' : 's')
   if (h > 0) return 'Expires in ' + h + 'h'
   return 'Expires soon'
@@ -254,7 +255,6 @@ function ReservationsContent() {
   const [openItemsId, setOpenItemsId] = useState<string | null>(null)
   const [pageError, setPageError] = useState('')
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | ReservationStatus>('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
@@ -439,7 +439,6 @@ function ReservationsContent() {
       .filter(({ reservation: r, categoryNames, searchIndex }) => {
         if (activeTab !== 'all' && r.status !== activeTab) return false
         if (term && !searchIndex.includes(term)) return false
-        if (statusFilter !== 'all' && r.status !== statusFilter) return false
         if (categoryFilter !== 'all' && !categoryNames.includes(categoryFilter)) return false
         const ct = r.createdAt?.getTime()
         if (ct != null) {
@@ -449,7 +448,7 @@ function ReservationsContent() {
         return true
       })
       .map(({ reservation }) => reservation)
-  }, [searchableReservations, deferredSearch, statusFilter, categoryFilter, startDate, endDate, activeTab])
+  }, [searchableReservations, deferredSearch, categoryFilter, startDate, endDate, activeTab])
 
   const paginatedReservations = useMemo(() => {
     const start = (page - 1) * perPage
@@ -727,7 +726,7 @@ function ReservationsContent() {
     { id: 'Expired', label: 'Expired', count: counts.Expired },
   ]
 
-  const hasFilters = search || statusFilter !== 'all' || categoryFilter !== 'all' || startDate || endDate
+  const hasFilters = search || categoryFilter !== 'all' || startDate || endDate
 
   return (
     <div className="flex min-h-[calc(100vh-64px)] flex-col bg-[#F1F5FC] px-3 py-4 md:min-h-screen">
@@ -853,10 +852,12 @@ function ReservationsContent() {
                 />
               </div>
 
-              {/* Status */}
+              {/* Status - the same choice as the tabs below. It used to be a
+                  second, separate filter applied on top of the tab, so "Active"
+                  here with the Cancelled tab open matched nothing. */}
               <select aria-label="Filter by status"
-                value={statusFilter}
-                onChange={(e) => { setStatusFilter(e.target.value as 'all' | ReservationStatus); setPage(1) }}
+                value={activeTab}
+                onChange={(e) => { setActiveTab(e.target.value as TabId); setPage(1) }}
                 className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-blue-400"
               >
                 <option value="all">All Statuses</option>
@@ -903,7 +904,6 @@ function ReservationsContent() {
                 <button
                   onClick={() => {
                     setSearch('')
-                    setStatusFilter('all')
                     setCategoryFilter('all')
                     setStartDate('')
                     setEndDate('')

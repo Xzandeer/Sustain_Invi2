@@ -202,7 +202,11 @@ export async function PATCH(req: Request, context: RouteContext) {
 
       // ── Extend: push a live hold further out ──
       if (action === 'extend') {
-        const until = new Date(Date.now() + holdDays * 24 * 60 * 60 * 1000)
+        // Add a full hold period to the current expiry. Counting from now
+        // instead meant a hold with six days left gained only one day and
+        // still used up one of its two extensions.
+        const from = Number.isFinite(expiresAtMs) ? Math.max(Date.now(), expiresAtMs) : Date.now()
+        const until = new Date(from + holdDays * 24 * 60 * 60 * 1000)
         transaction.update(reservationRef, {
           expiresAt: until.toISOString(),
           extensionCount: extensions + 1,
