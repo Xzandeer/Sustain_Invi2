@@ -78,6 +78,8 @@ interface Reservation {
   cancelledAt?: Date | null
   /** When the goods were handed over (Completed only). */
   completedAt?: Date | null
+  /** When the customer paid (To collect and Completed). */
+  paidAt?: Date | null
   /** Who made the reservation (stored when it was created). */
   processedByName?: string
 }
@@ -105,6 +107,14 @@ const fmtDateTime = (d: Date | null) => {
 const msUntil = (d: Date | null) => {
   if (!d) return Infinity
   return d.getTime() - Date.now()
+}
+
+// A paid hold waiting for pickup never expires (the expiry sweep only touches
+// Active holds), so it shows how long the goods have been waiting instead.
+const fmtWaiting = (since: Date | null) => {
+  if (!since) return 'Paid · no expiry'
+  const days = Math.floor((Date.now() - since.getTime()) / 86_400_000)
+  return days <= 0 ? 'Paid today' : `Waiting ${days} day${days === 1 ? '' : 's'}`
 }
 
 const fmtCountdown = (ms: number) => {
@@ -346,6 +356,7 @@ function ReservationsContent() {
             expiresAt: toDate(data.expiresAt),
             // A hold paid earlier and collected later records collectedAt.
             completedAt: toDate(data.collectedAt ?? data.completedAt),
+            paidAt: toDate(data.paidAt),
             // Every status the system can write must be listed here. Anything
             // missing falls through to 'Active', which is worse than an
             // unknown badge: a paid reservation would read as still holding
@@ -1113,6 +1124,14 @@ function ReservationsContent() {
 
                           {/* Expiration */}
                           <td className="whitespace-nowrap px-4 py-3">
+                            {r.status === 'AwaitingCollection' ? (
+                              <>
+                                <p className="text-xs font-medium text-amber-700">No expiry</p>
+                                <p className="text-[11px] font-medium text-slate-500" title={r.paidAt ? `Paid ${fmtDateTime(r.paidAt)}` : undefined}>
+                                  {fmtWaiting(r.paidAt ?? null)}
+                                </p>
+                              </>
+                            ) : (<>
                             <p
                               className={
                                 'text-xs font-medium ' +
@@ -1135,6 +1154,7 @@ function ReservationsContent() {
                                 ? fmtCountdown(msUntil(r.expiresAt))
                                 : fmtTime(r.expiresAt)}
                             </p>
+                            </>)}
                           </td>
 
                           {/* Status */}
@@ -1478,7 +1498,15 @@ function ReservationsContent() {
 
                 <div className="flex justify-between"><span className="text-slate-500">Ticket</span><span className="font-bold">{ticketRes.reservationNumber}</span></div>
                 <div className="flex justify-between"><span className="text-slate-500">Date</span><span>{fmtDateTime(ticketRes.createdAt)}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">Expires</span><span>{fmtDateTime(ticketRes.expiresAt)}</span></div>
+                {ticketRes.status === 'AwaitingCollection' || ticketRes.status === 'Completed' ? (
+                  // Paid: the goods are the customer's and do not expire.
+                  <>
+                    <div className="flex justify-between"><span className="text-slate-500">Paid</span><span>{fmtDateTime(ticketRes.paidAt ?? null)}</span></div>
+                    {ticketRes.status === 'AwaitingCollection' && <p className="text-center font-bold text-slate-900">PAID – COLLECT ANYTIME</p>}
+                  </>
+                ) : (
+                  <div className="flex justify-between"><span className="text-slate-500">Expires</span><span>{fmtDateTime(ticketRes.expiresAt)}</span></div>
+                )}
 
                 <div className="my-2 border-t border-dashed border-slate-300" />
 
