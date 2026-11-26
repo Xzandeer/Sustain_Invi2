@@ -55,7 +55,7 @@ const BarcodeScanner = dynamic(() => import('@/components/sales/BarcodeScanner')
 import { contactNumberProblem, createReservation, isValidContactNumber, isValidOptionalEmail } from '@/lib/reservations/createReservation'
 import { SCAN_PARAM } from '@/lib/scan/scanToSale'
 import { expireReservations } from '@/lib/reservations/reservationExpiration'
-import { GRADE_LABEL, GRADE_MEANING, GRADE_TONE, UNIT_GRADES, type UnitGrade } from '@/lib/inventory/units'
+import { GRADE_LABEL, GRADE_MEANING, GRADE_TONE, UNIT_GRADES, gradeSummary, type UnitGrade } from '@/lib/inventory/units'
 
 const DATE_RANGES = [
   { key: 'today', label: 'Today' },
@@ -490,7 +490,14 @@ function SalesContent() {
                         : typeof saleItem.category === 'string' && saleItem.category.trim()
                           ? saleItem.category.trim()
                           : '',
-                    condition: saleItem.condition,
+                    // The pieces' own conditions ("Good ×2"). The stored field is
+                    // the item's old New/Refurbished label - every per-piece sale
+                    // exported as "Refurbished".
+                    condition: Array.isArray(saleItem.unitLines) && saleItem.unitLines.length > 0
+                      ? gradeSummary((saleItem.unitLines as Array<Record<string, unknown>>).map((u) => String(u.grade ?? '')))
+                      : typeof saleItem.grade === 'string' && saleItem.grade
+                        ? saleItem.grade
+                        : saleItem.condition === 'Refurbished' ? 'Good' : saleItem.condition,
                     refundedQuantity: toNumber(saleItem.refundedQuantity, 0),
                   }
                 })

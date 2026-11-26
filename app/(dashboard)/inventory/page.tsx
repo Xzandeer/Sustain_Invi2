@@ -872,10 +872,25 @@ function InventoryContent() {
       const str = String(v ?? '')
       return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str
     }
+    // Condition and price as the list shows them. The item's own fields are
+    // its old New/Refurbished label and base price, so every per-piece item
+    // exported as "Refurbished" at one price.
+    const conditionOf = (p: Product) => {
+      if (p.trackingMode !== 'unit') return p.condition === 'Refurbished' ? 'Good' : 'New'
+      const counts = conditionCounts(p)
+      return UNIT_GRADES.filter((g) => counts.has(g)).map((g) => (counts.get(g)! > 1 ? `${g} ×${counts.get(g)}` : g)).join(', ')
+    }
+    const priceOf = (p: Product) => {
+      const sh = p.trackingMode === 'unit' ? shelf[p.id] : undefined
+      const prices = sh ? [...sh.grades.map((g) => g.price), ...sh.ownPriced.flatMap((g) => [g.minPrice ?? 0, g.maxPrice ?? 0]).filter((n) => n > 0)] : []
+      if (prices.length === 0) return p.price.toFixed(2)
+      const lo = Math.min(...prices), hi = Math.max(...prices)
+      return lo === hi ? lo.toFixed(2) : `${lo.toFixed(2)} - ${hi.toFixed(2)}`
+    }
     const headers = ['Item Name', 'Category', 'Condition', 'Price', 'Stock', 'Reserved', 'Available', 'Min Stock', 'Status']
     const rows = filteredProducts.map((p) => [
-      p.name, p.category, p.condition,
-      p.price.toFixed(2), p.quantity, p.reservedStock, p.availableStock, p.minStock, p.stockStatus,
+      p.name, p.category, conditionOf(p),
+      priceOf(p), p.quantity, p.reservedStock, p.availableStock, p.minStock, p.stockStatus,
     ])
     const csv = [headers, ...rows].map((r) => r.map(esc).join(',')).join('\n')
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
