@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { collection, getDocs, query, where } from 'firebase/firestore'
 import { toast } from 'sonner'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
+import InfoTip from '@/components/shared/InfoTip'
 import { auth, db } from '@/lib/firebase'
 import { normalizeInventoryCondition } from '@/lib/server/salesInventoryMetrics'
 import { useUserRole } from '@/hooks/useUserRole'
@@ -346,13 +347,13 @@ function InventoryTrashContent() {
         {/* ── Header ── */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-50">
-              <svg className="h-5 w-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </div>
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-slate-900">Inventory Trash</h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-2xl font-bold tracking-tight text-slate-900">Inventory Trash</h1>
+                <InfoTip label="About the Trash">
+                  Items in the Trash are not permanently deleted. Restoring returns them to Inventory. Logs and history remain intact.
+                </InfoTip>
+              </div>
               <p className="text-xs text-slate-500">Manage voided or archived inventory items</p>
             </div>
           </div>
@@ -454,12 +455,6 @@ function InventoryTrashContent() {
               Reset
             </button>
           )}
-        </div>
-
-        {/* ── Info note (above the list, so the pagination sits at the bottom) ── */}
-        <div className="flex items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3">
-          <svg className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-          <p className="text-xs text-blue-700">Items in trash are not permanently deleted. Restoring will return them to inventory. Logs and history remain intact.</p>
         </div>
 
         {/* ── Main Table Card ── */}

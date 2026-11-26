@@ -11,6 +11,7 @@
 
 import { useEffect, useState } from 'react'
 import { apiFetch } from '@/lib/apiFetch'
+import InfoTip from '@/components/shared/InfoTip'
 import { GRADE_LABEL, GRADE_TONE, normalizeUnitGrade, type UnitGrade } from '@/lib/inventory/units'
 
 interface Insights {
@@ -63,7 +64,13 @@ export default function UnitInsights() {
     <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h3 className="text-sm font-semibold text-slate-900">Stock movement by piece</h3>
+          <div className="flex items-center gap-1.5">
+            <h3 className="text-sm font-semibold text-slate-900">Stock movement by piece</h3>
+            <InfoTip label="About stock movement">
+              Shows the shop as it is now, so it does not follow the date range above. Times to sell
+              come from the last 180 days of sales; the other panels follow the selected range and filters.
+            </InfoTip>
+          </div>
           <p className="mt-0.5 text-xs text-slate-500">How long pieces wait on the shelf, and how fast each condition sells</p>
         </div>
         {data && soldTotal > 0 && (

@@ -35,11 +35,11 @@ import {
 import { Line, Doughnut } from 'react-chartjs-2'
 import { collection, getDocs, orderBy, query, Timestamp, where } from 'firebase/firestore'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
+import InfoTip from '@/components/shared/InfoTip'
 import { db } from '@/lib/firebase'
 import { cachedRead, loadSalesBetween } from '@/lib/client/readCache'
 import AnalyticsTable from '@/components/analytics/AnalyticsTable'
 import UnitInsights from '@/components/analytics/UnitInsights'
-import type { InventoryRecord } from '@/lib/server/salesInventoryMetrics'
 import { GRADE_LABEL, GRADE_TONE, UNIT_GRADES, normalizeUnitGrade, parseUnitLines, type UnitGrade } from '@/lib/inventory/units'
 
 // Filler draws the shaded area under a line (the charts set fill: true).
@@ -176,6 +176,9 @@ interface CategoryForecastRow {
   recentRevenue: number
   recentItems: number
 }
+
+// Category Distribution: one colour per slice, shared by the donut and its list.
+const CATEGORY_SLICE_COLORS = ['#4b5a85', '#7c3aed', '#16a34a', '#ea580c', '#db2777', '#0891b2']
 
 // Tracks reservation status counts for the Reservation Activity panel
 interface ReservationRecord {
@@ -816,25 +819,14 @@ function doughnutTooltip(context: {
 // the chart is for. Each one therefore carries a short note: what is being
 // measured, and what the owner does with the answer. Collapsed by default so
 // the card stays compact for someone who already knows.
-function ChartHelp({ what, use }: { what: string; use: string }) {
-  const [open, setOpen] = useState(false)
+// A panel's explanation, behind a small (i) beside its title. It was a
+// "What this shows" link that opened a box inside the card.
+function ChartHelp({ what, use, title }: { what: string; use: string; title: string }) {
   return (
-    <div className="mt-2">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="text-[11px] font-semibold text-blue-600 transition-colors hover:text-blue-700"
-      >
-        {open ? 'Hide explanation' : 'What this shows'}
-      </button>
-      {open && (
-        <div className="mt-1.5 space-y-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] leading-relaxed text-slate-600">
-          <p>{what}</p>
-          <p>
-            <span className="font-semibold text-slate-800">Use it to:</span> {use}
-          </p>
-        </div>
-      )}
-    </div>
+    <InfoTip label={`About ${title}`}>
+      <span className="block">{what}</span>
+      <span className="mt-1 block"><span className="font-semibold text-slate-800">Use it to:</span> {use}</span>
+    </InfoTip>
   )
 }
 
@@ -843,7 +835,6 @@ function AnalyticsContent() {
   const [sales, setSales] = useState<SaleRecord[]>([])
   // Imported notebook history for the selected range, by YYYY-MM-DD.
   const [salesHistory, setSalesHistory] = useState<Map<string, number> | null>(null)
-  const [inventory, setInventory] = useState<InventoryRecord[]>([])
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([])
   const [reservations, setReservations] = useState<ReservationRecord[]>([])
   const [timeRangePreset, setTimeRangePreset] = useState<TimeRangePreset>('this-month')
@@ -870,7 +861,6 @@ function AnalyticsContent() {
   // Collapsed by default. The owner reads this chart every day and does not
   // need the explanation every time, but a staff member seeing it for the
   // first time has no way to know what a dashed line means.
-  const [showChartHelp, setShowChartHelp] = useState(false)
 
   // The doughnut tooltip lives in document.body, outside React. Remove it when
   // leaving Analytics, or a tooltip open at the moment of navigation would be
@@ -894,10 +884,9 @@ function AnalyticsContent() {
     let cancelled = false
     async function loadData() {
       try {
-        const [catSnap, invSnap] = await Promise.all([
-          getDocs(collection(db, 'categories')),
-          getDocs(collection(db, 'inventory')),
-        ])
+        // Inventory used to be read here for the Inventory by Category panel,
+        // which was removed (Stock movement shows pieces per category).
+        const catSnap = await getDocs(collection(db, 'categories'))
         if (cancelled) return
 
         const catRows = catSnap.docs
@@ -910,26 +899,6 @@ function AnalyticsContent() {
           })
           .sort((a, b) => a.name.localeCompare(b.name))
         setCategories(catRows)
-
-        const invRows: InventoryRecord[] = invSnap.docs
-          .map((itemDoc) => {
-            const data = itemDoc.data() as Record<string, unknown>
-            const categoryId =
-              typeof data.categoryId === 'string' && data.categoryId.trim() ? data.categoryId : ''
-            const categoryName =
-              typeof data.categoryName === 'string' && data.categoryName.trim() ? data.categoryName : ''
-            return {
-              id: itemDoc.id,
-              categoryId,
-              categoryName: categoryName || 'General',
-              category: categoryName || 'General',
-              quantity: Math.max(0, toNumber(data.stock ?? data.quantity, 0)),
-              isDeleted: data.isDeleted === true,
-            }
-          })
-          .filter((item) => item.isDeleted !== true)
-        setInventory(invRows)
-
       } catch (loadError) {
         if (cancelled) return
         console.error('[analytics] Failed to load reference data:', loadError)
@@ -1486,6 +1455,8 @@ function AnalyticsContent() {
       projectedCategoryItems: topCategory?.projectedItemsSold ?? 0,
       windowDays: categoryForecast.trailingWindow,
       windowItems,
+      // The leading category's own recent sales - what its projection rests on.
+      leadingWindowItems: topCategory?.recentItems ?? 0,
     }
   }, [
     categoryForecast.topCategory,
@@ -1554,22 +1525,6 @@ function AnalyticsContent() {
       }),
     [comparisonMetrics.totalSales, currentSummary, timeRangePreset]
   )
-
-  const inventorySummary = useMemo(() => {
-    const stockByCategory = new Map<string, number>()
-
-    inventory.forEach((item) => {
-      const categoryName = item.categoryName ?? item.category ?? 'General'
-      stockByCategory.set(categoryName, Number(stockByCategory.get(categoryName) ?? 0) + Number(item.quantity ?? 0))
-    })
-
-    // Largest first. This was alphabetical and then cut to six, which showed
-    // Accessories through Electronics and silently dropped every category
-    // after E - about half the stock - while calling itself a snapshot.
-    return Array.from(stockByCategory.entries())
-      .map(([categoryName, stock]) => ({ categoryName, stock }))
-      .sort((a, b) => b.stock - a.stock || a.categoryName.localeCompare(b.categoryName))
-  }, [inventory])
 
   // Counts reservations by status for the selected date range
   const reservationActivity = useMemo(() => {
@@ -1697,18 +1652,6 @@ function AnalyticsContent() {
         ],
       })),
     [currentSummary.categories]
-  )
-
-  const stockRows = useMemo(
-    () =>
-      inventorySummary.slice(0, 6).map((row) => ({
-        key: row.categoryName,
-        cells: [
-          <span key={`${row.categoryName}-name`} className="font-medium text-slate-900">{row.categoryName}</span>,
-          <span key={`${row.categoryName}-stock`} className="block text-right">{compactNumber.format(row.stock)}</span>,
-        ],
-      })),
-    [inventorySummary]
   )
 
   const modalConfig = useMemo(() => {
@@ -1898,11 +1841,6 @@ function AnalyticsContent() {
         {/* ── PAGE HEADER ──────────────────────────────────────────────────── */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-              </svg>
-            </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight text-slate-900">Analytics</h1>
               <p className="text-sm text-slate-500">Sales performance, demand and AI forecasting.</p>
@@ -2366,74 +2304,66 @@ function AnalyticsContent() {
                 The explanation is one click away rather than permanently
                 occupying the card. */}
             <div className="px-4 pt-1 pb-2">
-              <div className="flex items-center gap-1">
-                <svg className="h-3 w-3 shrink-0 text-violet-400" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd"/>
-                </svg>
-                <p className="text-[11px] text-slate-500">
-                  {rangeReachesToday
-                    ? 'Forecast calculated from this store’s own sales history.'
-                    : 'The forecast projects the next seven days from today. Choose a range that ends today to see it.'}
-                  {mergedChartData.hasAI && aiForecast?.fromCache && (
-                    <span className="ml-1 text-violet-400">· Cached</span>
-                  )}
-                </p>
-                <button
-                  onClick={() => setShowChartHelp((v) => !v)}
-                  className="ml-auto shrink-0 text-[11px] font-semibold text-blue-600 transition-colors hover:text-blue-700"
-                >
-                  {showChartHelp ? 'Hide explanation' : 'How to read this chart'}
-                </button>
-              </div>
-
-              {showChartHelp && (
-                <div className="mt-2 space-y-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] leading-relaxed text-slate-600">
-                  <p>
+              <div className="flex items-center gap-1.5">
+                {!rangeReachesToday && (
+                  <p className="text-[11px] text-slate-500">
+                    The forecast projects the next seven days from today. Choose a range that ends today to see it.
+                  </p>
+                )}
+                {mergedChartData.hasAI && aiForecast?.fromCache && (
+                  <span className="text-[11px] text-violet-400">Cached</span>
+                )}
+                <span className="ml-auto">
+                  <InfoTip label="How to read this chart" wide align="right" above>
+                    <span className="block">Forecast calculated from this store’s own sales history.</span>
+                  <span className="mt-1.5 block">
                     <span className="font-semibold text-slate-800">The bottom axis is the date</span> and{' '}
                     <span className="font-semibold text-slate-800">the side axis is sales in pesos.</span>
-                  </p>
-                  <p>
+                  </span>
+                  <span className="mt-1.5 block">
                     <span className="inline-block h-0.5 w-4 translate-y-[-2px] rounded-full bg-blue-600" />{' '}
                     <span className="font-semibold text-slate-800">The solid line is what the store actually sold.</span>{' '}
                     It stops at today. Everything to the right of it has not happened yet.
-                  </p>
+                  </span>
                   {mergedChartData.hasAI ? (
                     <>
-                      <p>
+                      <span className="mt-1.5 block">
                         <svg width="16" height="4" viewBox="0 0 16 4" className="inline-block translate-y-[-1px]"><line x1="0" y1="2" x2="16" y2="2" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="4 3"/></svg>{' '}
                         <span className="font-semibold text-slate-800">The thin grey dashes are the calculated forecast</span>{' '}
                         for the next seven days: a weighted average of recent sales, with the latest days
                         counting most. It is level across the week on purpose. No AI is involved.
-                      </p>
-                      <p>
+                      </span>
+                      <span className="mt-1.5 block">
                         <svg width="16" height="4" viewBox="0 0 16 4" className="inline-block translate-y-[-1px]"><line x1="0" y1="2" x2="16" y2="2" stroke="#7c3aed" strokeWidth="2" strokeDasharray="4 3"/></svg>{' '}
                         <span className="font-semibold text-slate-800">The violet dashes are that same forecast after the AI adjusts it.</span>{' '}
                         The AI can move it by at most 15% either way, so the gap between the two dashed
                         lines is the whole of its effect. If they sit close together, the AI changed little.
-                      </p>
-                      <p>
+                      </span>
+                      <span className="mt-1.5 block">
                         <span className="inline-block h-2.5 w-4 translate-y-[1px] rounded-sm bg-violet-200" />{' '}
                         <span className="font-semibold text-slate-800">The shaded band is the likely range,</span>{' '}
                         not an exact figure.
-                      </p>
+                      </span>
                     </>
                   ) : (
-                    <p>
+                    <span className="mt-1.5 block">
                       <svg width="16" height="4" viewBox="0 0 16 4" className="inline-block translate-y-[-1px]"><line x1="0" y1="2" x2="16" y2="2" stroke="#94a3b8" strokeWidth="2" strokeDasharray="4 3"/></svg>{' '}
                       <span className="font-semibold text-slate-800">The dashed line is the forecast</span>{' '}
                       for the next seven days: a weighted average of recent sales, with the latest days
                       counting most. It is level across the week on purpose, because a busy week here
                       usually follows a delivery and does not carry on by itself.
-                    </p>
+                    </span>
                   )}
-                  <p className="border-t border-slate-200 pt-1.5">
+                  <span className="mt-1.5 block border-t border-slate-200 pt-1.5">
                     <span className="font-semibold text-slate-800">What to do with it:</span>{' '}
                     use it as the expected daily pace for the coming week and compare it with what is
                     actually selling. It is an estimate of the usual level, not a promise; an arrival of
                     new stock can push real sales well above it.
-                  </p>
-                </div>
-              )}
+                  </span>
+                  </InfoTip>
+                </span>
+              </div>
+
             </div>
           </div>
 
@@ -2478,10 +2408,6 @@ function AnalyticsContent() {
             {/* Forecast notes view - same panel, switched from the header */}
             {eventsOpen ? (
             <div className="flex flex-1 flex-col overflow-hidden">
-              <p className="px-3 pt-2 text-[11px] leading-relaxed text-slate-500">
-                Deliveries, sales or closures the forecast should know about. The AI reads each note and
-                decides which categories it affects.
-              </p>
               {/* Composer */}
               <form onSubmit={handleAddEvent} className="space-y-2 border-b border-slate-100 bg-slate-50/60 px-3 py-4">
                 <textarea
@@ -2757,26 +2683,41 @@ function AnalyticsContent() {
 
             {/* Panel footer */}
             <div className="border-t border-slate-50 px-3 py-1">
-              <p className="text-[11px] text-slate-500">
-                {eventsOpen
-                  ? 'Notes for the next 30 days are used in the forecast'
-                  : `Predictive AI Engine · ${trendSeries.granularity === 'day' ? '7-day' : '1-period'} window`}
-              </p>
+              <div className="flex items-center gap-1.5">
+                <p className="text-[11px] text-slate-500">
+                  {eventsOpen
+                    ? 'Notes for the next 30 days are used in the forecast'
+                    : `Predictive AI Engine · ${trendSeries.granularity === 'day' ? '7-day' : '1-period'} window`}
+                </p>
+                {eventsOpen && (
+                  <InfoTip label="About forecast notes" above>
+                    Deliveries, sales or closures the forecast should know about. The AI reads each note and
+                    decides which categories it affects.
+                  </InfoTip>
+                )}
+              </div>
             </div>
           </div>
         </div>
 
-        {/* ── LOWER CHARTS ROW ─────────────────────────────────────────────── */}
+        {/* ── CATEGORY, CONDITION AND RESERVATION ROW ──────────────────────
+            Top Categories (the same sales per category as Category
+            Distribution - kept, as the manuscript names it), Inventory by
+            Category (pieces per category, also in Stock movement) and the
+            Executive Summary (the KPI cards again) were removed so each figure
+            appears once. */}
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
 
           {/* Category Distribution */}
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <h3 className="text-sm font-semibold text-slate-900">Category Distribution</h3>
+            <div className="flex items-center gap-1.5">
+              <h3 className="text-sm font-semibold text-slate-900">Category Distribution</h3>
+              <ChartHelp title="category distribution"
+                what="Each slice is one product category, sized by the sales value it earned in the selected period. The six highest-earning categories are shown; anything smaller is left out."
+                use="see which product lines actually carry the shop, so the next shipment can be chosen around them rather than around what feels popular."
+              />
+            </div>
             <p className="mt-0.5 text-xs text-slate-500">Sales distribution by category</p>
-            <ChartHelp
-              what="Each slice is one product category, sized by the sales value it earned in the selected period. The six highest-earning categories are shown; anything smaller is left out."
-              use="see which product lines actually carry the shop, so the next bale can be chosen around them rather than around what feels popular."
-            />
             <div className="mb-3" />
             {currentSummary.categories.length === 0 ? (
               <p className="py-8 text-center text-sm text-slate-500">No category data available.</p>
@@ -2788,7 +2729,7 @@ function AnalyticsContent() {
                       labels: currentSummary.categories.slice(0, 6).map((c) => c.categoryName),
                       datasets: [{
                         data: currentSummary.categories.slice(0, 6).map((c) => c.revenue),
-                        backgroundColor: ['#4b5a85', '#7c3aed', '#16a34a', '#ea580c', '#db2777', '#0891b2'],
+                        backgroundColor: CATEGORY_SLICE_COLORS,
                         borderWidth: 0,
                         hoverOffset: 6,
                       }],
@@ -2809,16 +2750,19 @@ function AnalyticsContent() {
                   </div>
                 </div>
                 <div className="w-full space-y-1.5">
-                  {currentSummary.categories.slice(0, 5).map((cat, i) => {
-                    const dotColors = ['bg-blue-500', 'bg-violet-500', 'bg-green-500', 'bg-orange-500', 'bg-pink-500']
+                  {/* The same six as the slices, in the same colours. It listed five,
+                      so the sixth slice (Furniture, 14%) had no label, and its dots
+                      used other shades than the slices. */}
+                  {currentSummary.categories.slice(0, 6).map((cat, i) => {
                     const pct = currentSummary.totalSales > 0 ? (cat.revenue / currentSummary.totalSales) * 100 : 0
                     return (
                       <div key={cat.categoryId} className="flex items-center justify-between gap-2">
                         <div className="flex min-w-0 items-center gap-2">
-                          <span className={`h-2 w-2 shrink-0 rounded-full ${dotColors[i]}`}/>
+                          <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: CATEGORY_SLICE_COLORS[i] }} />
                           <span className="truncate text-xs text-slate-600">{cat.categoryName}</span>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
+                          <span className="text-xs text-slate-500">{compactNumber.format(cat.itemsSold)} pcs</span>
                           <span className="text-xs font-semibold text-slate-900">{currency(cat.revenue)}</span>
                           <span className="text-xs text-slate-500">({pct.toFixed(0)}%)</span>
                         </div>
@@ -2832,12 +2776,14 @@ function AnalyticsContent() {
 
           {/* Sales by Condition */}
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <h3 className="text-sm font-semibold text-slate-900">Sales by Condition</h3>
+            <div className="flex items-center gap-1.5">
+              <h3 className="text-sm font-semibold text-slate-900">Sales by Condition</h3>
+              <ChartHelp title="sales by condition"
+                what="How the period's sales value splits across the conditions the pieces sold in, from New / Unissued to For parts."
+                use="see which conditions earn the most, and whether lower-grade stock is worth buying in."
+              />
+            </div>
             <p className="mt-0.5 text-xs text-slate-500">Breakdown by item condition</p>
-            <ChartHelp
-              what="How the period's sales value splits across the conditions the pieces sold in, from New / Unissued to For parts."
-              use="see which conditions earn the most, and whether lower-grade stock is worth buying in."
-            />
             <div className="mb-3" />
             {salesByCondition.total === 0 ? (
               <p className="py-8 text-center text-sm text-slate-500">No condition data available.</p>
@@ -2896,12 +2842,14 @@ function AnalyticsContent() {
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 flex items-start justify-between">
               <div>
-                <h3 className="text-sm font-semibold text-slate-900">Reservation Activity</h3>
+                <div className="flex items-center gap-1.5">
+                  <h3 className="text-sm font-semibold text-slate-900">Reservation Activity</h3>
+                  <ChartHelp title="reservation activity"
+                    what="Every reservation made in the period, counted by how it ended: still active, paid and awaiting collection, completed, cancelled, or expired without being claimed."
+                    use="see how many holds turn into sales and how many tie up stock and then lapse."
+                  />
+                </div>
                 <p className="mt-0.5 text-xs text-slate-500">{getRangeLabel(timeRangePreset)}</p>
-                <ChartHelp
-                  what="Every reservation made in the period, counted by how it ended: still active, paid and awaiting collection, completed, cancelled, or expired without being claimed."
-                  use="see how many holds turn into sales and how many tie up stock and then lapse."
-                />
               </div>
               <span className="text-xl font-bold text-slate-900">{reservationActivity.total}</span>
             </div>
@@ -2964,49 +2912,8 @@ function AnalyticsContent() {
           </div>
         </div>
 
-        {/* ── DATA TABLES ROW ──────────────────────────────────────────────── */}
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[2fr_1fr_1fr]">
-
-          {/* Top Categories */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-3 flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-900">Top Categories</h3>
-                <p className="mt-0.5 text-xs text-slate-500">Ranked by sales amount</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setOpenModal('top')}
-                className="text-xs font-semibold text-blue-600 hover:text-blue-700 transition"
-              >
-                View all →
-              </button>
-            </div>
-            {currentSummary.categories.length === 0 ? (
-              <p className="py-6 text-center text-sm text-slate-500">No category sales found.</p>
-            ) : (
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-slate-100">
-                    <th className="pb-2 text-left text-xs font-semibold text-slate-500">#</th>
-                    <th className="pb-2 text-left text-xs font-semibold text-slate-500">Category</th>
-                    <th className="pb-2 text-right text-xs font-semibold text-slate-500">Qty Sold</th>
-                    <th className="pb-2 text-right text-xs font-semibold text-slate-500">Sales Amount</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {currentSummary.categories.slice(0, 6).map((row, i) => (
-                    <tr key={row.categoryId} className="hover:bg-slate-50 transition-colors">
-                      <td className="py-2.5 text-xs text-slate-500">{i + 1}</td>
-                      <td className="py-2.5 text-sm font-medium text-slate-900">{row.categoryName}</td>
-                      <td className="py-2.5 text-right text-sm text-slate-600">{compactNumber.format(row.itemsSold)}</td>
-                      <td className="py-2.5 text-right text-sm font-semibold text-slate-900">{currency(row.revenue)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+        {/* ── TOP PRODUCTS + FORECAST ───────────────────────────────────── */}
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
 
           {/* Top Products */}
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -3032,67 +2939,6 @@ function AnalyticsContent() {
             )}
           </div>
 
-          {/* Inventory by Category */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-3 flex items-start justify-between gap-2">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-900">Inventory by Category</h3>
-                <p className="mt-0.5 text-xs text-slate-500">Units on the shelf right now</p>
-              </div>
-              {inventorySummary.length > 0 && (
-                <div className="text-right">
-                  <p className="text-lg font-semibold leading-none text-slate-900">
-                    {compactNumber.format(inventorySummary.reduce((sum, r) => sum + r.stock, 0))}
-                  </p>
-                  <p className="mt-0.5 text-[11px] text-slate-500">total units</p>
-                </div>
-              )}
-            </div>
-            {inventorySummary.length === 0 ? (
-              <p className="py-6 text-center text-sm text-slate-500">No inventory data found.</p>
-            ) : (
-              (() => {
-                // Bars are scaled to the largest category, so the eye compares
-                // lengths instead of reading six numbers.
-                const largest = Math.max(1, ...inventorySummary.map((r) => r.stock))
-                const shown = inventorySummary.slice(0, 6)
-                const rest = inventorySummary.slice(6)
-                const restUnits = rest.reduce((sum, r) => sum + r.stock, 0)
-                return (
-                  <div className="space-y-2.5">
-                    {shown.map((row) => (
-                      <div key={row.categoryName}>
-                        <div className="mb-1 flex items-baseline justify-between gap-2">
-                          <span className="truncate text-xs font-medium text-slate-700">{row.categoryName}</span>
-                          <span className="shrink-0 text-xs font-semibold tabular-nums text-slate-900">
-                            {compactNumber.format(row.stock)}
-                            <span className="ml-1 font-normal text-slate-500">units</span>
-                          </span>
-                        </div>
-                        <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
-                          <div
-                            className="h-full rounded-full bg-blue-500"
-                            style={{ width: `${(row.stock / largest) * 100}%` }}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                    {rest.length > 0 && (
-                      <p className="pt-1 text-[11px] text-slate-500">
-                        + {rest.length} more {rest.length === 1 ? 'category' : 'categories'} ·{' '}
-                        {compactNumber.format(restUnits)} units
-                      </p>
-                    )}
-                  </div>
-                )
-              })()
-            )}
-          </div>
-        </div>
-
-        {/* ── PREDICTIVE ANALYTICS + EXECUTIVE SUMMARY ─────────────────────── */}
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-
           {/* Category Forecast (was "Predictive Analytics")
               Rewritten because it contradicted the panels beside it. It was
               labelled AI-powered but is a plain weighted average with no AI; it
@@ -3103,7 +2949,13 @@ function AnalyticsContent() {
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 flex items-start justify-between gap-2">
               <div>
-                <h3 className="text-sm font-semibold text-slate-900">Category Forecast</h3>
+                <div className="flex items-center gap-1.5">
+                  <h3 className="text-sm font-semibold text-slate-900">Category Forecast</h3>
+                  <InfoTip label="About the category forecast">
+                    A calculation from recent sales only, with no AI involved. Because it looks at the most
+                    recent days, it can name a different category from Category Distribution, which covers the whole period.
+                  </InfoTip>
+                </div>
                 <p className="mt-0.5 text-xs text-slate-500">
                   Projected from the last {predictiveSummary.windowDays}{' '}
                   {trendSeries.granularity === 'day' ? 'days' : 'periods'} of {getRangeLabel(timeRangePreset).toLowerCase()}
@@ -3133,20 +2985,23 @@ function AnalyticsContent() {
                       value: predictiveSummary.projectedFastMovingCategory,
                       note: 'highest projected sales',
                     },
+                    // All four describe the leading category. "Based on" counted
+                    // every category, so "11 projected, based on 42 sold" read
+                    // as a collapse when it compared one category with all.
                     {
                       label: 'Projected sales',
                       value: currency(predictiveSummary.projectedCategoryRevenue),
-                      note: `${predictiveSummary.forecastWindow}`,
+                      note: `this category, ${predictiveSummary.forecastWindow}`,
                     },
                     {
                       label: 'Projected items',
                       value: unitText,
-                      note: `${predictiveSummary.forecastWindow}`,
+                      note: `this category, ${predictiveSummary.forecastWindow}`,
                     },
                     {
                       label: 'Based on',
-                      value: `${predictiveSummary.windowItems} ${predictiveSummary.windowItems === 1 ? 'item' : 'items'} sold`,
-                      note: `in the last ${predictiveSummary.windowDays} ${trendSeries.granularity === 'day' ? 'days' : 'periods'}`,
+                      value: `${predictiveSummary.leadingWindowItems} ${predictiveSummary.leadingWindowItems === 1 ? 'item' : 'items'} sold`,
+                      note: `this category, last ${predictiveSummary.windowDays} ${trendSeries.granularity === 'day' ? 'days' : 'periods'}`,
                     },
                   ]
                   return (
@@ -3162,7 +3017,7 @@ function AnalyticsContent() {
                   )
                 })()}
 
-                {predictiveSummary.windowItems < 5 && (
+                {predictiveSummary.leadingWindowItems < 5 && (
                   <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
                     Based on very few recent sales. Treat this as a rough indication, not a trend.
                   </p>
@@ -3170,54 +3025,14 @@ function AnalyticsContent() {
               </>
             )}
 
-            <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
-              A calculation from recent sales only, with no AI involved. Because it looks at the most
-              recent days, it can name a different category from Top Categories, which covers the whole period.
-            </p>
-          </div>
-
-          {/* Executive Summary — status cards */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-4">
-              <h3 className="text-sm font-semibold text-slate-900">Executive Summary</h3>
-              <p className="mt-0.5 text-xs text-slate-500">Key insights for {getRangeLabel(timeRangePreset).toLowerCase()}</p>
-            </div>
-            <div className="space-y-2.5">
-              <div className="flex items-start gap-3 rounded-xl bg-slate-50 px-4 py-3">
-                <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-blue-500" aria-hidden="true" />
-                <div>
-                  <p className="text-xs font-semibold text-slate-600">Total Revenue</p>
-                  <p className="text-sm font-semibold text-slate-900">{currency(currentSummary.totalSales)}</p>
-                </div>
-              </div>
-              <div className="flex items-start gap-3 rounded-xl bg-slate-50 px-4 py-3">
-                <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-slate-400" aria-hidden="true" />
-                <div>
-                  <p className="text-xs font-semibold text-slate-600">Items Sold</p>
-                  <p className="text-sm font-semibold text-slate-900">
-                    {compactNumber.format(currentSummary.itemsSold)} units across {filteredSales.length} transaction{filteredSales.length !== 1 ? 's' : ''}
-                  </p>
-                </div>
-              </div>
-              {currentSummary.topCategory && (
-                <div className="flex items-start gap-3 rounded-xl bg-green-50 px-4 py-3">
-                  <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-green-500" aria-hidden="true" />
-                  <div>
-                    <p className="text-xs font-semibold text-green-700">Top Category</p>
-                    <p className="text-sm font-semibold text-slate-900">
-                      {currentSummary.topCategory.categoryName}{' '}
-                      <span className="text-xs font-normal text-slate-500">
-                        ({((currentSummary.topCategory.revenue / Math.max(1, currentSummary.totalSales)) * 100).toFixed(0)}% of sales)
-                      </span>
-                    </p>
-                  </div>
-                </div>
-              )}
+            {/* From the Executive Summary, which otherwise repeated the KPI
+                cards and Top Categories: the two lines found nowhere else. */}
+            <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
               {comparisonMetrics.totalSales[0] && comparisonMetrics.totalSales[0].change !== null && (
                 <div className={`flex items-start gap-3 rounded-xl px-4 py-3 ${comparisonMetrics.totalSales[0].change >= 0 ? 'bg-green-50' : 'bg-red-50'}`}>
                   <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${comparisonMetrics.totalSales[0].change >= 0 ? 'bg-green-500' : 'bg-red-500'}`} aria-hidden="true" />
                   <div>
-                    <p className={`text-xs font-semibold ${comparisonMetrics.totalSales[0].change >= 0 ? 'text-green-700' : 'text-red-600'}`}>Sales Trend</p>
+                    <p className={`text-xs font-semibold ${comparisonMetrics.totalSales[0].change >= 0 ? 'text-green-700' : 'text-red-600'}`}>Sales trend</p>
                     <p className="text-sm text-slate-700">
                       {comparisonMetrics.totalSales[0].change >= 0 ? 'Increasing' : 'Decreasing'} by{' '}
                       <span className="font-semibold">{percentFormatter.format(Math.abs(comparisonMetrics.totalSales[0].change))}%</span>{' '}
@@ -3230,7 +3045,7 @@ function AnalyticsContent() {
                 <div className="flex items-start gap-3 rounded-xl bg-violet-50 px-4 py-3">
                   <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-violet-500" aria-hidden="true" />
                   <div>
-                    <p className="text-xs font-semibold text-violet-700">AI Forecast</p>
+                    <p className="text-xs font-semibold text-violet-700">AI review</p>
                     <p className="text-sm text-slate-700">
                       {aiForecast.aiForecast.insight.length > 120
                         ? `${aiForecast.aiForecast.insight.slice(0, 120)}…`
@@ -3241,18 +3056,12 @@ function AnalyticsContent() {
               )}
             </div>
           </div>
+
         </div>
 
         {/* ── STOCK MOVEMENT BY PIECE (individual unit records) ────────────── */}
         <UnitInsights />
 
-        {/* ── FOOTER NOTE ──────────────────────────────────────────────────── */}
-        <div className="flex items-center gap-2 rounded-xl bg-blue-50 px-4 py-3 text-xs text-blue-600">
-          <svg className="h-4 w-4 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd"/>
-          </svg>
-          All data is based on the selected date range and filters.
-        </div>
 
       </div>
 
