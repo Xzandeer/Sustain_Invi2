@@ -1001,7 +1001,7 @@ function InventoryContent() {
                 <span className="mx-1.5 text-slate-300">·</span>
                 <span className="font-semibold tabular-nums text-slate-700">{piecesOnSale.toLocaleString('en-PH')}</span> pieces
                 <span className="mx-1.5 text-slate-300">·</span>
-                <span className="font-semibold tabular-nums text-slate-700">{formatPrice(shelfValue)}</span> shelf value
+                <span className="font-semibold tabular-nums text-slate-700">{shelfState === 'error' ? '—' : formatPrice(shelfValue)}</span> shelf value
                 {piecesReserved > 0 && (
                   <>
                     <span className="mx-1.5 text-slate-300">·</span>

@@ -252,6 +252,10 @@ function DashboardContent() {
   const [inventory, setInventory] = useState<InventoryDoc[]>([])
   // Per-piece items on the shelf, by condition and price (/api/inventory/units/summary).
   const [shelf, setShelf] = useState<Record<string, ShelfEntry>>({})
+  // Whether piece prices loaded. Without them the value fell back to "stock x
+  // base price" with no warning - a different figure (on test1, ₱6,770 lower)
+  // shown as if it were the real one.
+  const [shelfFailed, setShelfFailed] = useState(false)
   const [reservations, setReservations] = useState<ReservationDoc[]>([])
   // Holds still in effect, for the Reservations panel. null = could not be read.
   const [activeReservations, setActiveReservations] = useState<ActiveReservation[] | null>([])
@@ -300,11 +304,15 @@ function DashboardContent() {
         // Every figure covers at most the last 30 days compared with the 30
         // before, so 60 days of sales is all this page can use.
         const sixtyDayCutoff = daysBefore(startOfDay(new Date()), 60)
-        // What each piece sells for. Optional: without it, items fall back to their price.
+        // What each piece sells for. If it cannot load, the value card says so
+        // instead of showing a figure worked out another way.
         apiFetch('/api/inventory/units/summary')
           .then((r) => (r.ok ? r.json() : null))
-          .then((s: { items?: Record<string, ShelfEntry> } | null) => { if (!cancelled && s?.items) setShelf(s.items) })
-          .catch(() => {})
+          .then((s: { items?: Record<string, ShelfEntry> } | null) => {
+            if (cancelled) return
+            if (s?.items) { setShelf(s.items); setShelfFailed(false) } else setShelfFailed(true)
+          })
+          .catch(() => { if (!cancelled) setShelfFailed(true) })
 
         const [invSnap, saleDocs, resSnap, logsSnap, historySnap, activeResSnap] = await Promise.all([
           getDocs(collection(db, 'inventory')),
@@ -742,8 +750,10 @@ function DashboardContent() {
               caption={<><ChangeBadge v={pctChange(sales30, salesPrev30)} /><span>vs previous 30 days</span></>} />
           )}
           {canSeeMoney && (
-            <KpiCard title="Inventory value" value={peso(stock.value)} loading={loading}
-              caption={<span>{pcs(stock.pieces)} across {stock.lines} product lines</span>} />
+            <KpiCard title="Inventory value" value={shelfFailed ? '—' : peso(stock.value)} loading={loading}
+              caption={shelfFailed
+                ? <span>Piece prices did not load · {pcs(stock.pieces)}</span>
+                : <span>{pcs(stock.pieces)} across {stock.lines} product lines</span>} />
           )}
           {!canSeeMoney && quickActions}
         </div>
