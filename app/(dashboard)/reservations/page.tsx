@@ -20,6 +20,7 @@
 // to the person when they return for the item.
 
 import { INPUT_LIMITS } from '@/lib/constants/limits'
+import { MAX_HOLD_EXTENSIONS } from '@/lib/constants/reservations'
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { apiFetch } from '@/lib/apiFetch'
 import { collection, onSnapshot, orderBy, query } from 'firebase/firestore'
@@ -78,6 +79,8 @@ interface Reservation {
   cancelledAt?: Date | null
   /** When the goods were handed over (Completed only). */
   completedAt?: Date | null
+  /** Times this hold has been extended (at most MAX_HOLD_EXTENSIONS). */
+  extensionCount: number
   /** When the customer paid (To collect and Completed). */
   paidAt?: Date | null
   /** Who made the reservation (stored when it was created). */
@@ -357,6 +360,7 @@ function ReservationsContent() {
             // A hold paid earlier and collected later records collectedAt.
             completedAt: toDate(data.collectedAt ?? data.completedAt),
             paidAt: toDate(data.paidAt),
+            extensionCount: typeof data.extensionCount === 'number' ? data.extensionCount : 0,
             // Every status the system can write must be listed here. Anything
             // missing falls through to 'Active', which is worse than an
             // unknown badge: a paid reservation would read as still holding
@@ -1209,10 +1213,14 @@ function ReservationsContent() {
                                   <CheckCircle2 className="h-4 w-4 shrink-0" />
                                   Claim
                                 </button>
+                                {/* Offered only while extensions remain - the server
+                                    refuses a third, after the confirm dialog. */}
                                 <button
-                                  disabled={actionId === r.id}
+                                  disabled={actionId === r.id || r.extensionCount >= MAX_HOLD_EXTENSIONS}
                                   onClick={() => handleExtendReservation(r)}
-                                  title="Give the customer more time"
+                                  title={r.extensionCount >= MAX_HOLD_EXTENSIONS
+                                    ? `Already extended ${MAX_HOLD_EXTENSIONS} times - ask the customer to collect, or cancel the hold`
+                                    : `Give the customer more time (${MAX_HOLD_EXTENSIONS - r.extensionCount} extension${MAX_HOLD_EXTENSIONS - r.extensionCount === 1 ? '' : 's'} left)`}
                                   className="flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50 disabled:opacity-50"
                                 >
                                   <Timer className="h-4 w-4 shrink-0" />

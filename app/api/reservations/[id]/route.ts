@@ -1,4 +1,5 @@
 // Reservation detail API - PATCH to update reservation status (complete/cancel/expire)
+import { MAX_HOLD_EXTENSIONS } from '@/lib/constants/reservations'
 import { INPUT_LIMITS } from '@/lib/constants/limits'
 import { NextResponse } from 'next/server'
 import { getReservationDays, getStoreSettings } from '@/lib/server/storeSettings'
@@ -34,7 +35,7 @@ interface ReservationActionPayload {
 // handover is outstanding, which is why it is a reservation state and not a
 // second kind of sale.
 /** How many times one hold may be extended. */
-const MAX_EXTENSIONS = 2
+const MAX_EXTENSIONS = MAX_HOLD_EXTENSIONS
 
 type ReservationStatus = 'Active' | 'AwaitingCollection' | 'Completed' | 'Cancelled' | 'Expired'
 

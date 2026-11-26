@@ -459,7 +459,7 @@ function InventoryContent() {
     }
   }
 
-  const handleVoidProduct = async (productId: string, voidReason: string, voidQuantity: number) => {
+  const handleVoidProduct = async (productId: string, voidReason: string, voidQuantity: number, unitIds: string[] = []) => {
     if (!isAdmin) return
     setError('')
     setVoidingId(productId)
@@ -471,6 +471,7 @@ function InventoryContent() {
           action: 'void',
           voidReason,
           voidQuantity,
+          ...(unitIds.length > 0 ? { unitIds } : {}),
           processedBy: {
             uid: auth.currentUser?.uid ?? '',
             email: auth.currentUser?.email ?? '',
@@ -663,17 +664,40 @@ function InventoryContent() {
   const categoryOptions = useMemo(() => categories, [categories])
 
   // Pieces per condition, re-read whenever the inventory changes.
+  //
+  // A failed read used to be swallowed: every per-piece item then showed
+  // "None on the shelf" and "Not tracked per piece" beside "9 in the shop",
+  // which reads as lost stock. Now it retries once, and says so if it still
+  // cannot load.
+  const [shelfState, setShelfState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [shelfRetry, setShelfRetry] = useState(0)
+  // The server's reason, e.g. the Firebase free-plan daily read limit.
+  const [shelfError, setShelfError] = useState('')
   useEffect(() => {
     if (!inventory.some((p) => p.trackingMode === 'unit')) return
     let cancelled = false
+    const load = () => apiFetch('/api/inventory/units/summary')
+      .then(async (r) => {
+        if (r.ok) return r.json()
+        const body = (await r.json().catch(() => ({}))) as { error?: string }
+        // 401/403 (signed out, no access, daily limit) will not pass on a retry.
+        throw Object.assign(new Error(body.error || `The server answered ${r.status}.`), { final: r.status === 401 || r.status === 403 })
+      })
+      .then((d: { items?: typeof shelf }) => { if (!d?.items) throw new Error('empty'); return d.items })
     const t = setTimeout(() => {
-      apiFetch('/api/inventory/units/summary')
-        .then((r) => (r.ok ? r.json() : null))
-        .then((d) => { if (!cancelled && d?.items) setShelf(d.items) })
-        .catch(() => {})
+      load()
+        .catch((err: { final?: boolean }) => err?.final
+          ? Promise.reject(err)
+          : new Promise<typeof shelf>((res, rej) => setTimeout(() => load().then(res, rej), 2000)))
+        .then((items) => { if (!cancelled) { setShelf(items); setShelfState('ready') } })
+        .catch((err: unknown) => {
+          if (cancelled) return
+          setShelfError(err instanceof Error ? err.message : '')
+          setShelfState((cur) => (cur === 'ready' ? cur : 'error'))
+        })
     }, 250)
     return () => { cancelled = true; clearTimeout(t) }
-  }, [inventory])
+  }, [inventory, shelfRetry])
   // Unique names: the filter matches by name, so two category documents with
   // the same name must appear once (and would otherwise break React keys).
   const categoryNames = useMemo(
@@ -1025,6 +1049,17 @@ function InventoryContent() {
           })}
         </section>
 
+        {shelfState === 'error' && (
+          <div role="alert" className="flex items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            <span>
+              Piece details did not load, so conditions, shelf time and prices by condition are missing below. Stock counts are still correct.
+              {shelfError && <span className="mt-0.5 block font-semibold">{shelfError}</span>}
+            </span>
+            <button type="button" onClick={() => { setShelfState('loading'); setShelfRetry((n) => n + 1) }}
+              className="shrink-0 rounded-lg border border-amber-300 bg-white px-2.5 py-1 font-semibold text-amber-800 hover:bg-amber-100">Try again</button>
+          </div>
+        )}
+
         {/* ── One filter row ── */}
         <section className="rounded-xl border border-slate-200/80 bg-white p-2">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -1147,7 +1182,11 @@ function InventoryContent() {
                                 </p>
                               </div>
                             ) : product.trackingMode === 'unit' ? (
-                              counts.size === 0 ? <span className="text-[11px] text-slate-500">None on the shelf</span> : (
+                              counts.size === 0 ? (
+                                <span className="text-[11px] text-slate-500">
+                                  {shelfState === 'ready' ? 'None on the shelf' : shelfState === 'loading' ? 'Loading pieces…' : 'Pieces not loaded'}
+                                </span>
+                              ) : (
                                 // One quiet chip per condition: coloured dot, count, name.
                                 <div className="flex flex-wrap gap-1">
                                   {UNIT_GRADES.filter((g) => counts.has(g)).map((g) => (
@@ -1212,7 +1251,12 @@ function InventoryContent() {
                                 <span className="font-normal text-slate-500"> oldest piece</span>
                               </p>
                             ) : (
-                              <p className="text-slate-500">{product.quantity > 0 ? 'Not tracked per piece' : 'Nothing on the shelf'}</p>
+                              <p className="text-slate-500">
+                                {product.trackingMode !== 'unit'
+                                  ? (product.quantity > 0 ? 'Not tracked per piece' : 'Nothing on the shelf')
+                                  : shelfState !== 'ready' ? '—'
+                                  : 'Nothing on the shelf'}
+                              </p>
                             )}
                             {addedText(product.createdAtMs) && <p className="text-[11px] text-slate-500">Added {addedText(product.createdAtMs)}</p>}
                           </td>
@@ -1389,7 +1433,8 @@ function InventoryContent() {
           product={voidingProduct}
           submitting={voidingId === voidingProduct.id}
           onClose={() => setVoidingProduct(null)}
-          onConfirm={(reason, qty) => handleVoidProduct(voidingProduct.id, reason, qty)}
+          pieceConditions={gradeSummary(Array.from(conditionCounts(voidingProduct)).flatMap(([g, n]) => Array<UnitGrade>(n).fill(g)))}
+          onConfirm={(reason, qty, unitIds) => handleVoidProduct(voidingProduct.id, reason, qty, unitIds)}
         />
       )}
 
@@ -1481,28 +1526,50 @@ function VoidModal({
   submitting,
   onClose,
   onConfirm,
+  pieceConditions,
 }: {
   product: Product
   submitting: boolean
   onClose: () => void
-  onConfirm: (reason: string, quantity: number) => void
+  onConfirm: (reason: string, quantity: number, unitIds: string[]) => void
+  /** "Good ×4, Fair" - the per-piece item's conditions on the shelf. */
+  pieceConditions?: string
 }) {
   const [reason, setReason] = useState('')
   const [customReason, setCustomReason] = useState('')
-  const [voidQuantity, setVoidQuantity] = useState(product.quantity)
+  // Pieces held for a customer cannot be written off (the server refuses).
+  const sellable = Math.max(0, product.quantity - product.reservedStock)
+  const [voidQuantity, setVoidQuantity] = useState(sellable)
   const [localError, setLocalError] = useState('')
+  // Per-piece items: the exact pieces to write off - the damaged one, not
+  // whichever happens to be oldest on the shelf.
+  const perPiece = product.trackingMode === 'unit'
+  const [pieces, setPieces] = useState<Array<{ id: string; unitCode: string; grade: string; conditionNotes: string }> | null>(null)
+  const [picked, setPicked] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    if (!perPiece) return
+    let cancelled = false
+    apiFetch(`/api/inventory/${product.id}/units?status=in_stock`)
+      .then((r) => (r.ok ? r.json() : { data: [] }))
+      .then((d: { data?: Array<{ id: string; unitCode: string; grade: string; conditionNotes: string }> }) => { if (!cancelled) setPieces(d.data ?? []) })
+      .catch(() => { if (!cancelled) setPieces([]) })
+    return () => { cancelled = true }
+  }, [perPiece, product.id])
+  const count = perPiece ? picked.size : voidQuantity
 
   const effectiveReason = reason === 'Other' ? customReason.trim() : reason
 
   const handleSubmit = () => {
     if (!reason) { setLocalError('Please select a reason.'); return }
     if (reason === 'Other' && !customReason.trim()) { setLocalError('Please describe the reason.'); return }
-    if (!voidQuantity || voidQuantity < 1 || voidQuantity > product.quantity) {
-      setLocalError(`Quantity must be between 1 and ${product.quantity}.`)
+    if (perPiece) {
+      if (picked.size === 0) { setLocalError('Choose the pieces to write off.'); return }
+    } else if (!voidQuantity || voidQuantity < 1 || voidQuantity > sellable) {
+      setLocalError(sellable === 0 ? 'Every piece is reserved for a customer.' : `Quantity must be between 1 and ${sellable}.`)
       return
     }
     setLocalError('')
-    onConfirm(effectiveReason, voidQuantity)
+    onConfirm(effectiveReason, count, perPiece ? Array.from(picked) : [])
   }
 
   return (
@@ -1518,7 +1585,7 @@ function VoidModal({
           <div className="min-w-0 flex-1">
             <h2 className="text-base font-semibold text-slate-900">Write Off Item</h2>
             <p className="mt-0.5 text-sm text-slate-500">
-              This will mark <span className="font-medium text-slate-800">{product.name}</span> as voided. It will be removed from active listings but all history will be preserved.
+              The pieces you write off leave the shelf for good. <span className="font-medium text-slate-800">{product.name}</span> stays on sale with any pieces left; writing off every piece moves it to the Trash. All history is kept.
             </p>
           </div>
         </div>
@@ -1528,15 +1595,48 @@ function VoidModal({
           {/* Item summary */}
           <div className="rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm">
             <div className="flex justify-between text-slate-500"><span>Category</span><span className="font-medium text-slate-800">{product.category}</span></div>
-            <div className="mt-1 flex justify-between text-slate-500"><span>Condition</span><span className="font-medium text-slate-800">{product.condition}</span></div>
-            <div className="mt-1 flex justify-between text-slate-500"><span>Stock</span><span className="font-medium text-slate-800">{product.quantity}</span></div>
+            <div className="mt-1 flex justify-between gap-3 text-slate-500"><span>Condition</span><span className="text-right font-medium text-slate-800">{perPiece ? (pieceConditions || '—') : (product.condition === 'Refurbished' ? 'Good' : 'New')}</span></div>
+            <div className="mt-1 flex justify-between text-slate-500"><span>Stock</span><span className="font-medium text-slate-800">{product.quantity}{product.reservedStock > 0 ? ` (${Math.min(product.reservedStock, product.quantity)} reserved)` : ''}</span></div>
           </div>
 
-          {/* Quantity to void */}
+          {/* Per-piece items: tick the pieces */}
+          {perPiece && (
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                Pieces to write off <span className="text-red-500">*</span>
+                <span className="ml-1 font-normal text-slate-500">({picked.size} of {pieces?.length ?? 0} on the shelf)</span>
+              </label>
+              {pieces === null ? (
+                <p className="text-xs text-slate-500">Loading pieces…</p>
+              ) : pieces.length === 0 ? (
+                <p className="text-xs text-slate-500">No pieces on the shelf to write off{product.reservedStock > 0 ? ' - the rest are reserved' : ''}.</p>
+              ) : (
+                <div className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-slate-200 p-1.5">
+                  {pieces.map((u) => (
+                    <label key={u.id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-slate-50">
+                      <input type="checkbox" checked={picked.has(u.id)}
+                        onChange={() => setPicked((prev) => { const next = new Set(prev); if (next.has(u.id)) next.delete(u.id); else next.add(u.id); return next })} />
+                      <span className="font-mono text-slate-600">#{u.unitCode}</span>
+                      <span className="font-semibold text-slate-800">{u.grade}</span>
+                      <span className="min-w-0 flex-1 truncate text-slate-500">{u.conditionNotes}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              {pieces && picked.size > 0 && (
+                <p className={`mt-1.5 text-xs font-medium ${picked.size === product.quantity ? 'text-amber-600' : 'text-blue-600'}`}>
+                  {picked.size === product.quantity ? 'Every piece chosen - the item will be fully written off.' : `Stock goes down by ${picked.size}; the rest stay on sale.`}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Quantity to void (counted-only items) */}
+          {!perPiece && (
           <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-700">
               Quantity to Void <span className="text-red-500">*</span>
-              <span className="ml-1 font-normal text-slate-500">(max: {product.quantity})</span>
+              <span className="ml-1 font-normal text-slate-500">(max: {sellable})</span>
             </label>
             <div className="flex items-center gap-2">
               <button
@@ -1549,17 +1649,17 @@ function VoidModal({
               <input
                 type="number"
                 min={1}
-                max={product.quantity}
+                max={sellable}
                 value={voidQuantity}
                 onChange={(e) => {
                   const val = parseInt(e.target.value, 10)
-                  if (!isNaN(val)) setVoidQuantity(Math.min(product.quantity, Math.max(1, val)))
+                  if (!isNaN(val)) setVoidQuantity(Math.min(sellable, Math.max(1, val)))
                 }}
                 className="w-20 rounded-lg border border-slate-200 px-3 py-2 text-center text-sm font-medium text-slate-800 focus:border-blue-600 focus:outline-none"
               />
               <button
                 type="button"
-                onClick={() => setVoidQuantity((q) => Math.min(product.quantity, q + 1))}
+                onClick={() => setVoidQuantity((q) => Math.min(sellable, q + 1))}
                 className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-colors"
               >
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
@@ -1573,6 +1673,7 @@ function VoidModal({
               <p className="mt-1.5 text-xs text-blue-600">Partial void — stock will be reduced by {voidQuantity} unit{voidQuantity !== 1 ? 's' : ''}.</p>
             )}
           </div>
+          )}
 
           {/* Reason dropdown */}
           <div>
@@ -1631,7 +1732,7 @@ function VoidModal({
             ) : (
               <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
             )}
-            Void Item
+            Write off
           </button>
         </div>
       </div>

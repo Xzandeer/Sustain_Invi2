@@ -359,7 +359,9 @@ export async function PATCH(req: Request, context: RouteContext) {
       patch: Record<string, unknown>,
       count: number,
       from: UnitStatus,
-      to: UnitStatus
+      to: UnitStatus,
+      /** Exact pieces to move; otherwise the first `count` in the pool. */
+      pick?: string[],
     ): Promise<StoredUnit[]> => {
       if (!isUnitTracked(snapshotData) || count <= 0) {
         await docRef.update(patch)
@@ -369,7 +371,13 @@ export async function PATCH(req: Request, context: RouteContext) {
       await getAdminDb().runTransaction(async (txn) => {
         const pool = await readItemUnits(txn, id, from)
         const ordered = from === 'written_off' ? [...pool].reverse() : pool
-        moved = ordered.slice(0, count)
+        if (pick && pick.length > 0) {
+          moved = pool.filter((u) => pick.includes(u.id))
+          // A chosen piece was sold, held or written off meanwhile.
+          if (moved.length !== pick.length) throw new Error('PIECES_CHANGED')
+        } else {
+          moved = ordered.slice(0, count)
+        }
         txn.update(docRef, patch)
         setUnitsStatus(txn, moved, to, new Date().toISOString())
       })
@@ -412,11 +420,21 @@ export async function PATCH(req: Request, context: RouteContext) {
         return NextResponse.json({ error: 'A void reason is required.' }, { status: 400 })
       }
 
+      // The exact pieces to write off (per-piece items). Without them the
+      // oldest pieces on the shelf were taken - so writing off one damaged
+      // piece could remove a good one and leave the damaged one for sale.
+      const rawUnitIds = (body as Record<string, unknown>).unitIds
+      const pickedUnits = Array.isArray(rawUnitIds)
+        ? Array.from(new Set(rawUnitIds.filter((v): v is string => typeof v === 'string' && v.length > 0)))
+        : []
+
       // Parse voidQuantity — defaults to full stock if not provided
       const rawVoidQty = (body as Record<string, unknown>).voidQuantity
-      const voidQuantity = typeof rawVoidQty === 'number' && rawVoidQty > 0
-        ? Math.floor(rawVoidQty)
-        : currentStock
+      const voidQuantity = pickedUnits.length > 0 && isUnitTracked(snapshotData)
+        ? pickedUnits.length
+        : typeof rawVoidQty === 'number' && rawVoidQty > 0
+          ? Math.floor(rawVoidQty)
+          : currentStock
       if (voidQuantity > currentStock) {
         return NextResponse.json(
           { error: `Cannot void ${voidQuantity} units — only ${currentStock} in stock.` },
@@ -485,7 +503,7 @@ export async function PATCH(req: Request, context: RouteContext) {
           quantity: 0,
           stockStatus: getStockStatus({ stock: 0, minStock: voidMinStock }),
           updatedAt: new Date().toISOString(),
-        }, voidQuantity, 'in_stock', 'written_off')
+        }, voidQuantity, 'in_stock', 'written_off', pickedUnits)
         await createStockLog({
           actionType: 'item_voided',
           itemId: id,
@@ -521,7 +539,7 @@ export async function PATCH(req: Request, context: RouteContext) {
           voidedAt: new Date().toISOString(),
           voidedBy: processedBy.name ?? processedBy.email ?? 'Admin',
           updatedAt: new Date().toISOString(),
-        }, voidQuantity, 'in_stock', 'written_off')
+        }, voidQuantity, 'in_stock', 'written_off', pickedUnits)
         await createStockLog({
           actionType: 'item_voided',
           itemId: id,
@@ -655,6 +673,9 @@ export async function PATCH(req: Request, context: RouteContext) {
   } catch (error) {
     if (error instanceof Error && error.message === 'ADMIN_REQUIRED') {
       return NextResponse.json({ error: 'Admin access is required.' }, { status: 403 })
+    }
+    if (error instanceof Error && error.message === 'PIECES_CHANGED') {
+      return NextResponse.json({ error: 'One of the chosen pieces was sold, reserved or written off meanwhile. Reopen the window and choose again.' }, { status: 409 })
     }
     console.error(`PATCH /api/inventory/[id] error:`, error)
     return NextResponse.json({ error: 'Server error' }, { status: 500 })

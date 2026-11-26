@@ -162,7 +162,10 @@ export async function POST(req: NextRequest) {
       })()
       if (saleDate) {
         const daysSinceSale = (Date.now() - saleDate.getTime()) / (1000 * 60 * 60 * 24)
-        if (daysSinceSale > warrantyDays) {
+        // Whole days, as the Sales page counts them: on day 7 of a 7-day
+        // window it shows "0 days left" and offers Refund, so the server must
+        // accept it (comparing exact hours refused it a few hours in).
+        if (Math.floor(daysSinceSale) > warrantyDays) {
           throw new RefundError(
             `Refund period has expired. This sale was completed ${Math.floor(daysSinceSale)} day(s) ago, and the warranty window is ${warrantyDays} day(s).`
           )
