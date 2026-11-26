@@ -57,6 +57,8 @@ const TABS: { id: TabId; label: string }[] = [
 
 const STOCK_CHANGE_ACTIONS = ['stock_increased', 'stock_decreased', 'stock_transferred_in', 'stock_transferred_out']
 const RESERVATION_SALE_ACTIONS = (a: ResolvedStockLogAction) => a.includes('reservation') || a.includes('sale')
+// Actions on the item record itself, not on pieces.
+const ITEM_LEVEL_ACTIONS: ResolvedStockLogAction[] = ['item_edited', 'item_deleted', 'item_restored', 'item_deleted_permanently']
 const ITEM_UPDATE_ACTIONS = ['item_edited', 'condition_changed', 'item_added', 'item_deleted', 'item_restored', 'item_voided', 'item_unvoided', 'item_deleted_permanently']
 
 function matchesTab(tab: TabId, action: ResolvedStockLogAction): boolean {
@@ -85,7 +87,12 @@ function toStockLogRecord(doc: QueryDocumentSnapshot): StockLogRecord {
     // Per-piece logs written before pieces' conditions were stored only
     // carry the item's derived New/Refurbished label, which says nothing
     // about the piece that moved - show no condition rather than a wrong one.
-    condition: Array.isArray(data.unitCodes) && data.unitCodes.length > 0 && !Array.isArray(data.unitGrades)
+    //
+    // Edits, deletions and restores move no pieces; their stored condition is
+    // the item's old New/Refurbished label ("Refurbished" on every per-piece
+    // item), which describes nothing - so those rows show none.
+    condition: (Array.isArray(data.unitCodes) && data.unitCodes.length > 0 && !Array.isArray(data.unitGrades)) ||
+      ITEM_LEVEL_ACTIONS.includes(resolvedAction)
       ? ''
       : typeof data.condition === 'string' ? data.condition : '',
     previousValue: typeof data.previousValue === 'string' ? data.previousValue : '',
@@ -651,7 +658,6 @@ function InventoryLogsContent() {
                       </th>
                       <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Performed By</th>
                       <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Reference / Notes</th>
-                      <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
@@ -662,14 +668,22 @@ function InventoryLogsContent() {
                       const hasDetail = hasBefore || hasAfter
                       return (
                         <React.Fragment key={log.id}>
+                          {/* Only rows with stock before/after open; others had an
+                              arrow that opened nothing. */}
                           <tr
-                            onClick={() => setExpandedId(isOpen ? null : log.id)}
-                            className="cursor-pointer transition hover:bg-slate-50">
-                            {/* Chevron */}
-                            <td className="px-3 py-3 text-slate-500">
-                              <svg className={`h-4 w-4 transition-transform ${isOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                              </svg>
+                            onClick={hasDetail ? () => setExpandedId(isOpen ? null : log.id) : undefined}
+                            className={`transition hover:bg-slate-50 ${hasDetail ? 'cursor-pointer' : ''}`}>
+                            {/* Chevron - the whole row opens the details; this is the
+                                same toggle as a button, so the keyboard can reach it
+                                (the separate eye button in an Actions column is gone). */}
+                            <td className="px-3 py-3 text-slate-500" onClick={e => e.stopPropagation()}>
+                              {hasDetail && <button type="button" onClick={() => setExpandedId(isOpen ? null : log.id)}
+                                aria-label={(isOpen ? 'Hide details for ' : 'Show details for ') + log.itemName} aria-expanded={isOpen}
+                                className="flex h-5 w-5 items-center justify-center rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-300">
+                                <svg className={`h-4 w-4 transition-transform ${isOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                                </svg>
+                              </button>}
                             </td>
                             {/* Date — day on top, time beneath, so the eye
                                 scans the times rather than eight repetitions
@@ -713,17 +727,10 @@ function InventoryLogsContent() {
                                   unreadable string saying the same thing. */}
                               {log.remarks ? <p className="text-sm text-slate-700">{log.remarks}</p> : <p className="text-slate-300">—</p>}
                             </td>
-                            {/* Actions */}
-                            <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
-                              <button onClick={() => setExpandedId(isOpen ? null : log.id)} aria-label={(isOpen ? "Hide details for " : "Show details for ") + log.itemName} aria-expanded={isOpen}
-                                className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-slate-300 hover:text-slate-600">
-                                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                              </button>
-                            </td>
                           </tr>
                           {isOpen && hasDetail && (
                             <tr key={`${log.id}-exp`} className="bg-slate-50">
-                              <td colSpan={8} className="px-8 py-3">
+                              <td colSpan={7} className="px-8 py-3">
                                 <div className="flex flex-wrap gap-6">
                                   {hasBefore && (
                                     <div>

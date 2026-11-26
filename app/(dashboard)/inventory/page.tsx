@@ -26,6 +26,7 @@ import { Plus, Tags, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { auth, db } from '@/lib/firebase'
 import ProtectedRoute from '@/components/shared/ProtectedRoute'
+import { useConfirm } from '@/components/shared/ConfirmDialog'
 import ProductModal, { ProductFormValues } from '@/components/inventory/ProductModal'
 import { saveProduct } from '@/lib/inventory/saveProduct'
 import StockAdjustmentModal, { type StockAdjustmentValues } from '@/components/inventory/StockAdjustmentModal'
@@ -150,6 +151,8 @@ export default function ItemsPage() {
 
 function InventoryContent() {
   const { isAdmin, can } = useUserRole()
+  // The app's own confirm window, as on Reservations.
+  const { confirm, confirmDialog } = useConfirm()
   const canManageInventory = isAdmin || can('canManageInventory')
   const canVoid = isAdmin || can('canVoidItems')
   const [inventory, setInventory] = useState<Product[]>([])
@@ -429,8 +432,15 @@ function InventoryContent() {
     }
   }
 
-  const handleDeleteProduct = async (productId: string) => {
+  const handleDeleteProduct = async (productId: string, productName: string) => {
     if (!isAdmin) return
+    // It used to go straight to the Trash on one click.
+    if (!(await confirm({
+      title: 'Move to the Trash?',
+      message: <><span className="font-medium text-slate-800">{productName}</span> leaves the Inventory list. You can restore it from the Trash; its history is kept.</>,
+      confirmLabel: 'Move to Trash',
+      tone: 'danger',
+    }))) return
     setError('')
     setDeletingProductId(productId)
     try {
@@ -810,6 +820,8 @@ function InventoryContent() {
 
 
   const sellableInventory = useMemo(() => inventory.filter((p) => !p.isVoided), [inventory])
+  // Older data can hold counted-only items; new items are always per piece.
+  const hasCountedItems = useMemo(() => inventory.some((p) => p.trackingMode !== 'unit'), [inventory])
 
   const kpiTotal        = sellableInventory.length
   const kpiAvailable    = sellableInventory.filter((p) => p.stockStatus === 'Available').length
@@ -929,7 +941,8 @@ function InventoryContent() {
     const prices = sh ? [...sh.grades.map((g) => g.price), ...sh.ownPriced.flatMap((g) => [g.minPrice ?? 0, g.maxPrice ?? 0]).filter((n) => n > 0)] : []
     if (prices.length === 0) return formatPrice(product.price)
     const lo = Math.min(...prices), hi = Math.max(...prices)
-    return lo === hi ? formatPrice(lo) : `${formatPrice(hi)} – ${formatPrice(lo)}`
+    // Low to high, the way a price range is read.
+    return lo === hi ? formatPrice(lo) : `${formatPrice(lo)} – ${formatPrice(hi)}`
   }
 
   const piecesOnSale = sellableInventory.reduce((sum, p) => sum + p.quantity, 0)
@@ -1088,10 +1101,13 @@ function InventoryContent() {
               <option value="all">Any condition</option>
               {UNIT_GRADES.map((g) => <option key={g} value={g}>{GRADE_LABEL[g]}</option>)}
             </select>
-            <select value={reservedOnly ? 'reserved' : typeFilter} onChange={(e) => { const v = e.target.value; setReservedOnly(v === 'reserved'); setTypeFilter(v === 'reserved' ? 'all' : (v as TypeFilter)) }} aria-label="Item type" className={selectCls(typeFilter !== 'all')}>
-              <option value="all">All types</option>
-              <option value="unit">Tracked per piece</option>
-              <option value="qty">Counted only</option>
+            {/* Per-piece vs counted is only worth offering when both exist: new
+                items are always tracked per piece, so on most data "Counted only"
+                was an empty list and "Tracked per piece" was everything. */}
+            <select value={reservedOnly ? 'reserved' : typeFilter} onChange={(e) => { const v = e.target.value; setReservedOnly(v === 'reserved'); setTypeFilter(v === 'reserved' ? 'all' : (v as TypeFilter)) }} aria-label="Show items" className={selectCls(typeFilter !== 'all' || reservedOnly)}>
+              <option value="all">All items</option>
+              {hasCountedItems && <option value="unit">Tracked per piece</option>}
+              {hasCountedItems && <option value="qty">Counted only</option>}
               <option value="reserved">With reservations</option>
             </select>
             <select value={sortBy} onChange={(e) => { setSortBy(e.target.value as SortOption); setCurrentPage(1) }} aria-label="Sort by" className={selectCls(false)}>
@@ -1302,7 +1318,7 @@ function InventoryContent() {
                                           </button>
                                         )}
                                         {isAdmin && product.quantity === 0 && product.reservedStock === 0 && (
-                                          <button onClick={() => { setRowMenuId(null); void handleDeleteProduct(product.id) }} disabled={deletingProductId === product.id}
+                                          <button onClick={() => { setRowMenuId(null); void handleDeleteProduct(product.id, product.name) }} disabled={deletingProductId === product.id}
                                             className="block w-full px-3 py-2 text-left text-red-600 hover:bg-slate-50 disabled:opacity-40">
                                             Move to trash
                                           </button>
@@ -1427,6 +1443,8 @@ function InventoryContent() {
         onSubmit={handleAdjustStock}
         submitting={adjustingStock}
       />
+
+      {confirmDialog}
 
       {voidingProduct && (
         <VoidModal

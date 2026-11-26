@@ -74,11 +74,14 @@ export async function POST(req: NextRequest) {
 
     // ── The item: given, found by name, or new ──
     let itemRef: FirebaseFirestore.DocumentReference | null = null
+    // True only when this request creates the item (for the stock log label).
+    let createdNow = false
     if (typeof body.itemId === 'string' && body.itemId) {
       const snap = await db.collection('inventory').doc(body.itemId).get()
       if (!snap.exists) return NextResponse.json({ error: 'Item not found.' }, { status: 404 })
       const d = snap.data() as Record<string, unknown>
-      if (d.isDeleted === true || d.isVoided === true) {
+      // Written-off items can take new stock (see below); deleted ones cannot.
+      if (d.isDeleted === true) {
         return NextResponse.json({ error: 'Restore this item before receiving stock for it.' }, { status: 400 })
       }
       itemRef = snap.ref
@@ -94,15 +97,8 @@ export async function POST(req: NextRequest) {
         return data.isDeleted !== true && data.isSingleItem !== true &&
           normalizeName(typeof data.name === 'string' ? data.name : '') === normalizeName(name)
       })
-      // A written-off item of that name is the same item, but it is off sale:
-      // pieces added to it were hidden from Inventory and Sales and sat in the
-      // Trash. Same answer as choosing the item directly (above).
-      if (match && (match.data() as Record<string, unknown>).isVoided === true) {
-        return NextResponse.json(
-          { error: `"${name}" is written off. Restore it from the Trash first, then receive stock for it.` },
-          { status: 400 },
-        )
-      }
+      // A written-off item of that name is the same product: the new pieces go
+      // to it and bring it back on sale (below).
       itemRef = match?.ref ?? null
     }
 
@@ -122,6 +118,7 @@ export async function POST(req: NextRequest) {
         trackingMode,
       })
       itemRef = db.collection('inventory').doc(created.id)
+      createdNow = true
     }
 
     // ── Add the pieces with the count, in one transaction ──
@@ -130,6 +127,7 @@ export async function POST(req: NextRequest) {
     const nowIso = new Date().toISOString()
     let before = { stock: 0, reserved: 0, name: '', condition: 'New' as 'New' | 'Refurbished', mode: trackingMode as string, price: basePrice }
     let created: ReturnType<typeof writeNewUnits> = []
+    let wasWrittenOff = false
 
     await db.runTransaction(async (txn) => {
       const snap = await txn.get(itemRef!)
@@ -157,6 +155,12 @@ export async function POST(req: NextRequest) {
       }
       const minStock = Math.max(0, toNumber(d.minStock, 0))
       const next = before.stock + quantity
+      // New stock for a fully written-off item - say every old piece broke and
+      // a fresh batch arrived. The item comes back on sale with the NEW pieces
+      // only; the old ones stay written off (voidedUnits keeps the record).
+      // Before, Add stock refused and the only way back was Restore, which
+      // put every broken piece back on sale too.
+      wasWrittenOff = d.isVoided === true
       txn.update(itemRef!, {
         stock: next,
         quantity: next,
@@ -168,6 +172,7 @@ export async function POST(req: NextRequest) {
         stockStatus: getStockStatus({ stock: next, minStock }),
         isDeleted: false,
         deletedAt: null,
+        ...(wasWrittenOff ? { isVoided: false } : {}),
         updatedAt: nowIso,
       })
       if (mode === 'unit') {
@@ -189,7 +194,9 @@ export async function POST(req: NextRequest) {
       .map(([g, n]) => `${n} ${g}`)
       .join(', ')
     await createStockLog({
-      actionType: before.stock === 0 && before.reserved === 0 ? 'item_added' : 'stock_increased',
+      // "Item added" only for a new item. Restocking a sold-out or written-off
+      // item used to log as "Item added" too, as if it were a new product.
+      actionType: createdNow ? 'item_added' : 'stock_increased',
       itemId: itemRef.id,
       itemName: before.name,
       condition: before.condition,
@@ -202,7 +209,8 @@ export async function POST(req: NextRequest) {
       reservedAfter: before.reserved,
       user: processedBy,
       units: created.map((u) => ({ id: u.id, unitCode: u.unitCode, grade: u.grade })),
-      remarks: `Received ${quantity}: ${tally}.${source ? ` From ${source}.` : ''}` + describeUnits(created),
+      remarks: `Received ${quantity}: ${tally}.${source ? ` From ${source}.` : ''}` + describeUnits(created) +
+        (wasWrittenOff ? ' The item had been written off; it is back on sale with these pieces only - the written-off pieces stay written off.' : ''),
     })
 
     return NextResponse.json({

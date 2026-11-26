@@ -179,8 +179,18 @@ export async function PUT(req: Request, context: RouteContext) {
       ? null
       : await findInventoryVariant({ name, categoryId, condition: currentCondition })
     if (duplicateVariant && duplicateVariant.id !== id) {
+      // Plain words, and say where the other item is: a written-off one is in
+      // the Trash, not on the Inventory list, so "already exists" pointed at
+      // nothing the user could find. (The old wording also spoke of a
+      // "variant" and "condition", which conditions-per-piece made untrue.)
+      const other = (await getAdminDb().collection('inventory').doc(duplicateVariant.id).get()).data() as Record<string, unknown> | undefined
+      const otherName = typeof other?.name === 'string' ? other.name : name
       return NextResponse.json(
-        { error: 'An inventory variant with the same item, category, and condition already exists.' },
+        {
+          error: other?.isVoided === true
+            ? `"${otherName}" is already used by a written-off item in the Trash (${categoryName}). Choose another name.`
+            : `"${otherName}" is already an item in ${categoryName}. Choose another name.`,
+        },
         { status: 400 }
       )
     }
@@ -267,10 +277,11 @@ export async function DELETE(req: Request, context: RouteContext) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
     }
 
-    const body = (await req.json().catch(() => ({}))) as { processedBy?: unknown }
     const deniedDelete = await requireAdminRequest(req)
     if (deniedDelete) return deniedDelete
     await assertAdminUser(req)
+    // Who is deleting, from the signed-in account - the log said "System User".
+    const processedBy = await getProcessedByInfo(req)
 
     // Step 2: Get current item data
     const docRef = getAdminDb().collection('inventory').doc(id)
@@ -311,7 +322,7 @@ export async function DELETE(req: Request, context: RouteContext) {
       stockAfter: currentStock,
       reservedBefore: currentReservedStock,
       reservedAfter: currentReservedStock,
-      user: { name: 'System User' },
+      user: processedBy,
       remarks: 'Item moved to trash.',
     })
     return NextResponse.json({ success: true }, { status: 200 })

@@ -443,6 +443,10 @@ function DashboardContent() {
     const map = new Map<string, number>()
     for (const s of completedSales) {
       if (!s.createdAt) continue
+      // A fully refunded sale kept nothing, so it is not counted - as on
+      // Analytics. Counting it made the two pages disagree for the same days
+      // (161 here against 154 there on test1). Part refunds still count.
+      if (s.status === 'refunded') continue
       const key = dayKeyOf(s.createdAt)
       map.set(key, (map.get(key) ?? 0) + 1)
     }
