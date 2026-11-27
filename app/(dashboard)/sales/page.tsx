@@ -317,6 +317,10 @@ function SalesContent() {
   const deferredSearch = useDeferredValue(search)
 
   const RECEIPT_STORAGE_KEY = 'sustain-invi2-activeReceipt'
+  // The transaction whose receipt was put away with "Next sale". Without it,
+  // opening Sales again found no saved receipt, asked the server for today's
+  // latest, and brought the same receipt back with every item locked.
+  const DISMISSED_RECEIPT_KEY = 'sustain-invi2-dismissedReceipt'
 
   useEffect(() => {
     // Only today's last receipt is brought back. Opening Sales the next day
@@ -345,7 +349,9 @@ function SalesContent() {
         if (!response.ok) return
         const payload = (await response.json()) as { data?: ReceiptRecord[] }
         const [latest] = payload.data ?? []
-        if (latest && isToday(latest)) {
+        let dismissed: string | null = null
+        try { dismissed = window.localStorage.getItem(DISMISSED_RECEIPT_KEY) } catch {}
+        if (latest && isToday(latest) && latest.transactionId !== dismissed) {
           setActiveReceipt(latest)
           setCompletedDocument(latest.document)
         }
@@ -1040,6 +1046,9 @@ function SalesContent() {
   }
 
   const startNewTransaction = () => {
+    if (activeReceipt?.transactionId) {
+      try { window.localStorage.setItem(DISMISSED_RECEIPT_KEY, activeReceipt.transactionId) } catch {}
+    }
     setCart([])
     setCompletedDocument(null)
     setActiveReceipt(null)
@@ -1539,6 +1548,11 @@ function SalesContent() {
       })
 
       setCart([])
+      // A reservation carries no discount (the ticket and the later claim use
+      // the held prices), so a discount typed for it must not stay for the
+      // next customer's sale.
+      setDiscountInput('')
+      setDiscountMode('peso')
       setCustomerFullName('')
       setCustomerEmail('')
       setCustomerContactNumber('')
