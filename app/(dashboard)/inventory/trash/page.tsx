@@ -39,6 +39,8 @@ interface TrashItem {
   deletedAt: string | null
   voidedAt: string | null
   voidedBy: string | null
+  /** Who moved it to the Trash (Move to trash; not a write-off). */
+  deletedBy: string | null
   voidReason: string | null
   restoredAt: string | null
 }
@@ -240,6 +242,7 @@ function InventoryTrashContent() {
             deletedAt: typeof data.deletedAt === 'string' ? data.deletedAt : null,
             voidedAt: typeof data.voidedAt === 'string' ? data.voidedAt : null,
             voidedBy: typeof data.voidedBy === 'string' ? data.voidedBy : null,
+            deletedBy: typeof data.deletedBy === 'string' ? data.deletedBy : null,
             voidReason: typeof data.voidReason === 'string' ? data.voidReason : null,
             restoredAt: typeof data.restoredAt === 'string' ? data.restoredAt : null,
           }
@@ -265,8 +268,11 @@ function InventoryTrashContent() {
 
   const summary = useMemo(() => ({
     total: items.length,
-    withStock: items.filter(i => i.stock > 0).length,
-    withReservations: items.filter(i => i.reservedStock > 0).length,
+    // An item only reaches the Trash with no stock and nothing reserved, so
+    // the old "With Stock" and "With Reservations" cards could only show 0.
+    // These say how each item got here instead.
+    writtenOff: items.filter(i => i.isVoided).length,
+    movedToTrash: items.filter(i => !i.isVoided && i.isDeleted).length,
     restoredThisMonth,
   }), [items, restoredThisMonth])
 
@@ -280,7 +286,7 @@ function InventoryTrashContent() {
       const dateStr = item.voidedAt ?? item.deletedAt
       const t = dateStr ? new Date(dateStr).getTime() : null
 
-      const matchSearch = !term || item.name.toLowerCase().includes(term) || item.sku.toLowerCase().includes(term) || (item.voidReason ?? '').toLowerCase().includes(term)
+      const matchSearch = !term || item.name.toLowerCase().includes(term) || item.sku.toLowerCase().includes(term) || (item.isVoided ? (item.voidReason ?? '') : 'moved to trash').toLowerCase().includes(term)
       const matchCat = categoryFilter === 'all' || item.category === categoryFilter
       const matchCond = conditionFilter === 'all' || item.grades.some(([g]) => g === conditionFilter)
       // "Other" is stored as the reason typed in, so it matches any reason
@@ -375,22 +381,22 @@ function InventoryTrashContent() {
               <p className="text-2xl font-bold text-slate-900">{summary.total}</p>
             </div>
           </div>
+          <div className="flex items-center gap-3 rounded-2xl border border-red-100 bg-white p-4 shadow-sm">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-red-50">
+              <svg className="h-5 w-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><circle cx="12" cy="12" r="9" /><path strokeLinecap="round" d="M5.7 5.7l12.6 12.6" /></svg>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-red-400">Written Off</p>
+              <p className="text-2xl font-bold text-slate-900">{summary.writtenOff}</p>
+            </div>
+          </div>
           <div className="flex items-center gap-3 rounded-2xl border border-orange-100 bg-white p-4 shadow-sm">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-orange-50">
               <svg className="h-5 w-5 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>
             </div>
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-orange-400">With Stock</p>
-              <p className="text-2xl font-bold text-slate-900">{summary.withStock}</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-3 rounded-2xl border border-red-100 bg-white p-4 shadow-sm">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-red-50">
-              <svg className="h-5 w-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-            </div>
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-red-400">With Reservations</p>
-              <p className="text-2xl font-bold text-slate-900">{summary.withReservations}</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-orange-400">Moved to Trash</p>
+              <p className="text-2xl font-bold text-slate-900">{summary.movedToTrash}</p>
             </div>
           </div>
           <div className="flex items-center gap-3 rounded-2xl border border-emerald-100 bg-white p-4 shadow-sm">
@@ -485,9 +491,9 @@ function InventoryTrashContent() {
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Item</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Category</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Condition</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Date written off</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Date removed</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Reason</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Written off by</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Removed by</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Status</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Actions</th>
                     </tr>
@@ -513,8 +519,8 @@ function InventoryTrashContent() {
                               : <div className="flex flex-wrap gap-1">{item.grades.map(([g, n]) => <ConditionBadge key={g} condition={n > 1 ? `${GRADE_LABEL[g]} ×${n}` : GRADE_LABEL[g]} />)}</div>}
                           </td>
                           <td className="whitespace-nowrap px-4 py-3 align-middle text-sm text-slate-600">{formatDate(item.voidedAt ?? item.deletedAt)}</td>
-                          <td className="px-4 py-3 align-middle"><ReasonBadge reason={item.voidReason} /></td>
-                          <td className="whitespace-nowrap px-4 py-3 align-middle text-sm text-slate-600">{item.voidedBy ?? '—'}</td>
+                          <td className="px-4 py-3 align-middle"><ReasonBadge reason={item.isVoided ? item.voidReason : 'Moved to trash'} /></td>
+                          <td className="whitespace-nowrap px-4 py-3 align-middle text-sm text-slate-600">{(item.isVoided ? item.voidedBy : item.deletedBy) ?? '—'}</td>
                           <td className="px-4 py-3 align-middle"><StatusBadge stock={item.stock} reserved={item.reservedStock} /></td>
                           <td className="px-4 py-3 align-middle">
                             <div className="relative inline-block group">

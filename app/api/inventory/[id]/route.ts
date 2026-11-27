@@ -306,6 +306,8 @@ export async function DELETE(req: Request, context: RouteContext) {
     await docRef.update({
       isDeleted: true,
       deletedAt: new Date().toISOString(),
+      // Shown in the Trash's "Removed by" column (a write-off keeps voidedBy).
+      deletedBy: processedBy.name ?? processedBy.email ?? null,
       updatedAt: new Date().toISOString(),
     })
 
