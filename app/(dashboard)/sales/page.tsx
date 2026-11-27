@@ -173,6 +173,8 @@ interface ShelfGrade { grade: string; count: number; price: number }
 interface ShelfItem {
   grades: ShelfGrade[]
   ownPriced: Array<{ grade: string; count: number; minPrice: number; maxPrice: number }>
+  /** Pieces with a price of their own, one by one, oldest first. */
+  ownPieces?: Array<{ id: string; unitCode: string; grade: string; price: number }>
 }
 
 interface Category {
@@ -1704,6 +1706,16 @@ function SalesContent() {
                         const sh = item.trackingMode === 'unit' ? shelf[item.id] : undefined
                         const grades = (sh?.grades ?? []).slice().sort((a, b) => UNIT_GRADES.indexOf(a.grade as UnitGrade) - UNIT_GRADES.indexOf(b.grade as UnitGrade))
                         const ownPriced = (sh?.ownPriced ?? []).reduce((n, g) => n + g.count, 0)
+                        // Pieces with their own price, one button per condition and price
+                        // (same as the Dashboard's quick sale). A click adds the oldest
+                        // such piece not yet in the cart.
+                        const ownGroups: Array<{ grade: string; price: number; pieces: NonNullable<ShelfItem['ownPieces']> }> = []
+                        for (const p of sh?.ownPieces ?? []) {
+                          const og = ownGroups.find((o) => o.grade === p.grade && o.price === p.price)
+                          if (og) og.pieces.push(p)
+                          else ownGroups.push({ grade: p.grade, price: p.price, pieces: [p] })
+                        }
+                        ownGroups.sort((a, b) => UNIT_GRADES.indexOf(a.grade as UnitGrade) - UNIT_GRADES.indexOf(b.grade as UnitGrade) || b.price - a.price)
                         return (
                           <tr key={item.id} className={isOutOfStock ? 'bg-slate-50/60' : 'hover:bg-slate-50/70'}>
                             <td className="px-4 py-3 align-top">
@@ -1752,8 +1764,33 @@ function SalesContent() {
                                       <span className="rounded bg-slate-100 px-1 text-[10px] tabular-nums text-slate-500">{g.count}</span>
                                     </button>
                                   ))}
-                                  {grades.length === 0 && (
-                                    <span className="text-[11px] text-slate-500">{ownPriced > 0 ? 'Scan the piece label to sell' : 'None on the shelf'}</span>
+                                  {ownGroups.map((og) => {
+                                    const remaining = og.pieces.filter((p) => !cart.some((l) => l.units?.some((u) => u.id === p.id))).length
+                                    return (
+                                      <button
+                                        key={`${og.grade}:${og.price}`}
+                                        type="button"
+                                        onClick={() => {
+                                          const next = og.pieces.find((p) => !cart.some((l) => l.units?.some((u) => u.id === p.id)))
+                                          const r = next
+                                            ? addUnitToCart(item, { id: next.id, unitCode: next.unitCode, grade: next.grade, conditionNotes: '', price: next.price, ownPrice: true })
+                                            : `All ${GRADE_LABEL[og.grade as UnitGrade] ?? og.grade} pieces at ${currency(og.price)} are in the cart.`
+                                          if (r) toast.error(r)
+                                        }}
+                                        disabled={isCompletedMode || remaining <= 0}
+                                        title={`Add one ${GRADE_LABEL[og.grade as UnitGrade] ?? og.grade} piece priced on its own. ${remaining} on the shelf.`}
+                                        className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50/40 px-2 py-1.5 text-[11px] text-slate-700 transition hover:border-blue-300 hover:bg-blue-50 disabled:opacity-40"
+                                      >
+                                        <span className={`h-1.5 w-1.5 rounded-full ${GRADE_TONE[og.grade as UnitGrade]?.dot ?? 'bg-slate-400'}`} />
+                                        <span>{og.grade}</span>
+                                        <span className="font-semibold tabular-nums text-slate-900">{currency(og.price)}</span>
+                                        <span className="text-[10px] font-semibold text-blue-600">own price</span>
+                                        <span className="rounded bg-slate-100 px-1 text-[10px] tabular-nums text-slate-500">{remaining}</span>
+                                      </button>
+                                    )
+                                  })}
+                                  {grades.length === 0 && ownGroups.length === 0 && (
+                                    <span className="text-[11px] text-slate-500">None on the shelf</span>
                                   )}
                                 </div>
                               ) : item.trackingMode === 'unit' ? (
