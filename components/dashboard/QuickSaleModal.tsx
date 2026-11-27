@@ -28,6 +28,7 @@ import { auth } from '@/lib/firebase'
 import { openReceiptPrintWindow } from '@/lib/transactions/receiptPrint'
 import type { CompletedTransactionDocument, SaleReceiptDocument } from '@/lib/transactions/transactionDocuments'
 import { GRADE_LABEL, GRADE_TONE, UNIT_GRADES, type UnitGrade } from '@/lib/inventory/units'
+import { limitDiscountInput } from '@/lib/sales/discount'
 
 export interface SellableItem {
   id: string
@@ -327,12 +328,14 @@ export default function QuickSaleModal({
 
   const subtotal = cart.reduce((s, l) => s + l.price * l.quantity, 0)
   // A percentage follows the subtotal; never more than the subtotal.
-  const discount = Math.min(subtotal, Math.max(0,
-    discountMode === 'percent' ? (subtotal * (Number(discountInput) || 0)) / 100 : Number(discountInput) || 0))
+  // Rounded to the centavo, as the server rounds it, so ₱499.99999 off ₱500
+  // is refused here, not only after Complete sale.
+  const requestedDiscount = Math.round(Math.max(0,
+    discountMode === 'percent' ? (subtotal * (Number(discountInput) || 0)) / 100 : Number(discountInput) || 0) * 100) / 100
+  const discount = Math.min(subtotal, requestedDiscount)
   const total = Math.max(0, subtotal - discount)
   // A discount that would leave nothing to pay is refused, not quietly capped.
-  const requestedDiscount = Math.max(0, discountMode === 'percent' ? (subtotal * (Number(discountInput) || 0)) / 100 : Number(discountInput) || 0)
-  const discountTooBig = cart.length > 0 && requestedDiscount > 0 && requestedDiscount >= subtotal
+  const discountTooBig = cart.length > 0 && requestedDiscount > 0 && requestedDiscount >= Math.round(subtotal * 100) / 100
   const pieces = cart.reduce((s, l) => s + l.quantity, 0)
 
   const setQty = (key: string, next: number) => {
@@ -544,12 +547,11 @@ export default function QuickSaleModal({
                                       onClick={() => report(addOwn(item, g))}
                                       disabled={out || left <= 0 || remaining <= 0 || submitting}
                                       title={`Add one ${GRADE_LABEL[g.grade]} piece priced on its own · ${remaining} on the shelf`}
-                                      className="inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50/40 px-2 py-1 text-xs text-slate-700 transition hover:border-blue-300 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                      className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 transition hover:border-blue-300 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
                                     >
                                       <span className={`h-1.5 w-1.5 rounded-full ${GRADE_TONE[g.grade]?.dot ?? 'bg-slate-400'}`} />
                                       {GRADE_LABEL[g.grade] ?? g.grade}
                                       <span className="font-semibold tabular-nums text-slate-900">{currency(g.price)}</span>
-                                      <span className="text-[10px] font-semibold text-blue-600">own price</span>
                                       <span className="rounded bg-slate-100 px-1 text-[10px] tabular-nums text-slate-500">{remaining}</span>
                                     </button>
                                   )
@@ -638,7 +640,7 @@ export default function QuickSaleModal({
                       Discount
                       <span className="inline-flex overflow-hidden rounded-md border border-slate-200 bg-white">
                         {(['peso', 'percent'] as const).map((mode) => (
-                          <button key={mode} type="button" onClick={() => setDiscountMode(mode)} aria-pressed={discountMode === mode}
+                          <button key={mode} type="button" onClick={() => { setDiscountMode(mode); setDiscountInput((cur) => limitDiscountInput(cur, mode, subtotal) ?? '') }} aria-pressed={discountMode === mode}
                             className={`px-2 py-0.5 text-[11px] font-semibold transition ${discountMode === mode ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-50'}`}>
                             {mode === 'peso' ? '₱' : '%'}
                           </button>
@@ -647,7 +649,7 @@ export default function QuickSaleModal({
                       {discountMode === 'percent' && discount > 0 && <span className="text-[11px] tabular-nums text-slate-500">= {currency(discount)}</span>}
                     </span>
                     <input maxLength={INPUT_LIMITS.money} type="text" inputMode="decimal" value={discountInput}
-                      onChange={(e) => { const raw = e.target.value; if (raw === '' || /^\d*\.?\d*$/.test(raw)) setDiscountInput(raw) }}
+                      onChange={(e) => { const next = limitDiscountInput(e.target.value, discountMode, subtotal); if (next !== null) setDiscountInput(next) }}
                       placeholder="0" disabled={cart.length === 0 || submitting} aria-label="Discount" aria-invalid={discountTooBig}
                       className="h-8 w-24 rounded-lg border border-slate-200 bg-white px-2 text-right text-xs tabular-nums text-slate-800 focus:border-blue-500 focus:outline-none disabled:opacity-50" />
                   </div>

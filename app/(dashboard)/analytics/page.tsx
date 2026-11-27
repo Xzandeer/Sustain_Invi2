@@ -1100,9 +1100,13 @@ function AnalyticsContent() {
       return fallback
     }
 
+    // Never past today: days that have not happened have no sales, so a range
+    // into the future drew empty months, a forecast on top, and a "vs last
+    // period" drop that was not real. The presets already stop at today.
+    const today = startOfDay(now)
     return {
-      start: startOfDay(parsedStart),
-      end: endOfDay(parsedEnd),
+      start: startOfDay(parsedStart > today ? today : parsedStart),
+      end: endOfDay(parsedEnd > today ? today : parsedEnd),
     }
   }, [customEndDate, customStartDate, timeRangePreset])
 
@@ -1282,7 +1286,14 @@ function AnalyticsContent() {
     setDateRangeError('')
   }, [customEndDate, customStartDate])
 
-  const handleCustomStartDateChange = (value: string) => {
+  // A date typed past today becomes today (the calendars stop at today too).
+  const notAfterToday = (value: string) => {
+    const todayKey = formatDateInput(new Date())
+    return value && value > todayKey ? todayKey : value
+  }
+
+  const handleCustomStartDateChange = (raw: string) => {
+    const value = notAfterToday(raw)
     setTimeRangePreset('custom')
     setCustomStartDate(value)
 
@@ -1300,7 +1311,8 @@ function AnalyticsContent() {
     setDateRangeError('')
   }
 
-  const handleCustomEndDateChange = (value: string) => {
+  const handleCustomEndDateChange = (raw: string) => {
+    const value = notAfterToday(raw)
     setTimeRangePreset('custom')
 
     if (customStartDate && value && new Date(value) < new Date(customStartDate)) {
@@ -1893,7 +1905,7 @@ function AnalyticsContent() {
                 <input aria-label="From date"
                   type="date"
                   value={timeRangePreset === 'custom' ? customStartDate : formatDateInput(activeRange.start)}
-                  max={timeRangePreset === 'custom' && customEndDate ? customEndDate : undefined}
+                  max={timeRangePreset === 'custom' && customEndDate && customEndDate < formatDateInput(new Date()) ? customEndDate : formatDateInput(new Date())}
                   onChange={(e) => handleCustomStartDateChange(e.target.value)}
                   className="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100 transition"
                 />
@@ -1904,6 +1916,7 @@ function AnalyticsContent() {
                   type="date"
                   value={timeRangePreset === 'custom' ? customEndDate : formatDateInput(activeRange.end)}
                   min={timeRangePreset === 'custom' && customStartDate ? customStartDate : undefined}
+                  max={formatDateInput(new Date())}
                   onChange={(e) => handleCustomEndDateChange(e.target.value)}
                   className="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100 transition"
                 />

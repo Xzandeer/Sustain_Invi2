@@ -470,7 +470,8 @@ function InventoryContent() {
   }
 
   const handleVoidProduct = async (productId: string, voidReason: string, voidQuantity: number, unitIds: string[] = []) => {
-    if (!isAdmin) return
+    // Staff with "Void Items" may write off too (the server checks it).
+    if (!canVoid) return
     setError('')
     setVoidingId(productId)
     try {
@@ -1320,7 +1321,7 @@ function InventoryContent() {
                                             )}
                                           </>
                                         )}
-                                        {canVoid && (product.isVoided || (product.voidedUnits ?? 0) > 0) && (
+                                        {isAdmin && (product.isVoided || (product.voidedUnits ?? 0) > 0) && (
                                           <button onClick={() => { setRowMenuId(null); openRestoreModal(product) }} disabled={voidingId === product.id}
                                             className="block w-full px-3 py-2 text-left text-emerald-700 hover:bg-slate-50 disabled:opacity-40">
                                             Restore written-off

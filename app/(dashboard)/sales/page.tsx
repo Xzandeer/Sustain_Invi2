@@ -56,6 +56,7 @@ import { contactNumberProblem, createReservation, isValidContactNumber, isValidO
 import { SCAN_PARAM } from '@/lib/scan/scanToSale'
 import { expireReservations } from '@/lib/reservations/reservationExpiration'
 import { GRADE_LABEL, GRADE_MEANING, GRADE_TONE, UNIT_GRADES, gradeSummary, type UnitGrade } from '@/lib/inventory/units'
+import { limitDiscountInput } from '@/lib/sales/discount'
 
 const DATE_RANGES = [
   { key: 'today', label: 'Today' },
@@ -763,22 +764,16 @@ function SalesContent() {
   // A percentage discount is resolved against the current subtotal, so adding an
   // item after entering 10% keeps it at 10% rather than freezing the peso value.
   // Capped at the subtotal so a total can never go negative.
-  const discount = Math.min(
-    cartSubtotal,
-    Math.max(
-      0,
-      discountMode === 'percent'
-        ? (cartSubtotal * (Number(discountInput) || 0)) / 100
-        : Number(discountInput) || 0
-    )
-  )
+  // Rounded to the centavo, as the server rounds it, so ₱499.99999 off ₱500
+  // is ₱500 off here too and is refused before Complete sale, not after.
+  const requestedDiscount = Math.round(Math.max(0, discountMode === 'percent'
+    ? (cartSubtotal * (Number(discountInput) || 0)) / 100
+    : Number(discountInput) || 0) * 100) / 100
+  const discount = Math.min(cartSubtotal, requestedDiscount)
   const cartTotal = Math.max(0, cartSubtotal - discount)
   // A discount that would leave nothing to pay is refused, not quietly capped
   // (the server refuses it too).
-  const requestedDiscount = Math.max(0, discountMode === 'percent'
-    ? (cartSubtotal * (Number(discountInput) || 0)) / 100
-    : Number(discountInput) || 0)
-  const discountTooBig = cart.length > 0 && requestedDiscount > 0 && requestedDiscount >= cartSubtotal
+  const discountTooBig = cart.length > 0 && requestedDiscount > 0 && requestedDiscount >= Math.round(cartSubtotal * 100) / 100
   const isCompletedMode = completedDocument !== null
   const completedDocumentEmail = completedDocument?.customer.email.trim() ?? ''
 
@@ -1705,7 +1700,6 @@ function SalesContent() {
                         const isLowStock = item.availableStock > 0 && item.availableStock <= item.minStock
                         const sh = item.trackingMode === 'unit' ? shelf[item.id] : undefined
                         const grades = (sh?.grades ?? []).slice().sort((a, b) => UNIT_GRADES.indexOf(a.grade as UnitGrade) - UNIT_GRADES.indexOf(b.grade as UnitGrade))
-                        const ownPriced = (sh?.ownPriced ?? []).reduce((n, g) => n + g.count, 0)
                         // Pieces with their own price, one button per condition and price
                         // (same as the Dashboard's quick sale). A click adds the oldest
                         // such piece not yet in the cart.
@@ -1743,7 +1737,6 @@ function SalesContent() {
                                   {isOutOfStock ? 'Out of stock' : 'Low stock'}
                                 </span>
                               )}
-                              {ownPriced > 0 && <p className="text-[11px] text-slate-500">{ownPriced} with own price</p>}
                             </td>
                             <td className="px-4 py-3 align-top">
                               {item.trackingMode === 'unit' && sh ? (
@@ -1779,12 +1772,11 @@ function SalesContent() {
                                         }}
                                         disabled={isCompletedMode || remaining <= 0}
                                         title={`Add one ${GRADE_LABEL[og.grade as UnitGrade] ?? og.grade} piece priced on its own. ${remaining} on the shelf.`}
-                                        className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50/40 px-2 py-1.5 text-[11px] text-slate-700 transition hover:border-blue-300 hover:bg-blue-50 disabled:opacity-40"
+                                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] text-slate-700 transition hover:border-blue-300 hover:bg-blue-50 disabled:opacity-40"
                                       >
                                         <span className={`h-1.5 w-1.5 rounded-full ${GRADE_TONE[og.grade as UnitGrade]?.dot ?? 'bg-slate-400'}`} />
                                         <span>{og.grade}</span>
                                         <span className="font-semibold tabular-nums text-slate-900">{currency(og.price)}</span>
-                                        <span className="text-[10px] font-semibold text-blue-600">own price</span>
                                         <span className="rounded bg-slate-100 px-1 text-[10px] tabular-nums text-slate-500">{remaining}</span>
                                       </button>
                                     )
@@ -2010,7 +2002,6 @@ function SalesContent() {
                               {grade ? (GRADE_LABEL[grade] ?? grade) : item.condition}
                               <span className="text-slate-300">·</span>
                               <span className="tabular-nums">{currency(item.price)} each</span>
-                              {item.fixedUnit ? <span className="rounded bg-blue-50 px-1 text-[10px] font-semibold text-blue-600">own price</span> : null}
                             </p>
                           </div>
                           <p className="shrink-0 text-[13px] font-semibold tabular-nums text-slate-900">{currency(item.price * item.quantity)}</p>
@@ -2062,7 +2053,11 @@ function SalesContent() {
                         <button
                           key={mode}
                           type="button"
-                          onClick={() => setDiscountMode(mode)}
+                          onClick={() => {
+                            // ₱400 becoming 400% would be over the limit: lower it.
+                            setDiscountMode(mode)
+                            setDiscountInput((cur) => limitDiscountInput(cur, mode, cartSubtotal) ?? '')
+                          }}
                           className={`px-2 py-0.5 text-[11px] font-semibold transition ${discountMode === mode ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-50'}`}
                         >
                           {mode === 'peso' ? '₱' : '%'}
@@ -2081,9 +2076,10 @@ function SalesContent() {
                     inputMode="decimal"
                     value={discountInput}
                     onChange={(e) => {
-                      // Digits and one decimal point only; empty stays empty.
-                      const raw = e.target.value
-                      if (raw === '' || /^\d*\.?\d*$/.test(raw)) setDiscountInput(raw)
+                      // Digits and up to two decimals, never more than leaves
+                      // something to pay (lib/sales/discount.ts).
+                      const next = limitDiscountInput(e.target.value, discountMode, cartSubtotal)
+                      if (next !== null) setDiscountInput(next)
                     }}
                     placeholder="0"
                     aria-label="Discount"

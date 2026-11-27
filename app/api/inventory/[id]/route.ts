@@ -344,7 +344,15 @@ export async function PATCH(req: Request, context: RouteContext) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
     }
 
-    const deniedPatch = await requireAdminRequest(req)
+    const body = (await req.json()) as { action?: unknown }
+    const action = typeof body.action === 'string' ? body.action : ''
+
+    // A write-off is allowed to staff given "Void Items" in User Management
+    // (the Inventory page shows them the button). Restoring from the Trash and
+    // undoing a write-off stay with administrators.
+    const deniedPatch = action === 'void'
+      ? await guardRequest(req, 'canVoidItems')
+      : await requireAdminRequest(req)
     if (deniedPatch) return deniedPatch
 
     const docRef = getAdminDb().collection('inventory').doc(id)
@@ -353,10 +361,8 @@ export async function PATCH(req: Request, context: RouteContext) {
       return NextResponse.json({ error: 'Item not found' }, { status: 404 })
     }
 
-    // Step 2: Parse request and get admin user
-    const body = (await req.json()) as { action?: unknown }
-    const action = typeof body.action === 'string' ? body.action : ''
-    const processedBy = await assertAdminUser(req)
+    // Step 2: Who is acting (from the signed-in account)
+    const processedBy = action === 'void' ? await getProcessedByInfo(req) : await assertAdminUser(req)
     const snapshotData = snapshot.data() as Record<string, unknown>
     const itemName = typeof snapshotData.name === 'string' ? snapshotData.name.trim() : 'Unnamed Item'
     const condition = normalizeInventoryCondition(snapshotData.condition)

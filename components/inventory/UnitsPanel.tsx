@@ -260,7 +260,7 @@ export default function UnitsPanel({ product, canEdit, onClose, inline = false }
         </div>
 
         <p className="border-t border-slate-100 px-5 py-2.5 text-[11px] text-slate-500">
-          Prices follow each piece&apos;s condition. Pieces sell oldest first; a piece with its own price sells when its label is scanned.
+          Prices follow each piece&apos;s condition. Pieces sell oldest first; a piece with its own price sells at that price, from its condition&apos;s button or by scanning its label.
         </p>
       </div>
   )

@@ -405,12 +405,11 @@ export default function ReserveItemModal({
                                       onClick={() => report(addOwn(item, g))}
                                       disabled={out || left <= 0 || remaining <= 0 || submitting}
                                       title={`Reserve one ${GRADE_LABEL[g.grade]} piece priced on its own · ${remaining} on the shelf`}
-                                      className={`${chip} border-blue-200 bg-blue-50/40 hover:border-blue-300 hover:bg-blue-50`}
+                                      className={`${chip} border-slate-200 bg-white hover:border-blue-300 hover:bg-blue-50`}
                                     >
                                       <span className={`h-1.5 w-1.5 rounded-full ${GRADE_TONE[g.grade]?.dot ?? 'bg-slate-400'}`} />
                                       {GRADE_LABEL[g.grade] ?? g.grade}
                                       <span className="font-semibold tabular-nums text-slate-900">{currency(g.price)}</span>
-                                      <span className="text-[10px] font-semibold text-blue-600">own price</span>
                                       <span className="rounded bg-slate-100 px-1 text-[10px] tabular-nums text-slate-500">{remaining}</span>
                                     </button>
                                   )
