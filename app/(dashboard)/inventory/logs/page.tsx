@@ -45,14 +45,15 @@ interface StockLogRecord {
   createdAt: Date | null
 }
 
-type TabId = 'all' | 'stock_changes' | 'reservations_sales' | 'item_updates' | 'system'
+// No "System" tab: every action the app records fits one of these, so it was
+// always empty. Anything that ever fits none still shows under All Logs.
+type TabId = 'all' | 'stock_changes' | 'reservations_sales' | 'item_updates'
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'all', label: 'All Logs' },
   { id: 'stock_changes', label: 'Stock Changes' },
   { id: 'reservations_sales', label: 'Reservations & Sales' },
   { id: 'item_updates', label: 'Item Updates' },
-  { id: 'system', label: 'System' },
 ]
 
 const STOCK_CHANGE_ACTIONS = ['stock_increased', 'stock_decreased', 'stock_transferred_in', 'stock_transferred_out']
@@ -66,7 +67,6 @@ function matchesTab(tab: TabId, action: ResolvedStockLogAction): boolean {
   if (tab === 'stock_changes') return STOCK_CHANGE_ACTIONS.includes(action)
   if (tab === 'reservations_sales') return RESERVATION_SALE_ACTIONS(action)
   if (tab === 'item_updates') return ITEM_UPDATE_ACTIONS.includes(action)
-  if (tab === 'system') return !STOCK_CHANGE_ACTIONS.includes(action) && !RESERVATION_SALE_ACTIONS(action) && !ITEM_UPDATE_ACTIONS.includes(action)
   return true
 }
 
